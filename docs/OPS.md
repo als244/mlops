@@ -1143,6 +1143,7 @@ causal_conv_silu(
     weight: Tensor,
     lengths: Sequence[int],
     cumulative: Tensor,
+    chunk_indices: Tensor | None = None,
 ) -> Tensor
 ```
 
@@ -1159,6 +1160,7 @@ Convolution history resets at every sequence boundary.
 | `weight` | `Tensor[C,1,Wc]` | depthwise convolution kernels |
 | `lengths` | `Sequence[int]` | boundaries summing to `T` |
 | `cumulative` | INT64 `Tensor[L+1]`, or empty for one sequence | caller-owned cumulative boundaries |
+| `chunk_indices` | optional INT64 `Tensor[Nchunk,2]`, or empty for one sequence | caller-owned `(sequence, chunk)` map; supplying it avoids reconstructing it inside provider kernels |
 
 **Returns**
 
@@ -1183,7 +1185,7 @@ raised. Weight channels must match `C`.
 
 ```python
 cumulative, chunks = prepare_packed_sequence_metadata(lengths, projected)
-convolved = causal_conv_silu(projected, conv.weight, lengths, cumulative)
+convolved = causal_conv_silu(projected, conv.weight, lengths, cumulative, chunks)
 ```
 
 ### `prepare_packed_sequence_metadata`
@@ -2195,6 +2197,7 @@ forward(
     weight: Tensor[C,1,Wc],
     lengths: Sequence[int],
     cumulative_lengths: Tensor[*],
+    chunk_indices: Tensor[*] | None = None,
 ) -> Tensor[T,C]
 
 backward(
@@ -2202,12 +2205,15 @@ backward(
     x: Tensor[T,C],
     weight: Tensor[C,1,Wc],
     cumulative_lengths: Tensor[*],
+    chunk_indices: Tensor[*] | None = None,
 ) -> tuple[Tensor[T,C], Tensor[C,1,Wc]]
 ```
 
 Convolution state resets at every packed boundary. Caller-owned cumulative
 metadata may be an empty tensor for a single sequence and must be passed to
-forward and backward unchanged.
+forward and backward unchanged. Optional caller-owned `chunk_indices` follows
+the same contract and avoids reconstructing the chunk map inside provider
+kernels.
 
 #### `explicit.linear_attention`
 
