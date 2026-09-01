@@ -747,6 +747,12 @@ Violations detected by the varlen boundary raise `ValueError`.
 native variable-length FlashAttention primitive and rejects unsupported calls;
 it never silently falls back.
 
+On a Hopper GPU with the `flash-attn-3` wheel installed, the builtin
+implementation activates PyTorch's FlashAttention-3 registration on first
+use, so the same aten primitive runs FA3 kernels. The registry identity
+remains `builtin.flash_attention.aten`; on other devices, or without the
+wheel, the primitive keeps its stock kernels.
+
 **Example**
 
 ```python
