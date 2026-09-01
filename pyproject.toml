@@ -11,9 +11,16 @@ requires-python = ">=3.12"
 dependencies = ["torch>=2.13"]
 
 [project.optional-dependencies]
-fla = ["flash-linear-attention"]
+fla = ["flash-linear-attention>=0.5.2"]
 liger = ["liger-kernel==0.8.1"]
-scattermoe = ["scattermoe==0.3.0"]
+# scattermoe publishes no PyPI distribution; 0.3.0 is the version at this commit.
+scattermoe = [
+  "scattermoe @ git+https://github.com/shawntan/scattermoe.git@47b5e1502e5a10e82c8e5945d761b877849871e7",
+]
+# TileLang backs fla's gated-delta-rule backward on Hopper (fla enables it by
+# default on sm90 with Triton >= 3.4.0).
+tilelang = ["tilelang"]
+providers = ["mlops[fla,liger,scattermoe,tilelang]"]
 dev = ["pytest", "ruff"]
 
 [tool.setuptools]

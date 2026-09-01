@@ -51,6 +51,21 @@ dependency.
 ## Installation
 
 ```bash
+./scripts/setup.sh
+```
+
+The script creates `.venv`, installs the supported PyTorch, installs mlops
+editable with every implementation provider — flash-linear-attention,
+liger-kernel, scattermoe, and tilelang — plus the development tools, and
+verifies the installation. To use an existing virtual or Conda environment:
+
+```bash
+./scripts/setup.sh --python "$CONDA_PREFIX/bin/python"
+```
+
+A minimal install without providers remains:
+
+```bash
 python -m pip install --no-deps -e .
 ```
 
