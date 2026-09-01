@@ -100,6 +100,10 @@ def _metadata(q, lengths: Sequence[int]):
 
 
 def forward(q, k, v, cu_seqlens, max_seqlen, lengths, *, causal=True, softmax_scale=None):
+    # Execution-only processes replay compiled artifacts without ever
+    # resolving an implementation, so the activation attempt must also sit on
+    # the call path itself, not just in the support gate.
+    _maybe_activate_fa3(q.device)
     normalized = tuple(int(length) for length in lengths)
     with torch.no_grad():
         output, lse, used_native = flash_attention_forward(
@@ -133,6 +137,7 @@ def backward(
     causal=True,
     softmax_scale=None,
 ):
+    _maybe_activate_fa3(q.device)
     with torch.no_grad():
         return flash_attention_backward(
             grad_output,
