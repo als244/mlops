@@ -56,8 +56,10 @@ dependency.
 
 The script creates `.venv`, installs the supported PyTorch, installs mlops
 editable with every implementation provider — flash-linear-attention,
-liger-kernel, scattermoe, and tilelang — plus the development tools, and
-verifies the installation. To use an existing virtual or Conda environment:
+liger-kernel, scattermoe, and tilelang — plus the FlashAttention-3 wheel
+from the PyTorch index (activated automatically on Hopper GPUs) and the
+development tools, and verifies the installation. To use an existing
+virtual or Conda environment:
 
 ```bash
 ./scripts/setup.sh --python "$CONDA_PREFIX/bin/python"

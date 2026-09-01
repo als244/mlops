@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import lru_cache
+from importlib.util import find_spec
 
 import torch
 
@@ -14,11 +15,42 @@ from ...kernels.flash_attention import (
     native_flash_attention_supported,
 )
 
+_FA3_ATTEMPTED = False
+_FA3_ACTIVE = False
+
+
+def _maybe_activate_fa3(device: torch.device) -> bool:
+    """Route the aten flash primitive to FlashAttention-3 where it exists.
+
+    PyTorch's FA3 registration replaces the CUDA implementations of the same
+    aten operations this provider calls, so activation changes the kernels
+    without changing this implementation's identity or contract. The attempt
+    happens on the first CUDA call rather than at import: probing the device
+    capability initializes CUDA, and importing mlops must never do that.
+    """
+    global _FA3_ATTEMPTED, _FA3_ACTIVE
+    if _FA3_ATTEMPTED or device.type != "cuda":
+        return _FA3_ACTIVE
+    _FA3_ATTEMPTED = True
+    if find_spec("flash_attn_interface") is None:
+        return False
+    if torch.cuda.get_device_capability(device)[0] != 9:
+        return False
+    try:
+        from torch.nn.attention import activate_flash_attention_impl
+
+        activate_flash_attention_impl("FA3")
+    except Exception:
+        return False
+    _FA3_ACTIVE = True
+    return True
+
 
 def _supports(q, k, v, lengths, *, surface, causal=True, softmax_scale=None, **_kwargs):
     del surface, causal, softmax_scale
     if not all(isinstance(value, torch.Tensor) for value in (q, k, v)):
         return SupportResult.no("q, k, and v must be tensors")
+    _maybe_activate_fa3(q.device)
     normalized = tuple(int(length) for length in lengths)
     if not normalized or any(length <= 0 for length in normalized):
         return SupportResult.no("lengths must contain positive values")
