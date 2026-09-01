@@ -1,0 +1,132 @@
+{
+  "backend": "gloo",
+  "bucket_bytes": 67108864,
+  "bucket_count": 1,
+  "cell_wall_time_s": 1.3763499897904694,
+  "collective_payload_bytes_per_step": 33554432,
+  "distributed_samples_us": [
+    27149.311065673828,
+    22942.1443939209,
+    17424.38316345215,
+    18122.33543395996,
+    17252.12860107422,
+    19136.192321777344,
+    18969.600677490234,
+    18551.20086669922,
+    20588.544845581055,
+    17575.93536376953
+  ],
+  "effective_collective_payload_gb_per_second": 1.7885775686578482,
+  "execution_manifest_totals": {
+    "optimizer_state_bytes_per_rank": 16777224,
+    "parameter_bytes": 16777216,
+    "workspace_bytes_per_rank": 33554432
+  },
+  "implementation_id": "builtin.adamw.triton",
+  "launcher": {
+    "cell_name": "gloo_sharded_2p23",
+    "local_returncode": 0,
+    "port": 29643,
+    "remote_returncode": 0,
+    "timed_out": false,
+    "wall_time_s": 4.754956047050655
+  },
+  "median_us": 18760.400772094727,
+  "model_payload_gb_per_second": 0.8942887843289241,
+  "opt_state_strategy": "sharded",
+  "overlap": false,
+  "p95_us": 25256.086063385002,
+  "parameter_bytes": 16777216,
+  "parameter_count": 8388608,
+  "parameter_gib": 0.015625,
+  "parameter_layout": "single",
+  "parameter_tensor_count": 1,
+  "parameters_per_second": 447144392.16446203,
+  "rank_reports": [
+    {
+      "allocated_after_warmup_bytes": 83886592,
+      "median_us": 18336.76815032959,
+      "metadata": {
+        "compute_capability": [
+          12,
+          0
+        ],
+        "cuda_version": "13.0",
+        "device_free_bytes_before_setup": 32702595072,
+        "device_index": 0,
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "device_total_bytes": 33636024320,
+        "hostname": "chicago.sunshein.net",
+        "nccl_version": [
+          2,
+          29,
+          7
+        ],
+        "platform": "Linux-6.5.0-28-generic-x86_64-with-glibc2.35",
+        "torch_version": "2.13.0+cu130"
+      },
+      "p95_us": 24657.1587562561,
+      "peak_allocated_bytes": 100663808,
+      "peak_reserved_bytes": 127926272,
+      "rank": 0,
+      "reserved_after_warmup_bytes": 111149056,
+      "samples_us": [
+        26060.352325439453,
+        22942.1443939209,
+        16168.031692504883,
+        18122.33543395996,
+        16313.056945800781,
+        19136.192321777344,
+        17957.759857177734,
+        18551.20086669922,
+        20142.8165435791,
+        16646.879196166992
+      ]
+    },
+    {
+      "allocated_after_warmup_bytes": 83886592,
+      "median_us": 18273.279190063477,
+      "metadata": {
+        "compute_capability": [
+          8,
+          6
+        ],
+        "cuda_version": "13.0",
+        "device_free_bytes_before_setup": 24763564032,
+        "device_index": 0,
+        "device_name": "NVIDIA GeForce RTX 3090",
+        "device_total_bytes": 25262817280,
+        "hostname": "tubingen",
+        "nccl_version": [
+          2,
+          29,
+          7
+        ],
+        "platform": "Linux-6.5.0-28-generic-x86_64-with-glibc2.35",
+        "torch_version": "2.13.0+cu130"
+      },
+      "p95_us": 24357.78551101684,
+      "peak_allocated_bytes": 100663808,
+      "peak_reserved_bytes": 127926272,
+      "rank": 1,
+      "reserved_after_warmup_bytes": 127926272,
+      "samples_us": [
+        27149.311065673828,
+        20945.920944213867,
+        17424.38316345215,
+        18011.13510131836,
+        17252.12860107422,
+        18535.423278808594,
+        18969.600677490234,
+        17726.207733154297,
+        20588.544845581055,
+        17575.93536376953
+      ]
+    }
+  ],
+  "repetitions": 10,
+  "schema_version": "mlops.adamw_scaling.v1",
+  "status": "passed",
+  "warmup_steps": 3,
+  "world_size": 2
+}

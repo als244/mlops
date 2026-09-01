@@ -1,0 +1,302 @@
+{
+  "backend": "nccl",
+  "cases": [
+    {
+      "duration_s": 0.4932914199307561,
+      "execution_manifest": {
+        "buckets": [
+          {
+            "bucket_id": 0,
+            "group_index": 0,
+            "optimizer_state_bytes": 49196,
+            "parameter_bytes": 8198,
+            "workspace_bytes": 24594
+          },
+          {
+            "bucket_id": 1,
+            "group_index": 1,
+            "optimizer_state_bytes": 8220,
+            "parameter_bytes": 8212,
+            "workspace_bytes": 12318
+          }
+        ],
+        "spec": {
+          "bucket_bytes": 16384,
+          "gradient_reduction": "mean",
+          "local_implementation_id": "builtin.adamw.triton",
+          "manifest_sha256": "bf6a0815d2ad8df77b774a11b3859dd7737d76e929c4e30b40acfcf2079d3e5d",
+          "opt_state_strategy": "replicated",
+          "overlap": true,
+          "rank": 0,
+          "schema_version": "mlops.distributed_adamw.v2",
+          "world_size": 2
+        }
+      },
+      "opt_state_strategy": "replicated",
+      "parameter_metrics": [
+        {
+          "cosine": 0.9999999403953552,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      ],
+      "reduction": "mean",
+      "state_metrics": {
+        "exp_avg": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "exp_avg_sq": {
+          "cosine": 1.0000001192092896,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "master_parameter": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      },
+      "steps": 100
+    },
+    {
+      "duration_s": 0.1329272580333054,
+      "execution_manifest": {
+        "buckets": [
+          {
+            "bucket_id": 0,
+            "group_index": 0,
+            "optimizer_state_bytes": 49196,
+            "parameter_bytes": 8198,
+            "workspace_bytes": 24594
+          },
+          {
+            "bucket_id": 1,
+            "group_index": 1,
+            "optimizer_state_bytes": 8220,
+            "parameter_bytes": 8212,
+            "workspace_bytes": 12318
+          }
+        ],
+        "spec": {
+          "bucket_bytes": 16384,
+          "gradient_reduction": "sum",
+          "local_implementation_id": "builtin.adamw.triton",
+          "manifest_sha256": "bf6a0815d2ad8df77b774a11b3859dd7737d76e929c4e30b40acfcf2079d3e5d",
+          "opt_state_strategy": "replicated",
+          "overlap": true,
+          "rank": 0,
+          "schema_version": "mlops.distributed_adamw.v2",
+          "world_size": 2
+        }
+      },
+      "opt_state_strategy": "replicated",
+      "parameter_metrics": [
+        {
+          "cosine": 0.9999999403953552,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      ],
+      "reduction": "sum",
+      "state_metrics": {
+        "exp_avg": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "exp_avg_sq": {
+          "cosine": 1.0000001192092896,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "master_parameter": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      },
+      "steps": 100
+    },
+    {
+      "duration_s": 0.14946641214191914,
+      "execution_manifest": {
+        "buckets": [
+          {
+            "bucket_id": 0,
+            "group_index": 0,
+            "optimizer_state_bytes": 24608,
+            "parameter_bytes": 8200,
+            "workspace_bytes": 36900
+          },
+          {
+            "bucket_id": 1,
+            "group_index": 1,
+            "optimizer_state_bytes": 4116,
+            "parameter_bytes": 8216,
+            "workspace_bytes": 20540
+          }
+        ],
+        "spec": {
+          "bucket_bytes": 16384,
+          "gradient_reduction": "mean",
+          "local_implementation_id": "builtin.adamw.triton",
+          "manifest_sha256": "bf6a0815d2ad8df77b774a11b3859dd7737d76e929c4e30b40acfcf2079d3e5d",
+          "opt_state_strategy": "sharded",
+          "overlap": true,
+          "rank": 0,
+          "schema_version": "mlops.distributed_adamw.v2",
+          "world_size": 2
+        }
+      },
+      "opt_state_strategy": "sharded",
+      "parameter_metrics": [
+        {
+          "cosine": 0.9999999403953552,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      ],
+      "reduction": "mean",
+      "state_metrics": {
+        "exp_avg": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "exp_avg_sq": {
+          "cosine": 1.0000001192092896,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "master_parameter": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      },
+      "steps": 100
+    },
+    {
+      "duration_s": 0.1462895986624062,
+      "execution_manifest": {
+        "buckets": [
+          {
+            "bucket_id": 0,
+            "group_index": 0,
+            "optimizer_state_bytes": 24608,
+            "parameter_bytes": 8200,
+            "workspace_bytes": 36900
+          },
+          {
+            "bucket_id": 1,
+            "group_index": 1,
+            "optimizer_state_bytes": 4116,
+            "parameter_bytes": 8216,
+            "workspace_bytes": 20540
+          }
+        ],
+        "spec": {
+          "bucket_bytes": 16384,
+          "gradient_reduction": "sum",
+          "local_implementation_id": "builtin.adamw.triton",
+          "manifest_sha256": "bf6a0815d2ad8df77b774a11b3859dd7737d76e929c4e30b40acfcf2079d3e5d",
+          "opt_state_strategy": "sharded",
+          "overlap": true,
+          "rank": 0,
+          "schema_version": "mlops.distributed_adamw.v2",
+          "world_size": 2
+        }
+      },
+      "opt_state_strategy": "sharded",
+      "parameter_metrics": [
+        {
+          "cosine": 0.9999999403953552,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      ],
+      "reduction": "sum",
+      "state_metrics": {
+        "exp_avg": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "exp_avg_sq": {
+          "cosine": 1.0000001192092896,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "master_parameter": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      },
+      "steps": 100
+    }
+  ],
+  "cuda": "13.0",
+  "devices": [
+    "NVIDIA GeForce RTX 5090",
+    "NVIDIA GeForce RTX 3090"
+  ],
+  "local_slice": {
+    "local_parameter_elements": 31,
+    "shared_metrics": {
+      "cosine": 0.9999998807907104,
+      "max_abs": 0.0,
+      "relative_l2": 0.0,
+      "sign_agreement": 1.0
+    }
+  },
+  "nccl": [
+    2,
+    29,
+    7
+  ],
+  "torch": "2.13.0+cu130",
+  "world_size": 2
+}

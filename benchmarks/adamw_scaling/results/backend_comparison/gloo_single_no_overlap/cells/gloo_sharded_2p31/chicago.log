@@ -1,0 +1,55 @@
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/shein/Documents/grad_school/research/mlops/benchmarks/adamw_scaling/benchmark.py", line 355, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/shein/Documents/grad_school/research/mlops/benchmarks/adamw_scaling/benchmark.py", line 347, in main
+[rank0]:     result = _run(arguments)
+[rank0]:              ^^^^^^^^^^^^^^^
+[rank0]:   File "/home/shein/Documents/grad_school/research/mlops/benchmarks/adamw_scaling/benchmark.py", line 227, in _run
+[rank0]:     optimizer.step()
+[rank0]:   File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/optim/optimizer.py", line 530, in wrapper
+[rank0]:     out = func(*args, **kwargs)
+[rank0]:           ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/shein/Documents/grad_school/research/mlops/src/mlops/optim/adamw_optimizer.py", line 186, in step
+[rank0]:     self._distributed.step()
+[rank0]:   File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/shein/Documents/grad_school/research/mlops/src/mlops/optim/distributed_adamw.py", line 561, in step
+[rank0]:     reduced = self._launch_reduction(bucket, ready)
+[rank0]:               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/shein/Documents/grad_school/research/mlops/src/mlops/optim/distributed_adamw.py", line 436, in _launch_reduction
+[rank0]:     work.wait()
+[rank0]: RuntimeError: [/__w/pytorch/pytorch/third_party/gloo/gloo/transport/tcp/pair.cc:553] Connection closed by peer [192.168.50.32]:40586. This is typically caused by a remote worker crashing. Check the logs of the remote worker before reporting an error. GLHF! 🏖️
+W0804 20:12:04.458000 1227833 site-packages/torch/distributed/elastic/agent/server/api.py:753] Received 15 death signal, shutting down workers
+W0804 20:12:04.458000 1227833 site-packages/torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 1227866 closing signal SIGTERM
+Traceback (most recent call last):
+  File "/home/shein/miniconda3/envs/dataflow/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/run.py", line 1028, in main
+    run(args)
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/run.py", line 1019, in run
+    elastic_launch(
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 194, in __call__
+    return launch_agent(
+           ^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 374, in launch_agent
+    result = agent.run()
+             ^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/metrics/api.py", line 134, in wrapper
+    result = f(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py", line 745, in run
+    result = self._invoke_run(role)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py", line 923, in _invoke_run
+    time.sleep(monitor_interval)
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py", line 86, in _terminate_process_handler
+    raise SignalException(f"Process {os.getpid()} got signal: {sigval}", sigval=sigval)
+torch.distributed.elastic.multiprocessing.api.SignalException: Process 1227833 got signal: 15

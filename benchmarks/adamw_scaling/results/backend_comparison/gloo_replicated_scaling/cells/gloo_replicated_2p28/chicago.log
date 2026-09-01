@@ -1,0 +1,30 @@
+W0804 20:07:26.523000 1225539 site-packages/torch/distributed/elastic/agent/server/api.py:753] Received 15 death signal, shutting down workers
+W0804 20:07:26.523000 1225539 site-packages/torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 1225569 closing signal SIGTERM
+Traceback (most recent call last):
+  File "/home/shein/miniconda3/envs/dataflow/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/run.py", line 1028, in main
+    run(args)
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/run.py", line 1019, in run
+    elastic_launch(
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 194, in __call__
+    return launch_agent(
+           ^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 374, in launch_agent
+    result = agent.run()
+             ^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/metrics/api.py", line 134, in wrapper
+    result = f(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py", line 745, in run
+    result = self._invoke_run(role)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py", line 923, in _invoke_run
+    time.sleep(monitor_interval)
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py", line 86, in _terminate_process_handler
+    raise SignalException(f"Process {os.getpid()} got signal: {sigval}", sigval=sigval)
+torch.distributed.elastic.multiprocessing.api.SignalException: Process 1225539 got signal: 15

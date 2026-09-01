@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlops"
+version = "0.1.0"
+description = "PyTorch training operations, explicit VJPs, implementation dispatch, and optimized optimizers"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["torch>=2.13"]
+
+[project.optional-dependencies]
+fla = ["flash-linear-attention"]
+liger = ["liger-kernel==0.8.1"]
+scattermoe = ["scattermoe==0.3.0"]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mlops*"]
+
+[tool.pytest.ini_options]
+markers = [
+  "gpu: requires a CUDA device",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"

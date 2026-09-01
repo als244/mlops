@@ -1,0 +1,68 @@
+[rank1]:[W804 20:12:03.707780462 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 4294967296 bytes (free: 3221618688, total: 25262817280).
+[rank1]:[W804 20:12:03.707917769 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 4294967296 bytes (free: 3221618688, total: 25262817280).
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/home/shein/Documents/mlops/benchmarks/adamw_scaling/benchmark.py", line 355, in <module>
+[rank1]:     main()
+[rank1]:   File "/home/shein/Documents/mlops/benchmarks/adamw_scaling/benchmark.py", line 347, in main
+[rank1]:     result = _run(arguments)
+[rank1]:              ^^^^^^^^^^^^^^^
+[rank1]:   File "/home/shein/Documents/mlops/benchmarks/adamw_scaling/benchmark.py", line 227, in _run
+[rank1]:     optimizer.step()
+[rank1]:   File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/optim/optimizer.py", line 530, in wrapper
+[rank1]:     out = func(*args, **kwargs)
+[rank1]:           ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/shein/Documents/mlops/src/mlops/optim/adamw_optimizer.py", line 186, in step
+[rank1]:     self._distributed.step()
+[rank1]:   File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/shein/Documents/mlops/src/mlops/optim/distributed_adamw.py", line 561, in step
+[rank1]:     reduced = self._launch_reduction(bucket, ready)
+[rank1]:               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/shein/Documents/mlops/src/mlops/optim/distributed_adamw.py", line 428, in _launch_reduction
+[rank1]:     work = dist.reduce_scatter_single(
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 4936, in reduce_scatter_single
+[rank1]:     work = group.reduce_scatter_single(output, input, opts)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 4.00 GiB. GPU 0 has a total capacity of 23.53 GiB of which 3.00 GiB is free. Including non-PyTorch memory, this process has 20.31 GiB memory in use. Of the allocated memory 20.00 GiB is allocated by PyTorch, and 2.00 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+E0804 20:12:04.092000 219389 site-packages/torch/distributed/elastic/multiprocessing/api.py:1002] failed (exitcode: 1) local_rank: 0 (pid: 219410) of binary: /home/shein/miniconda3/envs/dataflow/bin/python
+Traceback (most recent call last):
+  File "/home/shein/miniconda3/envs/dataflow/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/run.py", line 1028, in main
+    run(args)
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/run.py", line 1019, in run
+    elastic_launch(
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 194, in __call__
+    return launch_agent(
+           ^^^^^^^^^^^^^
+  File "/home/shein/miniconda3/envs/dataflow/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 383, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/shein/Documents/mlops/benchmarks/adamw_scaling/benchmark.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-08-04_20:12:04
+  host      : tubingen.sunshein.net
+  rank      : 1 (local_rank: 0)
+  exitcode  : 1 (pid: 219410) 
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+ERROR conda.cli.main_run:execute(124): `conda run torchrun --nnodes=2 --nproc-per-node=1 --node-rank=1 --master-addr=192.168.50.23 --master-port=29651 /home/shein/Documents/mlops/benchmarks/adamw_scaling/benchmark.py --backend gloo --opt-state-strategy sharded --parameter-count 2147483648 --parameter-layout single --bucket-bytes 67108864 --warmup-steps 3 --repetitions 10 --no-overlap --output /tmp/mlops-gloo_sharded_2p31.json` failed. (See above for error)

@@ -1,0 +1,35 @@
+{
+  "completion": "host_wait",
+  "cuda": "13.0",
+  "elements": 1048576,
+  "operation": "reduce_scatter",
+  "rank_reports": [
+    {
+      "block_current_stream": "not tested; pure host wait",
+      "collective_completed": true,
+      "completion": "host_wait",
+      "device": "NVIDIA GeForce RTX 5090",
+      "dtype": "torch.bfloat16",
+      "hostname": "chicago.sunshein.net",
+      "operation": "reduce_scatter",
+      "output_mean": 3.0,
+      "rank": 0,
+      "work_type": "<class 'torch.distributed.distributed_c10d.Work'>"
+    },
+    {
+      "block_current_stream": "not tested; pure host wait",
+      "collective_completed": true,
+      "completion": "host_wait",
+      "device": "NVIDIA GeForce RTX 3090",
+      "dtype": "torch.bfloat16",
+      "hostname": "tubingen",
+      "operation": "reduce_scatter",
+      "output_mean": 3.0,
+      "rank": 1,
+      "work_type": "<class 'torch.distributed.distributed_c10d.Work'>"
+    }
+  ],
+  "schema_version": "mlops.gloo_collective_probe.v1",
+  "torch": "2.13.0+cu130",
+  "world_size": 2
+}

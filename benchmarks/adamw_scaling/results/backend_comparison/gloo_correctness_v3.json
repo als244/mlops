@@ -1,0 +1,346 @@
+{
+  "backend": "gloo",
+  "cases": [
+    {
+      "duration_s": 0.6798964063636959,
+      "execution_manifest": {
+        "buckets": [
+          {
+            "bucket_id": 0,
+            "group_index": 0,
+            "optimizer_state_bytes": 49160,
+            "parameter_bytes": 8192,
+            "parameter_shard_bytes": 0,
+            "workspace_bytes": 24576
+          },
+          {
+            "bucket_id": 1,
+            "group_index": 0,
+            "optimizer_state_bytes": 44,
+            "parameter_bytes": 6,
+            "parameter_shard_bytes": 0,
+            "workspace_bytes": 18
+          },
+          {
+            "bucket_id": 2,
+            "group_index": 1,
+            "optimizer_state_bytes": 8220,
+            "parameter_bytes": 8212,
+            "parameter_shard_bytes": 0,
+            "workspace_bytes": 12318
+          }
+        ],
+        "spec": {
+          "bucket_bytes": 16384,
+          "collective_backend": "gloo",
+          "completion_mode": "host_wait",
+          "gradient_reduction": "mean",
+          "local_implementation_id": "builtin.adamw.triton",
+          "manifest_sha256": "bf6a0815d2ad8df77b774a11b3859dd7737d76e929c4e30b40acfcf2079d3e5d",
+          "opt_state_strategy": "replicated",
+          "rank": 0,
+          "schema_version": "mlops.distributed_adamw.v3",
+          "world_size": 2
+        },
+        "workspace_bytes": 24576
+      },
+      "opt_state_strategy": "replicated",
+      "parameter_metrics": [
+        {
+          "cosine": 0.9999999403953552,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      ],
+      "reduction": "mean",
+      "state_metrics": {
+        "exp_avg": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "exp_avg_sq": {
+          "cosine": 1.0000001192092896,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "master_parameter": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      },
+      "steps": 100
+    },
+    {
+      "duration_s": 0.32078324304893613,
+      "execution_manifest": {
+        "buckets": [
+          {
+            "bucket_id": 0,
+            "group_index": 0,
+            "optimizer_state_bytes": 49160,
+            "parameter_bytes": 8192,
+            "parameter_shard_bytes": 0,
+            "workspace_bytes": 24576
+          },
+          {
+            "bucket_id": 1,
+            "group_index": 0,
+            "optimizer_state_bytes": 44,
+            "parameter_bytes": 6,
+            "parameter_shard_bytes": 0,
+            "workspace_bytes": 18
+          },
+          {
+            "bucket_id": 2,
+            "group_index": 1,
+            "optimizer_state_bytes": 8220,
+            "parameter_bytes": 8212,
+            "parameter_shard_bytes": 0,
+            "workspace_bytes": 12318
+          }
+        ],
+        "spec": {
+          "bucket_bytes": 16384,
+          "collective_backend": "gloo",
+          "completion_mode": "host_wait",
+          "gradient_reduction": "sum",
+          "local_implementation_id": "builtin.adamw.triton",
+          "manifest_sha256": "bf6a0815d2ad8df77b774a11b3859dd7737d76e929c4e30b40acfcf2079d3e5d",
+          "opt_state_strategy": "replicated",
+          "rank": 0,
+          "schema_version": "mlops.distributed_adamw.v3",
+          "world_size": 2
+        },
+        "workspace_bytes": 24576
+      },
+      "opt_state_strategy": "replicated",
+      "parameter_metrics": [
+        {
+          "cosine": 0.9999999403953552,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      ],
+      "reduction": "sum",
+      "state_metrics": {
+        "exp_avg": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "exp_avg_sq": {
+          "cosine": 1.0000001192092896,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "master_parameter": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      },
+      "steps": 100
+    },
+    {
+      "duration_s": 0.41814367519691586,
+      "execution_manifest": {
+        "buckets": [
+          {
+            "bucket_id": 0,
+            "group_index": 0,
+            "optimizer_state_bytes": 24584,
+            "parameter_bytes": 8192,
+            "parameter_shard_bytes": 4096,
+            "workspace_bytes": 32768
+          },
+          {
+            "bucket_id": 1,
+            "group_index": 0,
+            "optimizer_state_bytes": 32,
+            "parameter_bytes": 6,
+            "parameter_shard_bytes": 4,
+            "workspace_bytes": 32
+          },
+          {
+            "bucket_id": 2,
+            "group_index": 1,
+            "optimizer_state_bytes": 4116,
+            "parameter_bytes": 8212,
+            "parameter_shard_bytes": 4108,
+            "workspace_bytes": 16432
+          }
+        ],
+        "spec": {
+          "bucket_bytes": 16384,
+          "collective_backend": "gloo",
+          "completion_mode": "host_wait",
+          "gradient_reduction": "mean",
+          "local_implementation_id": "builtin.adamw.triton",
+          "manifest_sha256": "bf6a0815d2ad8df77b774a11b3859dd7737d76e929c4e30b40acfcf2079d3e5d",
+          "opt_state_strategy": "sharded",
+          "rank": 0,
+          "schema_version": "mlops.distributed_adamw.v3",
+          "world_size": 2
+        },
+        "workspace_bytes": 32768
+      },
+      "opt_state_strategy": "sharded",
+      "parameter_metrics": [
+        {
+          "cosine": 0.9999999403953552,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      ],
+      "reduction": "mean",
+      "state_metrics": {
+        "exp_avg": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "exp_avg_sq": {
+          "cosine": 1.0000001192092896,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "master_parameter": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      },
+      "steps": 100
+    },
+    {
+      "duration_s": 0.46652900893241167,
+      "execution_manifest": {
+        "buckets": [
+          {
+            "bucket_id": 0,
+            "group_index": 0,
+            "optimizer_state_bytes": 24584,
+            "parameter_bytes": 8192,
+            "parameter_shard_bytes": 4096,
+            "workspace_bytes": 32768
+          },
+          {
+            "bucket_id": 1,
+            "group_index": 0,
+            "optimizer_state_bytes": 32,
+            "parameter_bytes": 6,
+            "parameter_shard_bytes": 4,
+            "workspace_bytes": 32
+          },
+          {
+            "bucket_id": 2,
+            "group_index": 1,
+            "optimizer_state_bytes": 4116,
+            "parameter_bytes": 8212,
+            "parameter_shard_bytes": 4108,
+            "workspace_bytes": 16432
+          }
+        ],
+        "spec": {
+          "bucket_bytes": 16384,
+          "collective_backend": "gloo",
+          "completion_mode": "host_wait",
+          "gradient_reduction": "sum",
+          "local_implementation_id": "builtin.adamw.triton",
+          "manifest_sha256": "bf6a0815d2ad8df77b774a11b3859dd7737d76e929c4e30b40acfcf2079d3e5d",
+          "opt_state_strategy": "sharded",
+          "rank": 0,
+          "schema_version": "mlops.distributed_adamw.v3",
+          "world_size": 2
+        },
+        "workspace_bytes": 32768
+      },
+      "opt_state_strategy": "sharded",
+      "parameter_metrics": [
+        {
+          "cosine": 0.9999999403953552,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      ],
+      "reduction": "sum",
+      "state_metrics": {
+        "exp_avg": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "exp_avg_sq": {
+          "cosine": 1.0000001192092896,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        },
+        "master_parameter": {
+          "cosine": 1.0,
+          "max_abs": 0.0,
+          "relative_l2": 0.0,
+          "sign_agreement": 1.0
+        }
+      },
+      "steps": 100
+    }
+  ],
+  "cuda": "13.0",
+  "devices": [
+    "NVIDIA GeForce RTX 5090",
+    "NVIDIA GeForce RTX 3090"
+  ],
+  "local_slice": {
+    "local_parameter_elements": 31,
+    "shared_metrics": {
+      "cosine": 0.9999998807907104,
+      "max_abs": 0.0,
+      "relative_l2": 0.0,
+      "sign_agreement": 1.0
+    }
+  },
+  "nccl": null,
+  "torch": "2.13.0+cu130",
+  "world_size": 2
+}
