@@ -15,7 +15,9 @@ Create a complete mlops development environment.  By default the script
 creates .venv with Python 3.12 and automatically selects the installed GPU's
 PyTorch backend.  --python installs into an existing virtual or Conda
 environment instead.  Every optional implementation provider is installed:
-flash-linear-attention, liger-kernel, scattermoe, and tilelang.
+flash-linear-attention, liger-kernel, scattermoe, and tilelang, plus the
+FlashAttention-3 wheel from the PyTorch index, which mlops activates
+automatically on Hopper GPUs.
 EOF
 }
 
@@ -71,19 +73,25 @@ if [[ ! -x "${python_executable}" ]]; then
   exit 1
 fi
 
-echo "[1/3] Installing PyTorch 2.13 with backend '${torch_backend}'"
+echo "[1/4] Installing PyTorch 2.13 with backend '${torch_backend}'"
 "${uv_executable}" pip install \
   --python "${python_executable}" \
   --torch-backend "${torch_backend}" \
   "torch>=2.13,<2.14"
 
-echo "[2/3] Installing mlops with every implementation provider"
+echo "[2/4] Installing mlops with every implementation provider"
 "${uv_executable}" pip install \
   --python "${python_executable}" \
   --torch-backend "${torch_backend}" \
   --editable "${project_root}[providers,dev]"
 
-echo "[3/3] Verifying PyTorch, the accelerator, and the providers"
+echo "[3/4] Installing FlashAttention-3 from the PyTorch wheel index"
+"${uv_executable}" pip install \
+  --python "${python_executable}" \
+  --extra-index-url https://download.pytorch.org/whl/ \
+  flash-attn-3
+
+echo "[4/4] Verifying PyTorch, the accelerator, and the providers"
 "${python_executable}" - <<'PY'
 from importlib import import_module
 from importlib.metadata import version
@@ -111,6 +119,7 @@ for module_name, package_name in (
     ("liger_kernel", "liger-kernel"),
     ("scattermoe", "scattermoe"),
     ("tilelang", "tilelang"),
+    ("flash_attn_interface", "flash-attn-3"),
 ):
     import_module(module_name)
     print(f"{package_name}: {version(package_name)}")
