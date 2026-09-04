@@ -136,6 +136,7 @@ def backward(
     *,
     causal=True,
     softmax_scale=None,
+    deterministic=False,
 ):
     _maybe_activate_fa3(q.device)
     with torch.no_grad():
@@ -152,6 +153,7 @@ def backward(
             True,
             bool(causal),
             softmax_scale,
+            bool(deterministic),
         )
 
 
@@ -165,7 +167,12 @@ def _forward_op(
     lengths: list[int],
     causal: bool,
     softmax_scale: float | None,
+    deterministic: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # ``deterministic`` selects nothing in the forward; it rides this
+    # operation's inputs because a custom autograd operation's saved context
+    # is the only channel that reaches its backward.
+    del deterministic
     # ``lengths`` is the semantic metadata.  Build the provider's compact
     # device offsets inside this opaque operation so FakeTensor capture never
     # mistakes a data-bearing, call-derived tensor for a serializable constant.
@@ -184,8 +191,8 @@ def _forward_op(
 
 
 @_forward_op.register_fake
-def _forward_fake(q, k, v, lengths, causal, softmax_scale):
-    del k, v, causal, softmax_scale
+def _forward_fake(q, k, v, lengths, causal, softmax_scale, deterministic):
+    del k, v, causal, softmax_scale, deterministic
     lse = torch.empty((q.shape[1], q.shape[0]), dtype=torch.float32, device=q.device)
     cu_seqlens = torch.empty(
         (len(lengths) + 1,), dtype=torch.int32, device=q.device
@@ -208,6 +215,7 @@ def _backward_op(
     lengths: list[int],
     causal: bool,
     softmax_scale: float | None,
+    deterministic: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return backward(
         grad_output,
@@ -221,27 +229,29 @@ def _backward_op(
         lengths,
         causal=bool(causal),
         softmax_scale=softmax_scale,
+        deterministic=bool(deterministic),
     )
 
 
 @_backward_op.register_fake
 def _backward_fake(
     grad_output, q, k, v, output, saved_lse, cu_seqlens, max_seqlen,
-    lengths, causal, softmax_scale,
+    lengths, causal, softmax_scale, deterministic,
 ):
     del grad_output, output, saved_lse, cu_seqlens, max_seqlen
-    del lengths, causal, softmax_scale
+    del lengths, causal, softmax_scale, deterministic
     return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
 
 
 def _setup_context(ctx, inputs, output):
-    q, k, v, lengths, causal, softmax_scale = inputs
+    q, k, v, lengths, causal, softmax_scale, deterministic = inputs
     result, saved_lse, cu_seqlens = output
     ctx.save_for_backward(q, k, v, result, saved_lse, cu_seqlens)
     ctx.max_seqlen = max(int(length) for length in lengths)
     ctx.lengths = list(lengths)
     ctx.causal = bool(causal)
     ctx.softmax_scale = softmax_scale
+    ctx.deterministic = bool(deterministic)
     ctx.mark_non_differentiable(saved_lse, cu_seqlens)
 
 
@@ -259,14 +269,15 @@ def _autograd_backward(ctx, grad_output, _grad_lse, _grad_cu_seqlens):
         ctx.lengths,
         ctx.causal,
         ctx.softmax_scale,
+        ctx.deterministic,
     )
-    return (*gradients, None, None, None)
+    return (*gradients, None, None, None, None)
 
 
 _forward_op.register_autograd(_autograd_backward, setup_context=_setup_context)
 
 
-def apply(q, k, v, lengths, *, causal=True, softmax_scale=None):
+def apply(q, k, v, lengths, *, causal=True, softmax_scale=None, deterministic=False):
     normalized = tuple(int(length) for length in lengths)
     output, _lse, _cu_seqlens = _forward_op(
         q.contiguous(),
@@ -275,6 +286,7 @@ def apply(q, k, v, lengths, *, causal=True, softmax_scale=None):
         list(normalized),
         bool(causal),
         softmax_scale,
+        bool(deterministic),
     )
     return output
 
