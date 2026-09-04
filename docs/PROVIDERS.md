@@ -65,6 +65,17 @@ in `src/mlops/providers/__init__.py`; optional-package imports must remain lazy.
 `apply` serves ordinary PyTorch model code. `forward`/`backward` serve the
 autograd-independent explicit API. Both surfaces call the same raw math.
 
+`deterministic` describes what the implementation does when nothing is asked
+of it. Some operations also take a determinism *request*: they pass
+`deterministic=` to `apply`, and every implementation of such an operation
+must accept the keyword. An implementation that is ordered already records
+`deterministic=True` and ignores the request; one that can be ordered on
+demand records what its default does and honours the request; one that cannot
+honour it raises rather than returning an unordered result. See
+[`flash_attention`](OPS.md#flash_attention) for the worked case and
+[`deterministic_kernels`](API_REFERENCE.md#dispatch-and-development-apis) for
+the ambient form.
+
 ## Tensor ownership
 
 The registry and provider adapter are stateless: neither may retain an input,
