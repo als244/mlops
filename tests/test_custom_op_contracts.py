@@ -244,7 +244,7 @@ def _flash_attention_args():
     query = _parameter(8, 4, 64)
     key = _parameter(8, 2, 64)
     value = _parameter(8, 2, 64)
-    return query, key, value, [3, 5], True, None
+    return query, key, value, [3, 5], True, None, False
 
 
 def _dsa_args():

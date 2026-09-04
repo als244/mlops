@@ -23,14 +23,16 @@ def _supports(q, k, v, lengths, *, surface, **_kwargs):
     return SupportResult.yes()
 
 
-def apply(q, k, v, lengths):
+def apply(q, k, v, lengths, *, deterministic=False):
     value_width = v.shape[-1]
     if value_width == q.shape[-1]:
-        return flash_apply(q, k, v, lengths)
+        return flash_apply(q, k, v, lengths, deterministic=deterministic)
     padded = torch.cat(
         (v, v.new_zeros(*v.shape[:-1], q.shape[-1] - value_width)), dim=-1
     )
-    return flash_apply(q, k, padded, lengths)[..., :value_width]
+    return flash_apply(q, k, padded, lengths, deterministic=deterministic)[
+        ..., :value_width
+    ]
 
 
 IMPLEMENTATION = register_implementation(

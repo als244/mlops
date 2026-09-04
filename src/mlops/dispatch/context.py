@@ -16,6 +16,9 @@ _OVERRIDES: ContextVar[Mapping[str, str]] = ContextVar(
 _TRACE: ContextVar[dict[str, dict[str, int]] | None] = ContextVar(
     "operation_implementation_trace", default=None
 )
+_DETERMINISTIC: ContextVar[bool] = ContextVar(
+    "operation_deterministic_kernels", default=False
+)
 
 
 @torch.compiler.assume_constant_result
@@ -54,6 +57,30 @@ def use_implementation(operation: str, implementation_id: str):
     """Convenience context manager for one exact implementation override."""
     with use_implementations({operation: implementation_id}) as selected:
         yield selected[str(operation)]
+
+
+@torch.compiler.assume_constant_result
+def deterministic_required() -> bool:
+    """Return whether the caller has asked for run-to-run reproducibility."""
+    return _DETERMINISTIC.get()
+
+
+@contextmanager
+def deterministic_kernels(enabled: bool = True):
+    """Ask every operation for kernels that repeat bit for bit.
+
+    Some kernels reach their answer by an order that varies run to run --
+    an atomic accumulation finishes in whatever order blocks retire -- so
+    two runs of one step from one seed can end in different states.  The
+    ordered variant costs throughput, which is why it is not the default;
+    qualification turns it on to compare a run against a reference or
+    against itself.  Operations that are already ordered ignore this.
+    """
+    token = _DETERMINISTIC.set(bool(enabled))
+    try:
+        yield bool(enabled)
+    finally:
+        _DETERMINISTIC.reset(token)
 
 
 @contextmanager

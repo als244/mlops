@@ -21,7 +21,10 @@ def _supports(q, k, v, lengths, *, surface, **_kwargs):
     return SupportResult.yes()
 
 
-def apply(q, k, v, lengths, *, causal=True, softmax_scale=None):
+def apply(q, k, v, lengths, *, causal=True, softmax_scale=None, deterministic=False):
+    # Dense SDPA per sequence is already order-stable; the registration says
+    # so, and the request needs no kernel change here.
+    del deterministic
     return native_torch_attention(
         q, k, v, lengths, causal=causal, softmax_scale=softmax_scale
     )
