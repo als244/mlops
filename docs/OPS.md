@@ -738,7 +738,11 @@ one seed can end on different gradients. `deterministic=True` accumulates in a
 fixed order instead, at a throughput cost, which is why the default is off.
 `None`, the default, follows whatever `mlops.dispatch.deterministic_kernels`
 is in effect. The request is resolved at call time and baked into any captured
-graph, so a graph traced under it stays deterministic on replay. Requesting it
+graph, so a graph traced under it stays deterministic on replay. It is baked
+as a constant with no guard, which is what keeps the read from breaking a
+`fullgraph` capture, so the converse also holds: a compiled graph cached from
+a run without the request is reused unchanged rather than recompiled under it.
+A caller that compiles across the boundary wants a compile cache per setting. Requesting it
 without the `flash-attn-3` wheel raises `RuntimeError` rather than quietly
 returning unordered gradients; `native_torch.flash_attention` is ordered
 already and ignores the request.
