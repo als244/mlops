@@ -636,6 +636,8 @@ ruff check src/mlops tests
 - [ ] Public mathematical contract is unchanged or deliberately documented.
 - [ ] Semantic call sites contain no provider-specific logic.
 - [ ] Exact IDs, priorities, determinism, and support reasons are explicit.
+- [ ] Implementations of an operation that takes a determinism request accept
+      the `deterministic` keyword, and honour it or raise.
 - [ ] Registry, provider, trace, and estimator state retain no tensors.
 - [ ] Raw functions are stateless and do not silently fall back.
 - [ ] Custom-op schema, fake outputs, and registered autograd agree.
