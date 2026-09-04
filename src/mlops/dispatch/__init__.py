@@ -2,6 +2,8 @@
 
 from .context import (
     capture_dispatch,
+    deterministic_kernels,
+    deterministic_required,
     dispatch_manifest,
     use_implementation,
     use_implementations,
@@ -27,6 +29,8 @@ __all__ = [
     "GradcheckResult",
     "SupportResult",
     "capture_dispatch",
+    "deterministic_kernels",
+    "deterministic_required",
     "dispatch_manifest",
     "explain_implementation",
     "estimate_implementation",

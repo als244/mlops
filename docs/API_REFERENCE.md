@@ -68,6 +68,8 @@ explain_implementation(operation, *args, surface="semantic", **kwargs)
 implementation_pairs(operations)
 use_implementation(operation, implementation_id)
 use_implementations({operation: implementation_id})
+deterministic_kernels(enabled=True)
+deterministic_required()
 capture_dispatch()
 dispatch_manifest(trace)
 estimate_implementation(operation, *args, entrypoint="forward", **kwargs)
@@ -83,6 +85,15 @@ retain invocation tensors in global registry or cache state.
 
 Selection overrides are context-local and exact. Unsupported forced choices
 fail with their support reason; implementations never silently fall back.
+
+`deterministic_kernels` is the same kind of context-local request, but it asks
+for a property rather than an identity: kernels that reach one answer by an
+order that varies run to run take their ordered variant instead, so one step
+from one seed lands on the same state twice. That variant costs throughput, so
+the default is off and qualification turns it on. Operations that are ordered
+already ignore the request, and an operation that cannot honour it raises
+rather than returning an unordered result. `deterministic_required` reports the
+setting, which operations read to resolve a `deterministic=None` argument.
 Cost hints contain scalar metadata only and may be undefined. Gradcheck uses
 normal semantic calls and reports low-precision-only implementations as
 unsupported instead of substituting another backend.

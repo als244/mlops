@@ -8,6 +8,7 @@ import pytest
 import torch
 
 import mlops
+from mlops.dispatch import deterministic_kernels
 from mlops.providers.builtin import flash_attention as builtin_flash_attention
 
 
@@ -51,3 +52,53 @@ def test_builtin_flash_attention_activates_fa3_on_hopper():
     torch.testing.assert_close(
         output.float(), torch.cat(references), rtol=2e-2, atol=2e-2
     )
+
+
+def _attention_gradients(*, deterministic, ambient=False):
+    """Return one step's gradients for a geometry with ragged sequences."""
+    lengths = (13, 19, 32)
+    torch.manual_seed(0)
+    q, k, v = (
+        torch.randn(
+            sum(lengths), 16, 128, device="cuda", dtype=torch.bfloat16
+        ).requires_grad_(True)
+        for _ in range(3)
+    )
+    grad_output = torch.randn_like(q)
+
+    def once():
+        for tensor in (q, k, v):
+            tensor.grad = None
+        if ambient:
+            with deterministic_kernels():
+                output = mlops.flash_attention(q, k, v, lengths, causal=True)
+        else:
+            output = mlops.flash_attention(
+                q, k, v, lengths, causal=True, deterministic=deterministic
+            )
+        output.backward(grad_output)
+        return tuple(tensor.grad.detach().clone() for tensor in (q, k, v))
+
+    return once(), once()
+
+
+@pytest.mark.skipif(_UNAVAILABLE is not None, reason=_UNAVAILABLE or "available")
+def test_deterministic_flash_attention_backward_repeats_bitwise():
+    first, second = _attention_gradients(deterministic=True)
+    for left, right in zip(first, second):
+        assert torch.equal(left, right)
+
+
+@pytest.mark.skipif(_UNAVAILABLE is not None, reason=_UNAVAILABLE or "available")
+def test_deterministic_kernels_reaches_flash_attention():
+    first, second = _attention_gradients(deterministic=None, ambient=True)
+    for left, right in zip(first, second):
+        assert torch.equal(left, right)
+
+
+@pytest.mark.skipif(_UNAVAILABLE is not None, reason=_UNAVAILABLE or "available")
+def test_deterministic_flash_attention_agrees_with_the_default():
+    ordered, _ = _attention_gradients(deterministic=True)
+    default, _ = _attention_gradients(deterministic=False)
+    for left, right in zip(ordered, default):
+        torch.testing.assert_close(left.float(), right.float(), rtol=2e-2, atol=2e-2)

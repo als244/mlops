@@ -143,6 +143,59 @@ def flash_attention_forward(
     )
 
 
+def _deterministic_flash_backward(
+    grad_output: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    output: torch.Tensor,
+    lse: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
+    causal: bool,
+    softmax_scale: float | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Accumulate dQ in a fixed order instead of with atomics.
+
+    The aten primitive exposes no determinism control, and under FA3 its
+    variable-length backward accumulates dQ across key blocks with atomics,
+    so the sum order follows block completion and a rerun of one step can
+    give different gradients.  FlashAttention-3's own entry point takes the
+    flag that selects deterministic accumulation, and it accepts exactly the
+    saved forward state the aten call is given, so no forward is recomputed.
+    """
+    try:
+        import flash_attn_interface
+    except ImportError as error:  # pragma: no cover - depends on the install
+        raise RuntimeError(
+            "deterministic variable-length flash attention needs "
+            "flash_attn_interface (FlashAttention-3); install it or run "
+            "without the determinism request"
+        ) from error
+    dq, dk, dv = (torch.empty_like(tensor) for tensor in (q, k, v))
+    flash_attn_interface._flash_attn_backward(
+        grad_output.contiguous(),
+        q,
+        k,
+        v,
+        output,
+        lse.contiguous(),
+        cu_seqlens,
+        cu_seqlens,
+        None,  # seqused_q: every query row in the range is present
+        None,  # seqused_k
+        max_seqlen,
+        max_seqlen,
+        dq,
+        dk,
+        dv,
+        softmax_scale,
+        causal,
+        deterministic=True,
+    )
+    return dq, dk, dv
+
+
 def flash_attention_backward(
     grad_output: torch.Tensor,
     q: torch.Tensor,
@@ -156,10 +209,24 @@ def flash_attention_backward(
     used_native: bool,
     causal: bool = True,
     softmax_scale: float | None = None,
+    deterministic: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if used_native:
         if lse is None:  # pragma: no cover - guards an internal contract
             raise RuntimeError("native flash attention backward requires LSE")
+        if deterministic:
+            return _deterministic_flash_backward(
+                grad_output,
+                q,
+                k,
+                v,
+                output,
+                lse,
+                cu_seqlens,
+                int(max_seqlen),
+                bool(causal),
+                softmax_scale,
+            )
         philox = torch.zeros(2, dtype=torch.uint64, device=q.device)
         return torch.ops.aten._flash_attention_backward(
             grad_output.contiguous(),

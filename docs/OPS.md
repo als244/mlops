@@ -698,6 +698,7 @@ flash_attention(
     *,
     causal: bool = True,
     softmax_scale: float | None = None,
+    deterministic: bool | None = None,
 ) -> Tensor
 ```
 
@@ -716,6 +717,7 @@ tensors.
 | `lengths` | `Sequence[int]` | positive packed lengths summing to `T` |
 | `causal` | `bool` | whether future keys are masked |
 | `softmax_scale` | `Optional[float]` | explicit logit scale; `None` uses the backend default |
+| `deterministic` | `Optional[bool]` | whether the backward accumulates in a fixed order; `None` follows `deterministic_kernels` |
 
 **Returns**
 
@@ -729,6 +731,17 @@ The semantic boundary derives compact device offsets from `lengths` inside the
 opaque forward and exposes them only as a private autograd residual; it retains
 no tensor state. Backward returns gradients for Q/K/V. Inputs are made
 contiguous when needed; caller tensors are not modified.
+
+Under FA3 the variable-length backward accumulates dQ across key blocks with
+atomics, so its sum order follows block completion and one step run twice from
+one seed can end on different gradients. `deterministic=True` accumulates in a
+fixed order instead, at a throughput cost, which is why the default is off.
+`None`, the default, follows whatever `mlops.dispatch.deterministic_kernels`
+is in effect. The request is resolved at call time and baked into any captured
+graph, so a graph traced under it stays deterministic on replay. Requesting it
+without the `flash-attn-3` wheel raises `RuntimeError` rather than quietly
+returning unordered gradients; `native_torch.flash_attention` is ordered
+already and ignores the request.
 
 **Constraints and exceptions**
 
@@ -771,6 +784,8 @@ mla_attention(
     k: Tensor,
     v: Tensor,
     lengths: Sequence[int],
+    *,
+    deterministic: bool | None = None,
 ) -> Tensor
 ```
 
@@ -788,6 +803,7 @@ surrounding `MLAProjections` block.
 | `k` | `Tensor[T,Hq,Dqk]` | assembled MLA keys |
 | `v` | `Tensor[T,Hq,Dv]` | values |
 | `lengths` | `Sequence[int]` | packed boundaries |
+| `deterministic` | `Optional[bool]` | forwarded to `flash_attention`, which this operation launches |
 
 **Returns**
 
