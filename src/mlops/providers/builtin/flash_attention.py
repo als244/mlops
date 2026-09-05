@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import lru_cache
-from importlib.util import find_spec
 
 import torch
 
@@ -15,35 +14,47 @@ from ...kernels.flash_attention import (
     native_flash_attention_supported,
 )
 
-_FA3_ATTEMPTED = False
-_FA3_ACTIVE = False
 
-
-def _maybe_activate_fa3(device: torch.device) -> bool:
-    """Route the aten flash primitive to FlashAttention-3 where it exists.
+@lru_cache(maxsize=1)
+def _flash_attention_3_activated(capability_major: int) -> bool:
+    """Whether the aten flash primitive now routes to FlashAttention-3.
 
     PyTorch's FA3 registration replaces the CUDA implementations of the same
     aten operations this provider calls, so activation changes the kernels
-    without changing this implementation's identity or contract. The attempt
-    happens on the first CUDA call rather than at import: probing the device
-    capability initializes CUDA, and importing mlops must never do that.
+    without changing this implementation's identity or contract.
+
+    FA3 is a Hopper kernel shipped as a compiled extension, which makes
+    "installed" and "loadable" different questions: a wheel built against
+    another CUDA runtime is present on disk and still raises on import. So
+    the import is the test. A negative answer of any kind leaves this
+    provider on PyTorch's own kernels, which is a working configuration
+    rather than a failure.
+
+    The answer is cached rather than recorded in module state, and it is
+    asked on the first CUDA call rather than at import, because reading a
+    device capability initializes CUDA and importing mlops must not.
     """
-    global _FA3_ATTEMPTED, _FA3_ACTIVE
-    if _FA3_ATTEMPTED or device.type != "cuda":
-        return _FA3_ACTIVE
-    _FA3_ATTEMPTED = True
-    if find_spec("flash_attn_interface") is None:
-        return False
-    if torch.cuda.get_device_capability(device)[0] != 9:
+
+    if capability_major != 9:
         return False
     try:
+        import flash_attn_interface  # noqa: F401
         from torch.nn.attention import activate_flash_attention_impl
-
-        activate_flash_attention_impl("FA3")
-    except Exception:
+    except ImportError:
         return False
-    _FA3_ACTIVE = True
+    try:
+        activate_flash_attention_impl("FA3")
+    except (RuntimeError, ValueError):
+        return False
     return True
+
+
+def _maybe_activate_fa3(device: torch.device) -> bool:
+    """Activate FA3 once for this process, if this device can run it."""
+
+    if device.type != "cuda":
+        return False
+    return _flash_attention_3_activated(torch.cuda.get_device_capability(device)[0])
 
 
 def _supports(q, k, v, lengths, *, surface, causal=True, softmax_scale=None, **_kwargs):
@@ -99,7 +110,9 @@ def _metadata(q, lengths: Sequence[int]):
     )
 
 
-def forward(q, k, v, cu_seqlens, max_seqlen, lengths, *, causal=True, softmax_scale=None):
+def forward(
+    q, k, v, cu_seqlens, max_seqlen, lengths, *, causal=True, softmax_scale=None
+):
     # Execution-only processes replay compiled artifacts without ever
     # resolving an implementation, so the activation attempt must also sit on
     # the call path itself, not just in the support gate.
@@ -117,7 +130,9 @@ def forward(q, k, v, cu_seqlens, max_seqlen, lengths, *, causal=True, softmax_sc
             softmax_scale,
         )
         if not used_native:
-            raise RuntimeError("builtin FlashAttention implementation became unsupported")
+            raise RuntimeError(
+                "builtin FlashAttention implementation became unsupported"
+            )
         if lse is None:
             raise RuntimeError("native FlashAttention did not return log-sum-exp state")
         return output, lse
@@ -157,9 +172,7 @@ def backward(
         )
 
 
-@torch.library.custom_op(
-    "mlops::flash_attention_builtin_aten_fwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::flash_attention_builtin_aten_fwd", mutates_args=())
 def _forward_op(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -194,15 +207,11 @@ def _forward_op(
 def _forward_fake(q, k, v, lengths, causal, softmax_scale, deterministic):
     del k, v, causal, softmax_scale, deterministic
     lse = torch.empty((q.shape[1], q.shape[0]), dtype=torch.float32, device=q.device)
-    cu_seqlens = torch.empty(
-        (len(lengths) + 1,), dtype=torch.int32, device=q.device
-    )
+    cu_seqlens = torch.empty((len(lengths) + 1,), dtype=torch.int32, device=q.device)
     return torch.empty_like(q), lse, cu_seqlens
 
 
-@torch.library.custom_op(
-    "mlops::flash_attention_builtin_aten_bwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::flash_attention_builtin_aten_bwd", mutates_args=())
 def _backward_op(
     grad_output: torch.Tensor,
     q: torch.Tensor,
@@ -235,8 +244,18 @@ def _backward_op(
 
 @_backward_op.register_fake
 def _backward_fake(
-    grad_output, q, k, v, output, saved_lse, cu_seqlens, max_seqlen,
-    lengths, causal, softmax_scale, deterministic,
+    grad_output,
+    q,
+    k,
+    v,
+    output,
+    saved_lse,
+    cu_seqlens,
+    max_seqlen,
+    lengths,
+    causal,
+    softmax_scale,
+    deterministic,
 ):
     del grad_output, output, saved_lse, cu_seqlens, max_seqlen
     del lengths, causal, softmax_scale, deterministic
@@ -293,8 +312,15 @@ def apply(q, k, v, lengths, *, causal=True, softmax_scale=None, deterministic=Fa
 
 IMPLEMENTATION = register_implementation(
     Implementation(
-        "flash_attention", "builtin.flash_attention.aten", "builtin", 100, False,
-        _supports, apply, forward, backward,
+        "flash_attention",
+        "builtin.flash_attention.aten",
+        "builtin",
+        100,
+        False,
+        _supports,
+        apply,
+        forward,
+        backward,
     )
 )
 
