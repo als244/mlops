@@ -85,11 +85,26 @@ echo "[2/4] Installing mlops with every implementation provider"
   --torch-backend "${torch_backend}" \
   --editable "${project_root}[providers,dev]"
 
-echo "[3/4] Installing FlashAttention-3 from the PyTorch wheel index"
-"${uv_executable}" pip install \
-  --python "${python_executable}" \
-  --extra-index-url https://download.pytorch.org/whl/ \
-  flash-attn-3
+echo "[3/4] Installing FlashAttention-3 for this CUDA runtime"
+# FA3 is published only on the PyTorch index -- the PyPI release is empty and
+# yanked -- and that index serves one build per CUDA runtime under the same
+# file name. The root index is the CUDA 12 build, which fails to load beside a
+# CUDA 13 torch, so ask torch which runtime it was built for and take the
+# matching variant.
+cuda_index="$("${python_executable}" -c '
+import torch
+
+version = torch.version.cuda
+print("cu" + version.replace(".", "") if version else "cpu")
+')"
+if [[ "${cuda_index}" == "cpu" ]]; then
+  echo "  skipped: FlashAttention-3 needs a CUDA build of PyTorch"
+else
+  "${uv_executable}" pip install \
+    --python "${python_executable}" \
+    --extra-index-url "https://download.pytorch.org/whl/${cuda_index}" \
+    flash-attn-3
+fi
 
 echo "[4/4] Verifying PyTorch, the accelerator, and the providers"
 "${python_executable}" - <<'PY'
@@ -119,10 +134,20 @@ for module_name, package_name in (
     ("liger_kernel", "liger-kernel"),
     ("scattermoe", "scattermoe"),
     ("tilelang", "tilelang"),
-    ("flash_attn_interface", "flash-attn-3"),
 ):
     import_module(module_name)
     print(f"{package_name}: {version(package_name)}")
+
+# FlashAttention-3 is optional and hardware-specific. mlops asks for it only
+# on a device that can run it, so a machine without it is installed
+# correctly; saying so beats failing an install over an accelerator nothing
+# on this host would dispatch to.
+try:
+    import_module("flash_attn_interface")
+except ImportError as error:
+    print(f"flash-attn-3: unavailable ({error})")
+else:
+    print(f"flash-attn-3: {version('flash-attn-3')}")
 PY
 
 echo "mlops setup is complete."
