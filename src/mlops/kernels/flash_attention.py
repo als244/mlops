@@ -196,6 +196,19 @@ def _deterministic_flash_backward(
     return dq, dk, dv
 
 
+def _deterministic_backward_available(device: torch.device) -> bool:
+    """Whether this device can run FlashAttention-3's deterministic backward.
+
+    FA3 ships Hopper kernels, so launching one anywhere else fails inside
+    CUDA with "no kernel image is available for execution on the device",
+    which says nothing about what was requested. Deciding here keeps the
+    aten backward, which every supported device can run, as what a
+    deterministic request falls back to.
+    """
+
+    return device.type == "cuda" and torch.cuda.get_device_capability(device)[0] == 9
+
+
 def flash_attention_backward(
     grad_output: torch.Tensor,
     q: torch.Tensor,
@@ -214,7 +227,7 @@ def flash_attention_backward(
     if used_native:
         if lse is None:  # pragma: no cover - guards an internal contract
             raise RuntimeError("native flash attention backward requires LSE")
-        if deterministic:
+        if deterministic and _deterministic_backward_available(q.device):
             return _deterministic_flash_backward(
                 grad_output,
                 q,
