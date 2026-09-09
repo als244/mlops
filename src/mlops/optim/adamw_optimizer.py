@@ -10,6 +10,7 @@ import torch
 from ..providers.builtin.adamw import adamw_, master_adamw_
 from ._adamw_common import (
     DTypePolicy,
+    hold_settings_on_host,
     normalize_dtype_policy,
     resolve_dtype,
     validate_adamw_options,
@@ -81,6 +82,7 @@ class AdamW(torch.optim.Optimizer):
             raise ValueError("bucket_bytes must be one positive integer")
         super().__init__(params, defaults)
         for group in self.param_groups:
+            hold_settings_on_host(group)
             validate_adamw_options(group)
 
         self.replica_group = replica_group
@@ -118,8 +120,12 @@ class AdamW(torch.optim.Optimizer):
 
     @torch.no_grad()
     def _local_step(self) -> None:
+        # Options are validated where they are set, not on every step. A
+        # setting held in a tensor is a value the step reads, so comparing it
+        # here would be a data-dependent branch inside the update -- which
+        # anything capturing the step cannot resolve, and which turns a graph
+        # it could have partitioned into one opaque task.
         for group in self.param_groups:
-            validate_adamw_options(group)
             for parameter in group["params"]:
                 if not parameter.requires_grad:
                     continue
@@ -140,10 +146,10 @@ class AdamW(torch.optim.Optimizer):
                 if not state:
                     self._initialize_parameter_state(parameter, group, state)
                 common = {
-                    "lr": float(group["lr"]),
-                    "betas": tuple(float(value) for value in group["betas"]),
-                    "eps": float(group["eps"]),
-                    "weight_decay": float(group["weight_decay"]),
+                    "lr": group["lr"],
+                    "betas": tuple(group["betas"]),
+                    "eps": group["eps"],
+                    "weight_decay": group["weight_decay"],
                     "maximize": bool(group["maximize"]),
                 }
                 master = state.get("master_parameter")

@@ -23,6 +23,10 @@ optimizer = mlops.optim.AdamW(
 )
 ```
 
+These settings are held in host scalars, so a schedule writes into them rather
+than rebuilding the optimizer -- see
+[Settings a step can change](docs/OPTIMIZERS.md#settings-a-step-can-change).
+
 Supplying no group is local. Supplying a group defaults to sharded optimizer
 state:
 

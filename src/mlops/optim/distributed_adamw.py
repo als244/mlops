@@ -574,10 +574,10 @@ class DistributedAdamWRuntime:
                 if self.optimizer.gradient_reduction == "mean"
                 else 1.0
             ),
-            "lr": float(group["lr"]),
-            "betas": tuple(float(value) for value in group["betas"]),
-            "eps": float(group["eps"]),
-            "weight_decay": float(group["weight_decay"]),
+            "lr": group["lr"],
+            "betas": tuple(group["betas"]),
+            "eps": group["eps"],
+            "weight_decay": group["weight_decay"],
             "maximize": bool(group["maximize"]),
         }
         if bucket.master_parameter is None:
