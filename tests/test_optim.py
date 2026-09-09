@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import pytest
-import torch
 import inspect
 
+import pytest
+import torch
+
 from mlops.dispatch import implementation_registry
+from mlops.kernels.adamw import adamw_out_internal_fp32_raw
 from mlops.optim import (
     AdamW,
     adamw,
@@ -24,8 +26,6 @@ from mlops.providers.builtin.adamw import (
     _master_out_op,
     _out_op,
 )
-from mlops.kernels.adamw import adamw_out_internal_fp32_raw
-
 
 pytestmark = [
     pytest.mark.gpu,
@@ -42,8 +42,28 @@ def _state(elements: int = 4096):
     return parameter, gradient, exp_avg, exp_avg_sq, step
 
 
+def _setting(value):
+    """One setting as the ops take them: a host scalar, read at launch."""
+    return torch.tensor(float(value), dtype=torch.float64)
+
+
 def _scalars():
-    return 1.0, 3e-4, 0.9, 0.95, 1e-8, 0.1, False
+    """The op arguments: gradient_scale, the four settings, maximize.
+
+    The settings cross the op boundary as tensors so that a caller capturing
+    the update gets an input it can write between steps rather than a value
+    folded into the capture. They stay on the host, where reading one costs
+    nothing.
+    """
+    return (
+        1.0,
+        _setting(3e-4),
+        _setting(0.9),
+        _setting(0.95),
+        _setting(1e-8),
+        _setting(0.1),
+        False,
+    )
 
 
 def _reference_first_update(
@@ -738,3 +758,31 @@ def test_adamw_rejects_invalid_options_and_sparse_gradients():
     optimizer = AdamW([parameter])
     with pytest.raises(RuntimeError, match="sparse gradients"):
         optimizer.step()
+
+
+def test_a_setting_held_in_a_tensor_takes_effect_without_rebuilding():
+    """A setting the caller holds is read when the update runs, not when it
+    was traced, which is what lets a schedule exist under a captured step."""
+
+    torch.manual_seed(14902)
+    parameter = torch.nn.Parameter(torch.randn(256, device="cuda"))
+    optimizer = AdamW([parameter], lr=1e-3, betas=(0.9, 0.95), weight_decay=0.0)
+
+    # the optimizer holds its settings on the host, so they can be written
+    rate = optimizer.param_groups[0]["lr"]
+    assert isinstance(rate, torch.Tensor)
+    assert rate.device.type == "cpu" and rate.numel() == 1
+
+    def one_step():
+        parameter.grad = torch.ones_like(parameter)
+        before = parameter.detach().clone()
+        optimizer.step()
+        return (parameter.detach() - before).abs().max().item()
+
+    first = one_step()
+    with torch.no_grad():
+        rate.fill_(1e-4)
+    second = one_step()
+
+    assert first > 0
+    assert second < first / 2

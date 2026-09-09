@@ -26,8 +26,8 @@ AdamW(
     params,
     lr: float | Tensor = 1e-3,
     betas: tuple[float | Tensor, float | Tensor] = (0.9, 0.999),
-    eps: float = 1e-8,
-    weight_decay: float = 0.01,
+    eps: float | Tensor = 1e-8,
+    weight_decay: float | Tensor = 0.01,
     amsgrad: bool = False,
     *,
     maximize: bool = False,
@@ -51,6 +51,41 @@ AdamW(
 `torch.optim.AdamW` meanings. AMSGrad and differentiable updates are not
 supported. `foreach` and `fused` are accepted as source/state-dict metadata;
 choosing this class already selects the mlops implementation.
+
+### Settings a step can change
+
+`lr`, `betas`, `eps` and `weight_decay` are each accepted as a plain number or
+as a scalar tensor, and are held in a host scalar either way -- once, where the
+optimizer is built. A caller who means to change one between steps writes into
+that tensor:
+
+```python
+optimizer = AdamW(parameters, lr=3e-4)
+rate = optimizer.param_groups[0]["lr"]      # a host scalar
+for step in schedule:
+    with torch.no_grad():
+        rate.fill_(step.rate)
+    optimizer.step()
+```
+
+Two things follow, and both matter more under a captured step than an eager
+one. The value is read where the kernel is launched, not where the update was
+traced, so a captured step uses whatever was last written without being traced
+again. And the scalars live on the host, so writing one copies nothing to the
+device and synchronizes nothing -- the update passes the value as a launch
+argument, which costs no kernel recompilation either.
+
+They are held rather than converted per step for a reason worth stating: a
+tensor made *inside* `step` would be made inside anything capturing that step
+too, as an operation every parameter's update depends on. That reads as a
+dependency between parameters that share nothing, and collapses a per-stage
+update into a single task.
+
+For the same reason, options are validated where they are set -- at
+construction, and when a group is added -- rather than on every step: comparing
+a setting held in a tensor is a branch on data a capture cannot resolve.
+
+### dtype policies
 
 The four dtype policies are independent and may be set globally or in an
 individual parameter-group dictionary:
@@ -134,6 +169,11 @@ functional_adamw(
 
 Returns new parameter, first moment, second moment, and step tensors. Inputs
 are immutable. `gradient_scale` is applied in FP32 before the moment update.
+`lr`, `betas`, `eps` and `weight_decay` each take a plain number or a host
+scalar tensor, as described under
+[Settings a step can change](#settings-a-step-can-change); the registered
+operators take them as tensors, so a captured update reads them rather than
+folding them in.
 
 ## `adamw`
 

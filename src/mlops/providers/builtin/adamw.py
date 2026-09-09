@@ -8,7 +8,6 @@ from ...dispatch.costs import CostHints
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.adamw import adamw_master_out_raw, adamw_out_raw
 
-
 _FLOAT_DTYPES = {torch.bfloat16, torch.float16, torch.float32}
 
 
@@ -21,6 +20,10 @@ def _settings(
     weight_decay,
     maximize,
 ):
+    # Read here, where the kernel is launched, rather than where the graph was
+    # traced. Each is a host scalar, so reading one is a host read: nothing is
+    # copied and nothing is synchronized, and a value the caller wrote since
+    # the last step is the value this step uses.
     return {
         "gradient_scale": float(gradient_scale),
         "lr": float(lr),
@@ -39,11 +42,11 @@ def _functional_op(
     exp_avg_sq: torch.Tensor,
     step: torch.Tensor,
     gradient_scale: float,
-    lr: float,
-    beta1: float,
-    beta2: float,
-    eps: float,
-    weight_decay: float,
+    lr: torch.Tensor,
+    beta1: torch.Tensor,
+    beta2: torch.Tensor,
+    eps: torch.Tensor,
+    weight_decay: torch.Tensor,
     maximize: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     outputs = tuple(
@@ -100,11 +103,11 @@ def _out_op(
     exp_avg_sq: torch.Tensor,
     step: torch.Tensor,
     gradient_scale: float,
-    lr: float,
-    beta1: float,
-    beta2: float,
-    eps: float,
-    weight_decay: float,
+    lr: torch.Tensor,
+    beta1: torch.Tensor,
+    beta2: torch.Tensor,
+    eps: torch.Tensor,
+    weight_decay: torch.Tensor,
     maximize: bool,
     out_parameter: torch.Tensor,
     out_exp_avg: torch.Tensor,
@@ -140,11 +143,11 @@ def _in_place_op(
     exp_avg_sq: torch.Tensor,
     step: torch.Tensor,
     gradient_scale: float,
-    lr: float,
-    beta1: float,
-    beta2: float,
-    eps: float,
-    weight_decay: float,
+    lr: torch.Tensor,
+    beta1: torch.Tensor,
+    beta2: torch.Tensor,
+    eps: torch.Tensor,
+    weight_decay: torch.Tensor,
     maximize: bool,
 ) -> None:
     adamw_out_raw(
@@ -174,11 +177,11 @@ def _master_functional_op(
     exp_avg_sq: torch.Tensor,
     step: torch.Tensor,
     gradient_scale: float,
-    lr: float,
-    beta1: float,
-    beta2: float,
-    eps: float,
-    weight_decay: float,
+    lr: torch.Tensor,
+    beta1: torch.Tensor,
+    beta2: torch.Tensor,
+    eps: torch.Tensor,
+    weight_decay: torch.Tensor,
     maximize: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     outputs = tuple(
@@ -245,11 +248,11 @@ def _master_out_op(
     exp_avg_sq: torch.Tensor,
     step: torch.Tensor,
     gradient_scale: float,
-    lr: float,
-    beta1: float,
-    beta2: float,
-    eps: float,
-    weight_decay: float,
+    lr: torch.Tensor,
+    beta1: torch.Tensor,
+    beta2: torch.Tensor,
+    eps: torch.Tensor,
+    weight_decay: torch.Tensor,
     maximize: bool,
     out_parameter: torch.Tensor,
     out_master_parameter: torch.Tensor,
@@ -300,11 +303,11 @@ def _master_in_place_op(
     exp_avg_sq: torch.Tensor,
     step: torch.Tensor,
     gradient_scale: float,
-    lr: float,
-    beta1: float,
-    beta2: float,
-    eps: float,
-    weight_decay: float,
+    lr: torch.Tensor,
+    beta1: torch.Tensor,
+    beta2: torch.Tensor,
+    eps: torch.Tensor,
+    weight_decay: torch.Tensor,
     maximize: bool,
 ) -> None:
     adamw_master_out_raw(
@@ -329,19 +332,24 @@ def _master_in_place_fake(*args, **kwargs):
 def _scalar_arguments(
     *,
     gradient_scale: float,
-    lr: float,
-    betas: tuple[float, float],
-    eps: float,
-    weight_decay: float,
+    lr: float | torch.Tensor,
+    betas: tuple[float | torch.Tensor, float | torch.Tensor],
+    eps: float | torch.Tensor,
+    weight_decay: float | torch.Tensor,
     maximize: bool,
 ) -> tuple[float, float, float, float, float, float, bool]:
+    def held(value: float | torch.Tensor) -> torch.Tensor:
+        if isinstance(value, torch.Tensor):
+            return value
+        return torch.tensor(float(value), dtype=torch.float64)
+
     return (
         float(gradient_scale),
-        float(lr),
-        float(betas[0]),
-        float(betas[1]),
-        float(eps),
-        float(weight_decay),
+        held(lr),
+        held(betas[0]),
+        held(betas[1]),
+        held(eps),
+        held(weight_decay),
         bool(maximize),
     )
 
@@ -354,10 +362,10 @@ def functional_adamw(
     step: torch.Tensor,
     *,
     gradient_scale: float = 1.0,
-    lr: float,
-    betas: tuple[float, float],
-    eps: float,
-    weight_decay: float,
+    lr: float | torch.Tensor,
+    betas: tuple[float | torch.Tensor, float | torch.Tensor],
+    eps: float | torch.Tensor,
+    weight_decay: float | torch.Tensor,
     maximize: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a new mixed-dtype AdamW state version."""
@@ -386,10 +394,10 @@ def adamw(
     step: torch.Tensor,
     *,
     gradient_scale: float = 1.0,
-    lr: float,
-    betas: tuple[float, float],
-    eps: float,
-    weight_decay: float,
+    lr: float | torch.Tensor,
+    betas: tuple[float | torch.Tensor, float | torch.Tensor],
+    eps: float | torch.Tensor,
+    weight_decay: float | torch.Tensor,
     maximize: bool = False,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -425,10 +433,10 @@ def adamw_(
     step: torch.Tensor,
     *,
     gradient_scale: float = 1.0,
-    lr: float,
-    betas: tuple[float, float],
-    eps: float,
-    weight_decay: float,
+    lr: float | torch.Tensor,
+    betas: tuple[float | torch.Tensor, float | torch.Tensor],
+    eps: float | torch.Tensor,
+    weight_decay: float | torch.Tensor,
     maximize: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update a parameter-as-master and its optimizer state in place."""
@@ -459,10 +467,10 @@ def functional_master_adamw(
     step: torch.Tensor,
     *,
     gradient_scale: float = 1.0,
-    lr: float,
-    betas: tuple[float, float],
-    eps: float,
-    weight_decay: float,
+    lr: float | torch.Tensor,
+    betas: tuple[float | torch.Tensor, float | torch.Tensor],
+    eps: float | torch.Tensor,
+    weight_decay: float | torch.Tensor,
     maximize: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a new model/master/moment/step state version."""
@@ -493,10 +501,10 @@ def master_adamw(
     step: torch.Tensor,
     *,
     gradient_scale: float = 1.0,
-    lr: float,
-    betas: tuple[float, float],
-    eps: float,
-    weight_decay: float,
+    lr: float | torch.Tensor,
+    betas: tuple[float | torch.Tensor, float | torch.Tensor],
+    eps: float | torch.Tensor,
+    weight_decay: float | torch.Tensor,
     maximize: bool = False,
     out: tuple[
         torch.Tensor,
@@ -546,10 +554,10 @@ def master_adamw_(
     step: torch.Tensor,
     *,
     gradient_scale: float = 1.0,
-    lr: float,
-    betas: tuple[float, float],
-    eps: float,
-    weight_decay: float,
+    lr: float | torch.Tensor,
+    betas: tuple[float | torch.Tensor, float | torch.Tensor],
+    eps: float | torch.Tensor,
+    weight_decay: float | torch.Tensor,
     maximize: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update distinct model/master state in place."""
@@ -660,9 +668,9 @@ IMPLEMENTATION = register_implementation(
 
 __all__ = [
     "IMPLEMENTATION",
-    "functional_adamw",
     "adamw",
     "adamw_",
+    "functional_adamw",
     "functional_master_adamw",
     "master_adamw",
     "master_adamw_",
