@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch.context import weight_gradient_dtype
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.layer_norm import layer_norm_backward, layer_norm_forward
 
@@ -26,10 +27,12 @@ def forward(x, weight, bias=None, eps=1e-5):
     return layer_norm_forward(x, weight, bias, float(eps))
 
 
-def backward(grad_output, x, weight, mean, rstd):
-    return layer_norm_backward(grad_output, x, weight, mean, rstd)
+def backward(grad_output, x, weight, mean, rstd, weight_grad_dtype=None):
+    return layer_norm_backward(grad_output, x, weight, mean, rstd, weight_grad_dtype)
 
 
+# The forward takes the weight-gradient dtype too, so a captured forward
+# records the one its backward will use.
 @torch.library.custom_op(
     "mlops::layer_norm_builtin_triton_fwd",
     mutates_args=(),
@@ -39,13 +42,15 @@ def _forward_op(
     weight: torch.Tensor,
     bias: torch.Tensor | None,
     eps: float,
+    weight_grad_dtype: torch.dtype | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    del weight_grad_dtype
     return forward(x, weight, bias, float(eps))
 
 
 @_forward_op.register_fake
-def _forward_fake(x, weight, bias, eps):
-    del weight, bias, eps
+def _forward_fake(x, weight, bias, eps, weight_grad_dtype):
+    del weight, bias, eps, weight_grad_dtype
     rows = x.numel() // x.shape[-1]
     statistics = torch.empty(rows, dtype=torch.float32, device=x.device)
     return torch.empty_like(x), statistics, torch.empty_like(statistics)
@@ -61,37 +66,45 @@ def _backward_op(
     weight: torch.Tensor,
     mean: torch.Tensor,
     rstd: torch.Tensor,
+    weight_grad_dtype: torch.dtype | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return backward(grad_output, x, weight, mean, rstd)
+    return backward(grad_output, x, weight, mean, rstd, weight_grad_dtype)
 
 
 @_backward_op.register_fake
-def _backward_fake(grad_output, x, weight, mean, rstd):
+def _backward_fake(grad_output, x, weight, mean, rstd, weight_grad_dtype):
     del grad_output, mean, rstd
-    return torch.empty_like(x), torch.empty_like(weight), torch.empty_like(weight)
+    return (
+        torch.empty_like(x),
+        torch.empty_like(weight, dtype=weight_grad_dtype),
+        torch.empty_like(weight, dtype=weight_grad_dtype),
+    )
 
 
 def _setup_context(ctx, inputs, output):
-    x, weight, bias, _eps = inputs
+    x, weight, bias, _eps, weight_grad_dtype = inputs
     _normalized, mean, rstd = output
     ctx.save_for_backward(x, weight, mean, rstd)
     ctx.has_bias = bias is not None
+    ctx.weight_grad_dtype = weight_grad_dtype
     ctx.mark_non_differentiable(mean, rstd)
 
 
 def _autograd_backward(ctx, grad_output, _grad_mean, _grad_rstd):
     x, weight, mean, rstd = ctx.saved_tensors
     grad_x, grad_weight, grad_bias = _backward_op(
-        grad_output, x, weight, mean, rstd
+        grad_output, x, weight, mean, rstd, ctx.weight_grad_dtype
     )
-    return grad_x, grad_weight, grad_bias if ctx.has_bias else None, None
+    return grad_x, grad_weight, grad_bias if ctx.has_bias else None, None, None
 
 
 _forward_op.register_autograd(_autograd_backward, setup_context=_setup_context)
 
 
 def apply(x, weight, bias=None, eps=1e-5):
-    output, _mean, _rstd = _forward_op(x, weight, bias, float(eps))
+    output, _mean, _rstd = _forward_op(
+        x, weight, bias, float(eps), weight_gradient_dtype()
+    )
     return output
 
 

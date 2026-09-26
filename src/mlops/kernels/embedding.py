@@ -65,13 +65,15 @@ def embedding_backward(
     tokens: torch.Tensor,
     grad_output: torch.Tensor,
     num_embeddings: int,
+    grad_weight_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
-    """Produce a deterministic dense embedding-table gradient."""
+    """Produce a deterministic dense embedding-table gradient, summed at fp32
+    and returned at ``grad_weight_dtype`` -- ``grad_output``'s when ``None``."""
     flat_tokens = tokens.reshape(-1)
     flat_grad = grad_output.reshape(flat_tokens.numel(), -1).contiguous()
     grad_weight = torch.zeros(
         (int(num_embeddings), flat_grad.shape[1]),
-        dtype=grad_output.dtype,
+        dtype=grad_output.dtype if grad_weight_dtype is None else grad_weight_dtype,
         device=grad_output.device,
     )
     if triton is not None and grad_output.is_cuda:
@@ -100,4 +102,4 @@ def embedding_backward(
         grad_weight.shape, dtype=torch.float32, device=grad_output.device
     )
     accumulator.index_add_(0, flat_tokens.long(), flat_grad.float())
-    return accumulator.to(grad_output.dtype)
+    return accumulator.to(grad_weight.dtype)

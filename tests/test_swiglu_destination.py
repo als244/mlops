@@ -64,7 +64,8 @@ def test_packed_backward_destination_rejects_layout_mismatch():
 
 
 @pytest.mark.gpu
-def test_planning_moe_vjp_donates_only_the_declared_activation():
+@pytest.mark.parametrize("weight_grad_dtype", [None, torch.float32])
+def test_planning_moe_vjp_donates_only_the_declared_activation(weight_grad_dtype):
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
     torch.manual_seed(19)
@@ -99,6 +100,7 @@ def test_planning_moe_vjp_donates_only_the_declared_activation():
         offsets,
         slots,
         top_k=top_k,
+        weight_grad_dtype=weight_grad_dtype,
     )
     donated_h13 = h13.clone()
     actual_tail = _finish_backward_donate_h13_op(
@@ -110,7 +112,9 @@ def test_planning_moe_vjp_donates_only_the_declared_activation():
         offsets,
         slots,
         top_k,
+        weight_grad_dtype,
     )
+    assert actual_tail[0].dtype == (weight_grad_dtype or w2.dtype)
     assert torch.equal(donated_h13, expected[0])
     for actual, reference in zip(actual_tail, expected[1:], strict=True):
         assert torch.equal(actual, reference)

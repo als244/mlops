@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 import torch
 
+from ..kernels.matmul import product_at
 from ..kernels.moe_dispatch import (
     combine,
     dispatch,
@@ -191,6 +192,7 @@ def _backward_with_engine(
     lengths: Sequence[int],
     swiglu_variant: str = "triton",
     expert_engine: str,
+    weight_grad_dtype: torch.dtype | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -198,7 +200,12 @@ def _backward_with_engine(
     torch.Tensor,
     torch.Tensor,
 ]:
-    """Return VJPs for ``h2, residual, router_weight, w13, w2`` in order."""
+    """Return VJPs for ``h2, residual, router_weight, w13, w2`` in order.
+
+    The router's and the builtin engine's expert weights' VJPs are summed at
+    fp32 and returned at ``weight_grad_dtype`` (their own dtypes when
+    ``None``); ScatterMoE's expert kernels return theirs at their own.
+    """
     with torch.no_grad():
         original_shape = h2.shape
         h2_flat = h2.reshape(-1, h2.shape[-1])
@@ -239,6 +246,7 @@ def _backward_with_engine(
                 dispatched_grad,
                 offsets,
                 tuple(w2_experts.shape),
+                weight_grad_dtype,
             )
             scale_rows_(grad_activated, route_scale)
             grad_h13 = swiglu_packed_backward(
@@ -251,6 +259,7 @@ def _backward_with_engine(
                 grad_h13,
                 offsets,
                 tuple(w13_experts.shape),
+                weight_grad_dtype,
             )
             grad_dispatched = grouped_mm_dgrad(grad_h13, w13_experts, offsets)
             grad_h2 = dispatch_backward(grad_dispatched, slots)
@@ -282,7 +291,12 @@ def _backward_with_engine(
             * (grad_sum.unsqueeze(0) - (probabilities @ grad_sum).unsqueeze(1))
         )
         grad_logits_storage = grad_logits.to(logits.dtype)
-        grad_router = h2_flat.to(router_weight.dtype).T @ grad_logits_storage
+        routed = h2_flat.to(router_weight.dtype).T
+        grad_router = (
+            routed @ grad_logits_storage
+            if weight_grad_dtype is None
+            else product_at(routed, grad_logits_storage, weight_grad_dtype)
+        )
         # A custom VJP result must honor the advertised input-view layout, not
         # merely the layout selected by the GEMM implementation. Model code
         # commonly supplies ``nn.Linear.weight.T`` here. Returning a contiguous

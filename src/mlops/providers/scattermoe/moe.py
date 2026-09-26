@@ -6,6 +6,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 import torch
 
+from ...dispatch.context import weight_gradient_dtype
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.moe_router import current_route_weight_precision
 from ..moe_common import _backward_with_engine, _forward_with_engine
@@ -144,6 +145,7 @@ def _forward_op(
     routed_scaling: float,
     lengths: list[int],
     weight_precision: str,
+    weight_grad_dtype: torch.dtype | None,
 ) -> tuple[
     torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
     torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
@@ -170,8 +172,9 @@ def _forward_op(
 def _forward_fake(
     h2, residual, router_weight, w13_experts, w2_experts, router_bias,
     top_k, routing_mode, n_group, topk_group, routed_scaling, lengths,
-    weight_precision,
+    weight_precision, weight_grad_dtype,
 ):
+    del weight_grad_dtype
     del residual, w2_experts, router_bias, routing_mode, n_group, topk_group, routed_scaling, lengths
     rows = h2.numel() // h2.shape[-1]
     experts = router_weight.shape[1]
@@ -216,6 +219,7 @@ def _backward_op(
     top_k: int,
     routing_mode: str,
     lengths: list[int],
+    weight_grad_dtype: torch.dtype | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     return backward(
         grad_output,
@@ -235,6 +239,7 @@ def _backward_op(
         top_k=top_k,
         routing_mode=routing_mode,
         lengths=lengths,
+        weight_grad_dtype=weight_grad_dtype,
         swiglu_implementation="builtin.packed_swiglu.triton",
     )
 
@@ -243,13 +248,13 @@ def _backward_op(
 def _backward_fake(
     grad_output, grad_aux, grad_probability_sum, h2, router_weight,
     w13_experts, w2_experts, logits, route_weights, route_ids, order,
-    offsets, slots, h13, top_k, routing_mode, lengths,
+    offsets, slots, h13, top_k, routing_mode, lengths, weight_grad_dtype,
 ):
     del grad_aux, grad_probability_sum, logits, route_weights, route_ids, order, offsets, slots, h13, top_k, routing_mode, lengths
     return (
         torch.empty_like(h2),
         torch.empty_like(grad_output),
-        torch.empty_like(router_weight),
+        torch.empty_like(router_weight, dtype=weight_grad_dtype),
         torch.empty_like(w13_experts),
         torch.empty_like(w2_experts),
     )
@@ -259,7 +264,7 @@ def _setup_context(ctx, inputs, output):
     (
         h2, _residual, router_weight, w13_experts, w2_experts, _router_bias,
         top_k, routing_mode, _n_group, _topk_group, _routed_scaling, lengths,
-        _weight_precision,
+        _weight_precision, weight_grad_dtype,
     ) = inputs
     (
         _result, _aux, counts, _probability_sum, logits, route_weights,
@@ -272,6 +277,7 @@ def _setup_context(ctx, inputs, output):
     ctx.top_k = int(top_k)
     ctx.routing_mode = routing_mode
     ctx.lengths = list(lengths)
+    ctx.weight_grad_dtype = weight_grad_dtype
     ctx.mark_non_differentiable(
         counts, logits, route_weights, route_ids, order, offsets, slots, h13
     )
@@ -298,8 +304,9 @@ def _autograd_backward(
         ctx.top_k,
         ctx.routing_mode,
         ctx.lengths,
+        ctx.weight_grad_dtype,
     )
-    return (*gradients, None, None, None, None, None, None, None, None)
+    return (*gradients, None, None, None, None, None, None, None, None, None)
 
 
 _forward_op.register_autograd(_autograd_backward, setup_context=_setup_context)
@@ -346,6 +353,7 @@ def apply(
         float(routed_scaling),
         list(normalized_lengths),
         current_route_weight_precision(),
+        weight_gradient_dtype(),
     )
     return outputs[:4]
 

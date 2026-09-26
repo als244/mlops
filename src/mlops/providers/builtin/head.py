@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch.context import weight_gradient_dtype
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.cross_entropy import cross_entropy_fwd_bwd
 from ...kernels.head import default_head_chunk_size
+from ...kernels.matmul import add_product_
 
 
 def _common_support(hidden, head_weight, targets):
@@ -67,8 +69,14 @@ def forward(
     *,
     chunk_size=None,
     valid_rows=None,
+    weight_grad_dtype=None,
 ):
-    """Return loss and seed-one hidden/head VJPs with bounded logits."""
+    """Return loss and seed-one hidden/head VJPs with bounded logits.
+
+    The head's VJP is summed over the chunks at ``weight_grad_dtype``, each
+    chunk's product added as the multiply writes it; ``None`` keeps it at the
+    head's own dtype, adding each chunk's product rounded to it.
+    """
     chunk, normalizer = _policy(hidden, head_weight, chunk_size, valid_rows)
     rows = hidden.numel() // hidden.shape[-1]
     with torch.no_grad():
@@ -76,7 +84,7 @@ def forward(
         targets_1d = targets.reshape(rows)
         loss = torch.zeros((), dtype=torch.float32, device=hidden.device)
         grad_hidden = torch.empty_like(hidden_2d)
-        grad_head = torch.zeros_like(head_weight)
+        grad_head = torch.zeros_like(head_weight, dtype=weight_grad_dtype)
         for start in range(0, rows, chunk):
             stop = min(start + chunk, rows)
             hidden_chunk = hidden_2d[start:stop]
@@ -87,7 +95,10 @@ def forward(
                 total_rows=normalizer,
             )
             loss += partial
-            grad_head.add_((grad_logits.T @ hidden_chunk).to(grad_head.dtype))
+            if weight_grad_dtype is None:
+                grad_head.add_((grad_logits.T @ hidden_chunk).to(grad_head.dtype))
+            else:
+                add_product_(grad_head, grad_logits.T, hidden_chunk)
             grad_hidden[start:stop].copy_(grad_logits @ head_weight)
     return loss, grad_hidden.reshape_as(hidden), grad_head
 
@@ -111,6 +122,7 @@ def _forward_op(
     targets: torch.Tensor,
     chunk_size: int,
     valid_rows: int,
+    weight_grad_dtype: torch.dtype | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     loss, grad_hidden, grad_head = forward(
         hidden,
@@ -118,18 +130,21 @@ def _forward_op(
         targets,
         chunk_size=chunk_size,
         valid_rows=valid_rows,
+        weight_grad_dtype=weight_grad_dtype,
     )
     return loss, grad_hidden.reshape(-1, hidden.shape[-1]), grad_head
 
 
 @_forward_op.register_fake
-def _forward_fake(hidden, head_weight, targets, chunk_size, valid_rows):
+def _forward_fake(
+    hidden, head_weight, targets, chunk_size, valid_rows, weight_grad_dtype
+):
     del targets, chunk_size, valid_rows
     rows = hidden.numel() // hidden.shape[-1]
     return (
         hidden.new_empty((), dtype=torch.float32),
         hidden.new_empty((rows, hidden.shape[-1])),
-        torch.empty_like(head_weight),
+        torch.empty_like(head_weight, dtype=weight_grad_dtype),
     )
 
 
@@ -144,7 +159,7 @@ def _setup_context(ctx, inputs, output):
 def _autograd_backward(ctx, grad_loss, _grad_hidden_output, _grad_head_output):
     grad_hidden, grad_head = ctx.saved_tensors
     grad_hidden, grad_head = backward(grad_loss, grad_hidden, grad_head)
-    return grad_hidden.reshape(ctx.hidden_shape), grad_head, None, None, None
+    return grad_hidden.reshape(ctx.hidden_shape), grad_head, None, None, None, None
 
 
 _forward_op.register_autograd(
@@ -169,6 +184,7 @@ def apply(
         targets,
         chunk,
         normalizer,
+        weight_gradient_dtype(),
     )
     return loss
 

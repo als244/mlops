@@ -223,8 +223,12 @@ def grouped_mm_dgrad(grad, weight, offsets):
     return output
 
 
-def grouped_mm_wgrad(x, grad, offsets, weight_shape):
-    output = torch.empty(weight_shape, dtype=x.dtype, device=x.device)
+def grouped_mm_wgrad(x, grad, offsets, weight_shape, dtype=None):
+    """Each expert's ``x.T @ grad`` over its rows, summed at fp32 and returned
+    at ``dtype`` -- ``x``'s when ``None``."""
+    output = torch.empty(
+        weight_shape, dtype=x.dtype if dtype is None else dtype, device=x.device
+    )
     if triton is not None and x.is_cuda:
         _grouped_wgrad_kernel[
             (
@@ -260,5 +264,5 @@ def grouped_mm_wgrad(x, grad, offsets, weight_shape):
     )
     for expert in range(weight_shape[0]):
         selected = (row_experts == expert).unsqueeze(1).to(x.dtype)
-        output[expert].copy_((x * selected).T @ grad)
+        output[expert].copy_((x * selected).T.to(output.dtype) @ grad.to(output.dtype))
     return output

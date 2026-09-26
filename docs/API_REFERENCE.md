@@ -72,6 +72,9 @@ set_implementations({operation: implementation_id})
 deterministic_kernels(enabled=True)
 set_deterministic_kernels(enabled=True)
 deterministic_required()
+weight_gradients_at(dtype)
+set_weight_gradient_dtype(dtype)
+weight_gradient_dtype()
 capture_dispatch()
 dispatch_manifest(trace)
 estimate_implementation(operation, *args, entrypoint="forward", **kwargs)
@@ -89,8 +92,8 @@ Selection overrides are context-local and exact. Unsupported forced choices
 fail with their support reason; implementations never silently fall back.
 `use_implementations` applies its overrides for one block; `set_implementations`
 applies the same validated overrides for the rest of the calling context, for a
-process that chooses once, and so does `set_deterministic_kernels` for the
-request below.
+process that chooses once, and so do `set_deterministic_kernels` and
+`set_weight_gradient_dtype` for the requests below.
 
 `deterministic_kernels` is the same kind of context-local request, but it asks
 for a property rather than an identity: kernels that reach one answer by an
@@ -100,6 +103,23 @@ the default is off and qualification turns it on. Operations that are ordered
 already ignore the request, and an operation that cannot honour it raises
 rather than returning an unordered result. `deterministic_required` reports the
 setting, which operations read to resolve a `deterministic=None` argument.
+
+`weight_gradients_at` asks operations for the gradients of their weights at a
+dtype -- fp32, say, for a caller that keeps gradients at fp32 over bf16
+weights. An operation that sums a weight's gradient over rows (a norm's weight
+and bias, an embedding table, an expert's or a router's weights) keeps that
+sum at fp32 and rounds it to the weight's dtype as it returns it; asked for
+another dtype it returns the sum at that one, and the chunked head sums its
+chunks at it. The dtype is read when the operation is called and passed to its
+forward and backward operators, so a captured graph keeps the dtype it was
+captured under. `None`, the default, is each weight's own dtype and leaves
+every operation as it was. Weight gradients another library computes and
+rounds -- FLA's causal convolution and gated RMSNorm, Liger's RMSNorm,
+ScatterMoE's experts -- come back as that library returns them. Autograd gives
+a parameter its gradient at the parameter's dtype, so eager training rounds
+the result again there; a caller that keeps gradients itself (ShadowSpill's
+`grad_dtype`) keeps what the operation returned. `weight_gradient_dtype`
+reports the setting.
 Cost hints contain scalar metadata only and may be undefined. Gradcheck uses
 normal semantic calls and reports low-precision-only implementations as
 unsupported instead of substituting another backend.
