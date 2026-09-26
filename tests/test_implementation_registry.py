@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from dataclasses import fields, is_dataclass
 from collections.abc import Mapping
 
@@ -12,6 +13,7 @@ from mlops.dispatch import (
     Implementation,
     SupportResult,
     capture_dispatch,
+    deterministic_required,
     dispatch_manifest,
     estimate_implementation,
     GradcheckCase,
@@ -21,6 +23,8 @@ from mlops.dispatch import (
     implementation_pairs,
     implementation_registry,
     resolve_implementation,
+    set_deterministic_kernels,
+    set_implementations,
     use_implementation,
     use_implementations,
 )
@@ -62,6 +66,39 @@ def test_nested_overrides_restore_and_trace_exact_ids():
     assert dict(dispatch_manifest(trace)) == {
         "rms_norm": "native_torch.rms_norm"
     }
+
+
+def test_a_choice_set_once_holds_until_changed():
+    """set_implementations and set_deterministic_kernels keep what the context
+    managers apply for one block; each runs in a copied context here, so
+    nothing it sets outlives the test."""
+
+    x = torch.randn(2, 8)
+    weight = torch.randn(8)
+
+    def choose() -> None:
+        set_implementations({"rms_norm": "native_torch.rms_norm"})
+        set_deterministic_kernels(True)
+        assert deterministic_required()
+        assert explain_implementation("rms_norm", x, weight).selected == (
+            "native_torch.rms_norm"
+        )
+        with use_implementation("rms_norm", "builtin.rms_norm.triton"):
+            assert explain_implementation("rms_norm", x, weight).forced == (
+                "builtin.rms_norm.triton"
+            )
+        # the block restores the choice made before it
+        assert explain_implementation("rms_norm", x, weight).selected == (
+            "native_torch.rms_norm"
+        )
+        set_deterministic_kernels(False)
+        assert not deterministic_required()
+        with pytest.raises(ValueError, match="unknown implementation"):
+            set_implementations({"rms_norm": "no.such.implementation"})
+
+    contextvars.copy_context().run(choose)
+    assert not deterministic_required()
+    assert explain_implementation("rms_norm", x, weight).forced is None
 
 
 def test_forced_unsupported_and_unknown_selections_fail_clearly():

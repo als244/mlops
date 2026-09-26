@@ -68,7 +68,9 @@ explain_implementation(operation, *args, surface="semantic", **kwargs)
 implementation_pairs(operations)
 use_implementation(operation, implementation_id)
 use_implementations({operation: implementation_id})
+set_implementations({operation: implementation_id})
 deterministic_kernels(enabled=True)
+set_deterministic_kernels(enabled=True)
 deterministic_required()
 capture_dispatch()
 dispatch_manifest(trace)
@@ -85,6 +87,10 @@ retain invocation tensors in global registry or cache state.
 
 Selection overrides are context-local and exact. Unsupported forced choices
 fail with their support reason; implementations never silently fall back.
+`use_implementations` applies its overrides for one block; `set_implementations`
+applies the same validated overrides for the rest of the calling context, for a
+process that chooses once, and so does `set_deterministic_kernels` for the
+request below.
 
 `deterministic_kernels` is the same kind of context-local request, but it asks
 for a property rather than an identity: kernels that reach one answer by an
