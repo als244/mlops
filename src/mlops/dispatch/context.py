@@ -1,4 +1,9 @@
-"""Context-local implementation overrides and warmup-only dispatch tracing."""
+"""Context-local implementation overrides and warmup-only dispatch tracing.
+
+Each choice can be made for one block -- ``use_implementations``,
+``deterministic_kernels`` -- or from a point on, for a caller that makes it
+once: ``set_implementations``, ``set_deterministic_kernels``.
+"""
 
 from __future__ import annotations
 
@@ -27,9 +32,7 @@ def implementation_override(operation: str) -> str | None:
     return _OVERRIDES.get().get(str(operation))
 
 
-@contextmanager
-def use_implementations(overrides: Mapping[str, str]):
-    """Apply validated exact overrides, inheriting outer context selections."""
+def _validated(overrides: Mapping[str, str]) -> dict[str, str]:
     from .registry import implementations_for
 
     canonical: dict[str, str] = {}
@@ -43,13 +46,33 @@ def use_implementations(overrides: Mapping[str, str]):
                 f"choose one of {sorted(implementations)}"
             )
         canonical[operation] = implementation_id
+    return canonical
+
+
+def _merged(canonical: Mapping[str, str]) -> Mapping[str, str]:
     merged = dict(_OVERRIDES.get())
     merged.update(canonical)
-    token = _OVERRIDES.set(MappingProxyType(merged))
+    return MappingProxyType(merged)
+
+
+@contextmanager
+def use_implementations(overrides: Mapping[str, str]):
+    """Apply validated exact overrides, inheriting outer context selections."""
+    canonical = _validated(overrides)
+    token = _OVERRIDES.set(_merged(canonical))
     try:
         yield MappingProxyType(canonical)
     finally:
         _OVERRIDES.reset(token)
+
+
+def set_implementations(overrides: Mapping[str, str]) -> None:
+    """Apply validated exact overrides from here on, beside earlier selections.
+
+    What ``use_implementations`` applies for one block, kept for the rest of the
+    calling context: for a process that makes the choice once.
+    """
+    _OVERRIDES.set(_merged(_validated(overrides)))
 
 
 @contextmanager
@@ -81,6 +104,13 @@ def deterministic_kernels(enabled: bool = True):
         yield bool(enabled)
     finally:
         _DETERMINISTIC.reset(token)
+
+
+def set_deterministic_kernels(enabled: bool = True) -> None:
+    """Ask for kernels that repeat bit for bit -- or stop asking -- from here on:
+    what ``deterministic_kernels`` asks for one block, kept for the rest of the
+    calling context."""
+    _DETERMINISTIC.set(bool(enabled))
 
 
 @contextmanager
@@ -125,6 +155,8 @@ __all__ = [
     "dispatch_manifest",
     "implementation_override",
     "record_dispatch",
+    "set_deterministic_kernels",
+    "set_implementations",
     "use_implementation",
     "use_implementations",
 ]

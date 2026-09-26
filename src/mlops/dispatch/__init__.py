@@ -5,6 +5,8 @@ from .context import (
     deterministic_kernels,
     deterministic_required,
     dispatch_manifest,
+    set_deterministic_kernels,
+    set_implementations,
     use_implementation,
     use_implementations,
 )
@@ -39,6 +41,8 @@ __all__ = [
     "implementation_pairs",
     "implementation_registry",
     "resolve_implementation",
+    "set_deterministic_kernels",
+    "set_implementations",
     "use_implementation",
     "use_implementations",
 ]
