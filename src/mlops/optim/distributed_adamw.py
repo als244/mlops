@@ -568,6 +568,7 @@ class DistributedAdamWRuntime:
         reduced_gradient: torch.Tensor,
     ) -> None:
         group = self.optimizer.param_groups[bucket.group_index]
+        roundings = (group["parameter_rounding"], group["state_rounding"])
         common = {
             "gradient_scale": (
                 1.0 / self.world_size
@@ -579,6 +580,17 @@ class DistributedAdamWRuntime:
             "eps": group["eps"],
             "weight_decay": group["weight_decay"],
             "maximize": bool(group["maximize"]),
+            "parameter_rounding": group["parameter_rounding"],
+            "state_rounding": group["state_rounding"],
+            # Each bucket draws its own bits, and so does each rank updating a
+            # shard of it. Replicas updating the whole bucket draw the same, so
+            # that they stay replicas. Only stochastic rounding reads the salt.
+            "rounding_salt": (
+                bucket.bucket_id * self.world_size
+                + (self.rank if self.optimizer.opt_state_strategy == "sharded" else 0)
+                if "stochastic" in roundings
+                else 0
+            ),
         }
         if bucket.master_parameter is None:
             adamw_(

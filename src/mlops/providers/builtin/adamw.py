@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import torch
 
 from ...dispatch.costs import CostHints
@@ -9,6 +11,10 @@ from ...dispatch.registry import Implementation, SupportResult, register_impleme
 from ...kernels.adamw import adamw_master_out_raw, adamw_out_raw
 
 _FLOAT_DTYPES = {torch.bfloat16, torch.float16, torch.float32}
+
+#: How a value computed in FP32 is stored at a narrower dtype: to nearest, or
+#: stochastically, which keeps small updates in expectation.
+Rounding = Literal["nearest", "stochastic"]
 
 
 def _settings(
@@ -19,6 +25,9 @@ def _settings(
     eps,
     weight_decay,
     maximize,
+    parameter_stochastic,
+    state_stochastic,
+    rounding_salt,
 ):
     # Read here, where the kernel is launched, rather than where the graph was
     # traced. Each is a host scalar, so reading one is a host read: nothing is
@@ -31,6 +40,9 @@ def _settings(
         "eps": float(eps),
         "weight_decay": float(weight_decay),
         "maximize": bool(maximize),
+        "parameter_stochastic": bool(parameter_stochastic),
+        "state_stochastic": bool(state_stochastic),
+        "rounding_salt": int(rounding_salt),
     }
 
 
@@ -48,6 +60,9 @@ def _functional_op(
     eps: torch.Tensor,
     weight_decay: torch.Tensor,
     maximize: bool,
+    parameter_stochastic: bool,
+    state_stochastic: bool,
+    rounding_salt: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     outputs = tuple(
         torch.empty_like(value) for value in (parameter, exp_avg, exp_avg_sq, step)
@@ -59,7 +74,16 @@ def _functional_op(
         exp_avg_sq,
         step,
         **_settings(
-            gradient_scale, lr, beta1, beta2, eps, weight_decay, maximize
+            gradient_scale,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+            maximize,
+            parameter_stochastic,
+            state_stochastic,
+            rounding_salt,
         ),
         out=outputs,
     )
@@ -79,8 +103,12 @@ def _functional_fake(
     eps,
     weight_decay,
     maximize,
+    parameter_stochastic,
+    state_stochastic,
+    rounding_salt,
 ):
     del gradient, gradient_scale, lr, beta1, beta2, eps, weight_decay, maximize
+    del parameter_stochastic, state_stochastic, rounding_salt
     return tuple(
         torch.empty_strided(
             value.shape,
@@ -109,6 +137,9 @@ def _out_op(
     eps: torch.Tensor,
     weight_decay: torch.Tensor,
     maximize: bool,
+    parameter_stochastic: bool,
+    state_stochastic: bool,
+    rounding_salt: int,
     out_parameter: torch.Tensor,
     out_exp_avg: torch.Tensor,
     out_exp_avg_sq: torch.Tensor,
@@ -121,7 +152,16 @@ def _out_op(
         exp_avg_sq,
         step,
         **_settings(
-            gradient_scale, lr, beta1, beta2, eps, weight_decay, maximize
+            gradient_scale,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+            maximize,
+            parameter_stochastic,
+            state_stochastic,
+            rounding_salt,
         ),
         out=(out_parameter, out_exp_avg, out_exp_avg_sq, out_step),
     )
@@ -149,6 +189,9 @@ def _in_place_op(
     eps: torch.Tensor,
     weight_decay: torch.Tensor,
     maximize: bool,
+    parameter_stochastic: bool,
+    state_stochastic: bool,
+    rounding_salt: int,
 ) -> None:
     adamw_out_raw(
         parameter,
@@ -157,7 +200,16 @@ def _in_place_op(
         exp_avg_sq,
         step,
         **_settings(
-            gradient_scale, lr, beta1, beta2, eps, weight_decay, maximize
+            gradient_scale,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+            maximize,
+            parameter_stochastic,
+            state_stochastic,
+            rounding_salt,
         ),
         out=(parameter, exp_avg, exp_avg_sq, step),
     )
@@ -183,6 +235,9 @@ def _master_functional_op(
     eps: torch.Tensor,
     weight_decay: torch.Tensor,
     maximize: bool,
+    parameter_stochastic: bool,
+    state_stochastic: bool,
+    rounding_salt: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     outputs = tuple(
         torch.empty_like(value)
@@ -196,7 +251,16 @@ def _master_functional_op(
         exp_avg_sq,
         step,
         **_settings(
-            gradient_scale, lr, beta1, beta2, eps, weight_decay, maximize
+            gradient_scale,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+            maximize,
+            parameter_stochastic,
+            state_stochastic,
+            rounding_salt,
         ),
         out=outputs,
     )
@@ -217,8 +281,12 @@ def _master_functional_fake(
     eps,
     weight_decay,
     maximize,
+    parameter_stochastic,
+    state_stochastic,
+    rounding_salt,
 ):
     del gradient, gradient_scale, lr, beta1, beta2, eps, weight_decay, maximize
+    del parameter_stochastic, state_stochastic, rounding_salt
     return tuple(
         torch.empty_strided(
             value.shape,
@@ -254,6 +322,9 @@ def _master_out_op(
     eps: torch.Tensor,
     weight_decay: torch.Tensor,
     maximize: bool,
+    parameter_stochastic: bool,
+    state_stochastic: bool,
+    rounding_salt: int,
     out_parameter: torch.Tensor,
     out_master_parameter: torch.Tensor,
     out_exp_avg: torch.Tensor,
@@ -268,7 +339,16 @@ def _master_out_op(
         exp_avg_sq,
         step,
         **_settings(
-            gradient_scale, lr, beta1, beta2, eps, weight_decay, maximize
+            gradient_scale,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+            maximize,
+            parameter_stochastic,
+            state_stochastic,
+            rounding_salt,
         ),
         out=(
             out_parameter,
@@ -309,6 +389,9 @@ def _master_in_place_op(
     eps: torch.Tensor,
     weight_decay: torch.Tensor,
     maximize: bool,
+    parameter_stochastic: bool,
+    state_stochastic: bool,
+    rounding_salt: int,
 ) -> None:
     adamw_master_out_raw(
         parameter,
@@ -318,7 +401,16 @@ def _master_in_place_op(
         exp_avg_sq,
         step,
         **_settings(
-            gradient_scale, lr, beta1, beta2, eps, weight_decay, maximize
+            gradient_scale,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+            maximize,
+            parameter_stochastic,
+            state_stochastic,
+            rounding_salt,
         ),
         out=(parameter, master_parameter, exp_avg, exp_avg_sq, step),
     )
@@ -337,12 +429,21 @@ def _scalar_arguments(
     eps: float | torch.Tensor,
     weight_decay: float | torch.Tensor,
     maximize: bool,
-) -> tuple[float, float, float, float, float, float, bool]:
+    parameter_rounding: Rounding = "nearest",
+    state_rounding: Rounding = "nearest",
+    rounding_salt: int = 0,
+) -> tuple[float, float, float, float, float, float, bool, bool, bool, int]:
     def held(value: float | torch.Tensor) -> torch.Tensor:
         if isinstance(value, torch.Tensor):
             return value
         return torch.tensor(float(value), dtype=torch.float64)
 
+    for name, rounding in (
+        ("parameter_rounding", parameter_rounding),
+        ("state_rounding", state_rounding),
+    ):
+        if rounding not in {"nearest", "stochastic"}:
+            raise ValueError(f"{name} must be 'nearest' or 'stochastic'")
     return (
         float(gradient_scale),
         held(lr),
@@ -351,6 +452,9 @@ def _scalar_arguments(
         held(eps),
         held(weight_decay),
         bool(maximize),
+        parameter_rounding == "stochastic",
+        state_rounding == "stochastic",
+        int(rounding_salt),
     )
 
 
@@ -367,6 +471,9 @@ def functional_adamw(
     eps: float | torch.Tensor,
     weight_decay: float | torch.Tensor,
     maximize: bool = False,
+    parameter_rounding: Rounding = "nearest",
+    state_rounding: Rounding = "nearest",
+    rounding_salt: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a new mixed-dtype AdamW state version."""
     return _functional_op(
@@ -382,6 +489,9 @@ def functional_adamw(
             eps=eps,
             weight_decay=weight_decay,
             maximize=maximize,
+            parameter_rounding=parameter_rounding,
+            state_rounding=state_rounding,
+            rounding_salt=rounding_salt,
         ),
     )
 
@@ -399,6 +509,9 @@ def adamw(
     eps: float | torch.Tensor,
     weight_decay: float | torch.Tensor,
     maximize: bool = False,
+    parameter_rounding: Rounding = "nearest",
+    state_rounding: Rounding = "nearest",
+    rounding_salt: int = 0,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Write one update to caller-owned storage-disjoint outputs."""
@@ -419,6 +532,9 @@ def adamw(
             eps=eps,
             weight_decay=weight_decay,
             maximize=maximize,
+            parameter_rounding=parameter_rounding,
+            state_rounding=state_rounding,
+            rounding_salt=rounding_salt,
         ),
         *out,
     )
@@ -438,6 +554,9 @@ def adamw_(
     eps: float | torch.Tensor,
     weight_decay: float | torch.Tensor,
     maximize: bool = False,
+    parameter_rounding: Rounding = "nearest",
+    state_rounding: Rounding = "nearest",
+    rounding_salt: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update a parameter-as-master and its optimizer state in place."""
     _in_place_op(
@@ -453,6 +572,9 @@ def adamw_(
             eps=eps,
             weight_decay=weight_decay,
             maximize=maximize,
+            parameter_rounding=parameter_rounding,
+            state_rounding=state_rounding,
+            rounding_salt=rounding_salt,
         ),
     )
     return parameter, exp_avg, exp_avg_sq, step
@@ -472,6 +594,9 @@ def functional_master_adamw(
     eps: float | torch.Tensor,
     weight_decay: float | torch.Tensor,
     maximize: bool = False,
+    parameter_rounding: Rounding = "nearest",
+    state_rounding: Rounding = "nearest",
+    rounding_salt: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a new model/master/moment/step state version."""
     return _master_functional_op(
@@ -488,6 +613,9 @@ def functional_master_adamw(
             eps=eps,
             weight_decay=weight_decay,
             maximize=maximize,
+            parameter_rounding=parameter_rounding,
+            state_rounding=state_rounding,
+            rounding_salt=rounding_salt,
         ),
     )
 
@@ -506,6 +634,9 @@ def master_adamw(
     eps: float | torch.Tensor,
     weight_decay: float | torch.Tensor,
     maximize: bool = False,
+    parameter_rounding: Rounding = "nearest",
+    state_rounding: Rounding = "nearest",
+    rounding_salt: int = 0,
     out: tuple[
         torch.Tensor,
         torch.Tensor,
@@ -539,6 +670,9 @@ def master_adamw(
             eps=eps,
             weight_decay=weight_decay,
             maximize=maximize,
+            parameter_rounding=parameter_rounding,
+            state_rounding=state_rounding,
+            rounding_salt=rounding_salt,
         ),
         *out,
     )
@@ -559,6 +693,9 @@ def master_adamw_(
     eps: float | torch.Tensor,
     weight_decay: float | torch.Tensor,
     maximize: bool = False,
+    parameter_rounding: Rounding = "nearest",
+    state_rounding: Rounding = "nearest",
+    rounding_salt: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update distinct model/master state in place."""
     _master_in_place_op(
@@ -575,6 +712,9 @@ def master_adamw_(
             eps=eps,
             weight_decay=weight_decay,
             maximize=maximize,
+            parameter_rounding=parameter_rounding,
+            state_rounding=state_rounding,
+            rounding_salt=rounding_salt,
         ),
     )
     return parameter, master_parameter, exp_avg, exp_avg_sq, step

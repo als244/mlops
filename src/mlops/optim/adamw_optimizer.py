@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 import torch
 
-from ..providers.builtin.adamw import adamw_, master_adamw_
+from ..providers.builtin.adamw import Rounding, adamw_, master_adamw_
 from ._adamw_common import (
     DTypePolicy,
     hold_settings_on_host,
@@ -44,6 +44,8 @@ class AdamW(torch.optim.Optimizer):
         reduction_dtype: DTypePolicy = torch.bfloat16,
         state_dtype: DTypePolicy = torch.bfloat16,
         master_parameter_dtype: DTypePolicy = torch.bfloat16,
+        parameter_rounding: Rounding = "nearest",
+        state_rounding: Rounding = "nearest",
         replica_group: Any | None = None,
         opt_state_strategy: Literal["replicated", "sharded"] = "sharded",
         gradient_reduction: Literal["sum", "mean"] = "mean",
@@ -70,6 +72,8 @@ class AdamW(torch.optim.Optimizer):
             "master_parameter_dtype": normalize_dtype_policy(
                 master_parameter_dtype, name="master_parameter_dtype"
             ),
+            "parameter_rounding": parameter_rounding,
+            "state_rounding": state_rounding,
         }
         validate_adamw_options(defaults)
         if opt_state_strategy not in {"replicated", "sharded"}:
@@ -99,6 +103,14 @@ class AdamW(torch.optim.Optimizer):
 
             self._distributed = DistributedAdamWRuntime(self)
 
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        super().__setstate__(state)
+        # A group restored from a state dict that names no rounding was
+        # rounded to nearest.
+        for group in self.param_groups:
+            group.setdefault("parameter_rounding", "nearest")
+            group.setdefault("state_rounding", "nearest")
+
     @property
     def distributed_spec(self):
         """Return immutable distributed semantics, or ``None`` for local use."""
@@ -125,8 +137,12 @@ class AdamW(torch.optim.Optimizer):
         # here would be a data-dependent branch inside the update -- which
         # anything capturing the step cannot resolve, and which turns a graph
         # it could have partitioned into one opaque task.
+        # Each parameter's position is its stochastic rounding salt: the same
+        # in every run over the same parameters, and its own stream of bits.
+        salt = -1
         for group in self.param_groups:
             for parameter in group["params"]:
+                salt += 1
                 if not parameter.requires_grad:
                     continue
                 gradient = parameter.grad
@@ -145,12 +161,20 @@ class AdamW(torch.optim.Optimizer):
                 state = self.state[parameter]
                 if not state:
                     self._initialize_parameter_state(parameter, group, state)
+                roundings = (group["parameter_rounding"], group["state_rounding"])
                 common = {
                     "lr": group["lr"],
                     "betas": tuple(group["betas"]),
                     "eps": group["eps"],
                     "weight_decay": group["weight_decay"],
                     "maximize": bool(group["maximize"]),
+                    "parameter_rounding": group["parameter_rounding"],
+                    "state_rounding": group["state_rounding"],
+                    # Only stochastic rounding reads the salt. It is a constant
+                    # of the update, so passing it otherwise would make every
+                    # parameter's update differ from every other's to anything
+                    # capturing the step.
+                    "rounding_salt": salt if "stochastic" in roundings else 0,
                 }
                 master = state.get("master_parameter")
                 if master is None:

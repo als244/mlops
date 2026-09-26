@@ -47,8 +47,9 @@ def _setting(value):
     return torch.tensor(float(value), dtype=torch.float64)
 
 
-def _scalars():
-    """The op arguments: gradient_scale, the four settings, maximize.
+def _scalars(*, stochastic: bool = False):
+    """The op arguments: gradient_scale, the four settings, maximize, and how
+    the parameter and the state are rounded, with the rounding's salt.
 
     The settings cross the op boundary as tensors so that a caller capturing
     the update gets an input it can write between steps rather than a value
@@ -63,6 +64,9 @@ def _scalars():
         _setting(1e-8),
         _setting(0.1),
         False,
+        stochastic,
+        stochastic,
+        7,
     )
 
 
@@ -234,9 +238,10 @@ def test_original_internal_fp32_adamw_arithmetic_remains_available():
     assert int(outputs[-1]) == 1
 
 
-def test_adamw_custom_ops_pass_opcheck():
+@pytest.mark.parametrize("stochastic", [False, True])
+def test_adamw_custom_ops_pass_opcheck(stochastic):
     parameter, gradient, exp_avg, exp_avg_sq, step = _state(128)
-    scalars = _scalars()
+    scalars = _scalars(stochastic=stochastic)
     outputs = tuple(
         value.clone() for value in (parameter, exp_avg, exp_avg_sq, step)
     )
@@ -496,6 +501,8 @@ def test_adamw_constructor_matches_torch_option_names_defaults_and_kinds():
     assert actual["reduction_dtype"].default == torch.bfloat16
     assert actual["state_dtype"].default == torch.bfloat16
     assert actual["master_parameter_dtype"].default == torch.bfloat16
+    assert actual["parameter_rounding"].default == "nearest"
+    assert actual["state_rounding"].default == "nearest"
     assert actual["replica_group"].default is None
     assert actual["opt_state_strategy"].default == "sharded"
 
@@ -743,6 +750,17 @@ def test_adamw_rejects_invalid_options_and_sparse_gradients():
         AdamW([], amsgrad=True)
     with pytest.raises(ValueError, match="differentiable"):
         AdamW([], differentiable=True)
+    with pytest.raises(ValueError, match="parameter_rounding"):
+        AdamW([], parameter_rounding="up")
+    with pytest.raises(ValueError, match="state_rounding"):
+        functional_adamw(
+            *_state(32),
+            lr=3e-4,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=0.1,
+            state_rounding="up",
+        )
 
     parameter = torch.nn.Parameter(
         torch.randn(32, device="cuda", dtype=torch.bfloat16)
@@ -786,3 +804,203 @@ def test_a_setting_held_in_a_tensor_takes_effect_without_rebuilding():
 
     assert first > 0
     assert second < first / 2
+
+
+def test_stochastic_rounding_keeps_updates_that_nearest_rounding_loses():
+    """Every update is a quarter of the gap to the next BF16 value down.
+
+    Rounded to nearest, each is lost and the parameter never moves. Rounded
+    stochastically, the parameter follows the FP32 trajectory in expectation.
+    """
+
+    def train(dtype, rounding):
+        parameter = torch.nn.Parameter(
+            torch.ones(1 << 16, device="cuda", dtype=dtype)
+        )
+        optimizer = AdamW(
+            [parameter],
+            lr=1e-3,
+            weight_decay=0.0,
+            state_dtype=torch.float32,
+            master_parameter_dtype="parameter",
+            parameter_rounding=rounding,
+        )
+        for _ in range(100):
+            parameter.grad = torch.ones_like(parameter)
+            optimizer.step()
+        return parameter.detach().float()
+
+    exact = train(torch.float32, "nearest")
+    assert float(exact.mean()) == pytest.approx(0.9, abs=1e-4)
+    assert torch.equal(train(torch.bfloat16, "nearest"), torch.ones_like(exact))
+    stochastic = train(torch.bfloat16, "stochastic")
+    # A hundred roundings leave each element 0.017 from the FP32 value at one
+    # standard deviation, and the mean of 65536 elements 7e-5 from it.
+    assert float(stochastic.mean()) == pytest.approx(float(exact.mean()), abs=5e-4)
+    assert float(stochastic.std()) > 0
+
+
+@pytest.mark.parametrize("state_dtype", [torch.bfloat16, torch.float16])
+def test_stochastic_rounding_keeps_moments_in_expectation(state_dtype):
+    """Moments that land three tenths of the way from one representable value
+    to the next are, stored stochastically, the FP32 moments on average;
+    stored to nearest, they are all off the same way."""
+
+    elements = 1 << 16
+    gap = torch.finfo(state_dtype).eps
+    parameter = torch.zeros(elements, device="cuda")
+    # From moments of one, each moves 0.1 of its distance to about 1 + 3 gaps.
+    gradient = torch.full((elements,), 1.0 + 3 * gap, device="cuda")
+
+    def moments(dtype, rounding):
+        _, mean, variance, _ = functional_adamw(
+            parameter,
+            gradient,
+            torch.ones(elements, device="cuda", dtype=dtype),
+            torch.ones(elements, device="cuda", dtype=dtype),
+            torch.zeros((), device="cuda", dtype=torch.int64),
+            lr=1e-3,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=0.0,
+            state_rounding=rounding,
+        )
+        return mean.float(), variance.float()
+
+    exact = moments(torch.float32, "nearest")
+    nearest = moments(state_dtype, "nearest")
+    stochastic = moments(state_dtype, "stochastic")
+    for exact_value, nearest_value, stochastic_value in zip(
+        exact, nearest, stochastic, strict=True
+    ):
+        expected = float(exact_value.mean())
+        assert abs(float(nearest_value.mean()) - expected) > 0.25 * gap
+        # One element is a gap apart at most, the mean of 65536 0.002 gaps at
+        # one standard deviation.
+        assert float(stochastic_value.mean()) == pytest.approx(
+            expected, abs=0.02 * gap
+        )
+
+
+def test_stochastic_rounding_draws_from_the_step_and_the_salt():
+    """The same update at the same step with the same salt rounds the same
+    way; another salt or another step draws other bits."""
+
+    parameter, gradient, exp_avg, exp_avg_sq, step = _state(1 << 14)
+
+    def update(salt, at_step):
+        return functional_adamw(
+            parameter,
+            gradient,
+            exp_avg,
+            exp_avg_sq,
+            torch.full_like(step, at_step),
+            lr=3e-4,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=0.1,
+            parameter_rounding="stochastic",
+            state_rounding="stochastic",
+            rounding_salt=salt,
+        )
+
+    first = update(3, 5)
+    again = update(3, 5)
+    assert all(
+        torch.equal(value, repeated)
+        for value, repeated in zip(first, again, strict=True)
+    )
+    other_salt = update(4, 5)
+    assert not torch.equal(first[0], other_salt[0])
+    assert not torch.equal(first[1], other_salt[1])
+    assert not torch.equal(first[2], other_salt[2])
+    # The moments do not depend on the step, so only the bits can differ.
+    other_step = update(3, 6)
+    assert not torch.equal(first[1], other_step[1])
+    assert not torch.equal(first[2], other_step[2])
+
+
+def test_a_master_beside_the_parameter_is_what_rounds_stochastically():
+    """With an FP32 master there is nothing to round in the master; the BF16
+    parameter is the updated master rounded to nearest."""
+
+    torch.manual_seed(14909)
+    parameter = torch.nn.Parameter(
+        torch.randn(4096, device="cuda", dtype=torch.bfloat16)
+    )
+    optimizer = AdamW(
+        [parameter],
+        master_parameter_dtype=torch.float32,
+        parameter_rounding="stochastic",
+        state_rounding="stochastic",
+    )
+    for _ in range(3):
+        parameter.grad = torch.randn_like(parameter)
+        optimizer.step()
+    master = optimizer.state[parameter]["master_parameter"]
+    assert torch.equal(parameter.detach(), master.to(torch.bfloat16))
+
+
+def test_each_parameter_rounds_with_bits_of_its_own():
+    torch.manual_seed(14910)
+    value = torch.randn(4096, device="cuda", dtype=torch.bfloat16)
+    gradient = torch.randn_like(value)
+    parameters = [torch.nn.Parameter(value.clone()) for _ in range(2)]
+    optimizer = AdamW(
+        parameters,
+        parameter_rounding="stochastic",
+        state_rounding="stochastic",
+    )
+    for parameter in parameters:
+        parameter.grad = gradient.clone()
+    optimizer.step()
+    first, second = (optimizer.state[parameter] for parameter in parameters)
+    assert not torch.equal(parameters[0], parameters[1])
+    assert not torch.equal(first["exp_avg"], second["exp_avg"])
+
+
+def test_a_state_dict_that_names_no_rounding_restores_nearest():
+    parameter = torch.nn.Parameter(
+        torch.randn(64, device="cuda", dtype=torch.bfloat16)
+    )
+    optimizer = AdamW(
+        [parameter],
+        parameter_rounding="stochastic",
+        state_rounding="stochastic",
+    )
+    saved = optimizer.state_dict()
+    for group in saved["param_groups"]:
+        del group["parameter_rounding"], group["state_rounding"]
+    optimizer.load_state_dict(saved)
+    group = optimizer.param_groups[0]
+    assert group["parameter_rounding"] == group["state_rounding"] == "nearest"
+    parameter.grad = torch.randn_like(parameter)
+    optimizer.step()
+
+
+def test_only_stochastic_rounding_gives_each_update_a_salt_of_its_own(monkeypatch):
+    """The salt is a constant of an update, and a capture tells updates apart
+    by their constants: rounded to nearest, which never reads it, every update
+    is given the same."""
+
+    import mlops.optim.adamw_optimizer as module
+
+    salts = []
+    update = module.adamw_
+
+    def recording(*args, **kwargs):
+        salts.append(kwargs["rounding_salt"])
+        return update(*args, **kwargs)
+
+    monkeypatch.setattr(module, "adamw_", recording)
+    parameters = [
+        torch.nn.Parameter(torch.randn(64, device="cuda", dtype=torch.bfloat16))
+        for _ in range(3)
+    ]
+    for rounding, expected in (("nearest", [0, 0, 0]), ("stochastic", [0, 1, 2])):
+        salts.clear()
+        optimizer = AdamW(parameters, state_rounding=rounding)
+        for parameter in parameters:
+            parameter.grad = torch.randn_like(parameter)
+        optimizer.step()
+        assert salts == expected

@@ -1,4 +1,4 @@
-"""Single-rank contracts for the optional distributed AdamW runtime."""
+"""Single-host contracts for the optional distributed AdamW runtime."""
 
 from __future__ import annotations
 
@@ -156,6 +156,52 @@ def test_gloo_uses_portable_host_completion(tmp_path):
             dist.destroy_process_group()
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
+
+
+def _round_replicas_stochastically(rank: int, store: str, result: str) -> None:
+    dist.init_process_group(
+        "gloo",
+        init_method=f"file://{store}",
+        rank=rank,
+        world_size=2,
+    )
+    try:
+        torch.manual_seed(17200)
+        parameter = torch.nn.Parameter(
+            torch.randn(1031, device="cuda", dtype=torch.bfloat16)
+        )
+        optimizer = AdamW(
+            [parameter],
+            master_parameter_dtype="parameter",
+            parameter_rounding="stochastic",
+            state_rounding="stochastic",
+            replica_group=dist.group.WORLD,
+            opt_state_strategy="replicated",
+            bucket_bytes=512,
+        )
+        for _ in range(3):
+            # the same gradient on both ranks
+            parameter.grad = torch.randn_like(parameter)
+            optimizer.step()
+        optimizer.synchronize()
+        torch.save(parameter.detach().cpu(), f"{result}.{rank}")
+    finally:
+        dist.destroy_process_group()
+
+
+def test_replicas_rounding_stochastically_stay_replicas(tmp_path):
+    """Each replica updates the whole bucket itself, so each must draw the
+    bits every other draws."""
+
+    if not torch.cuda.is_available() or not dist.is_gloo_available():
+        pytest.skip("requires CUDA and Gloo")
+    torch.multiprocessing.spawn(
+        _round_replicas_stochastically,
+        args=(str(tmp_path / "store"), str(tmp_path / "result")),
+        nprocs=2,
+    )
+    first, second = (torch.load(tmp_path / f"result.{rank}") for rank in range(2))
+    assert torch.equal(first, second)
 
 
 def test_distributed_constructor_requires_initialized_replica_group():
