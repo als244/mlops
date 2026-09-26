@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import torch
 
 from ..dispatch import resolve_implementation
@@ -17,14 +15,12 @@ def forward(
     a,
     a_log,
     dt_bias,
-    lengths: Sequence[int],
     cumulative,
     chunk_indices,
     *,
     scale=None,
 ):
     """Return ``(output, gate, matrix)`` using caller-owned round metadata."""
-    normalized = tuple(int(length) for length in lengths)
     resolved_scale = q.shape[-1] ** -0.5 if scale is None else float(scale)
     implementation = resolve_implementation(
         "linear_attention",
@@ -35,7 +31,6 @@ def forward(
         a,
         a_log,
         dt_bias,
-        normalized,
         cumulative,
         chunk_indices,
         surface="explicit",
@@ -50,8 +45,7 @@ def forward(
             a,
             a_log,
             dt_bias,
-            normalized,
-            cumulative,
+                cumulative,
             chunk_indices,
             scale=resolved_scale,
         )
@@ -84,7 +78,6 @@ def backward(
         a,
         a_log,
         dt_bias,
-        (),
         cumulative,
         chunk_indices,
         surface="explicit",

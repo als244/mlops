@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 import torch
 
@@ -225,8 +227,11 @@ def test_reference_sdpa_ablation_matches_packed_raw_attention_and_backward():
     with use_implementation(
         "flash_attention", "native_torch.flash_attention"
     ):
+        offsets = torch.tensor(
+            [0, *itertools.accumulate(lengths)], dtype=torch.int32, device="cuda"
+        )
         optimized_output = flash_attention(
-            optimized_q, optimized_k, optimized_v, lengths
+            optimized_q, optimized_k, optimized_v, offsets, max(lengths)
         )
 
     assert torch.equal(raw_output, optimized_output)

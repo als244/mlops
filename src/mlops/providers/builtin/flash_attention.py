@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from functools import lru_cache
 
 import torch
@@ -57,57 +56,21 @@ def _maybe_activate_fa3(device: torch.device) -> bool:
     return _flash_attention_3_activated(torch.cuda.get_device_capability(device)[0])
 
 
-def _supports(q, k, v, lengths, *, surface, causal=True, softmax_scale=None, **_kwargs):
-    del surface, causal, softmax_scale
-    if not all(isinstance(value, torch.Tensor) for value in (q, k, v)):
-        return SupportResult.no("q, k, and v must be tensors")
+def _supports(
+    q, k, v, cu_seqlens, max_seqlen, *, surface, causal=True, softmax_scale=None, **_kwargs
+):
+    del surface, max_seqlen, causal, softmax_scale
+    if not all(isinstance(value, torch.Tensor) for value in (q, k, v, cu_seqlens)):
+        return SupportResult.no("q, k, v, and cu_seqlens must be tensors")
     _maybe_activate_fa3(q.device)
-    normalized = tuple(int(length) for length in lengths)
-    if not normalized or any(length <= 0 for length in normalized):
-        return SupportResult.no("lengths must contain positive values")
-    if sum(normalized) != q.shape[0]:
-        return SupportResult.no("lengths must cover the query token axis")
+    # The offsets are data, so nothing here may read their values.
+    if cu_seqlens.ndim != 1 or cu_seqlens.dtype != torch.int32:
+        return SupportResult.no("cu_seqlens must be one-dimensional int32")
+    if cu_seqlens.device != q.device:
+        return SupportResult.no("cu_seqlens must be on the queries' device")
     if not native_flash_attention_supported(q, k, v):
         return SupportResult.no("PyTorch native variable-length flash is unsupported")
     return SupportResult.yes()
-
-
-@lru_cache(maxsize=128)
-def _cumulative_host_metadata(
-    normalized: tuple[int, ...],
-    *,
-    pinned: bool,
-) -> torch.Tensor:
-    cumulative = [0]
-    for length in normalized:
-        cumulative.append(cumulative[-1] + length)
-    cumulative_host = torch.tensor(cumulative, dtype=torch.int32)
-    if pinned:
-        # A direct pageable-host ``torch.tensor(..., device="cuda")`` copy is
-        # synchronous: PyTorch follows cudaMemcpyAsync with a compute-stream
-        # synchronize so the temporary host storage can be reclaimed.  This
-        # metadata is tiny but is rebuilt by every attention/recompute task,
-        # and those host barriers prevent the planner from dispatching future
-        # prefetches.  Pinned staging gives the tensor's ordinary same-stream
-        # dependency without blocking the launching thread.
-        cumulative_host = cumulative_host.pin_memory()
-    return cumulative_host
-
-
-def _metadata(q, lengths: Sequence[int]):
-    normalized = tuple(int(length) for length in lengths)
-    cumulative_host = _cumulative_host_metadata(
-        normalized,
-        pinned=q.device.type == "cuda",
-    )
-    return (
-        cumulative_host.to(
-            q.device,
-            non_blocking=q.device.type == "cuda",
-        ),
-        max(normalized),
-        normalized,
-    )
 
 
 def forward(
@@ -177,38 +140,35 @@ def _forward_op(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    lengths: list[int],
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
     causal: bool,
     softmax_scale: float | None,
     deterministic: bool,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     # ``deterministic`` selects nothing in the forward; it rides this
     # operation's inputs because a custom autograd operation's saved context
     # is the only channel that reaches its backward.
     del deterministic
-    # ``lengths`` is the semantic metadata.  Build the provider's compact
-    # device offsets inside this opaque operation so FakeTensor capture never
-    # mistakes a data-bearing, call-derived tensor for a serializable constant.
-    cu_seqlens, max_seqlen, normalized = _metadata(q, lengths)
-    output, lse = forward(
+    # The offsets are data: a captured graph takes them as an input, so one
+    # graph serves every packing of the same tokens.
+    return forward(
         q,
         k,
         v,
         cu_seqlens,
         int(max_seqlen),
-        normalized,
+        (),
         causal=bool(causal),
         softmax_scale=softmax_scale,
     )
-    return output, lse, cu_seqlens
 
 
 @_forward_op.register_fake
-def _forward_fake(q, k, v, lengths, causal, softmax_scale, deterministic):
-    del k, v, causal, softmax_scale, deterministic
+def _forward_fake(q, k, v, cu_seqlens, max_seqlen, causal, softmax_scale, deterministic):
+    del k, v, cu_seqlens, max_seqlen, causal, softmax_scale, deterministic
     lse = torch.empty((q.shape[1], q.shape[0]), dtype=torch.float32, device=q.device)
-    cu_seqlens = torch.empty((len(lengths) + 1,), dtype=torch.int32, device=q.device)
-    return torch.empty_like(q), lse, cu_seqlens
+    return torch.empty_like(q), lse
 
 
 @torch.library.custom_op("mlops::flash_attention_builtin_aten_bwd", mutates_args=())
@@ -221,11 +181,11 @@ def _backward_op(
     saved_lse: torch.Tensor,
     cu_seqlens: torch.Tensor,
     max_seqlen: int,
-    lengths: list[int],
     causal: bool,
     softmax_scale: float | None,
     deterministic: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # The native backward reads the offsets alone, never lengths.
     return backward(
         grad_output,
         q,
@@ -235,7 +195,7 @@ def _backward_op(
         saved_lse,
         cu_seqlens,
         int(max_seqlen),
-        lengths,
+        (),
         causal=bool(causal),
         softmax_scale=softmax_scale,
         deterministic=bool(deterministic),
@@ -252,29 +212,27 @@ def _backward_fake(
     saved_lse,
     cu_seqlens,
     max_seqlen,
-    lengths,
     causal,
     softmax_scale,
     deterministic,
 ):
     del grad_output, output, saved_lse, cu_seqlens, max_seqlen
-    del lengths, causal, softmax_scale, deterministic
+    del causal, softmax_scale, deterministic
     return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
 
 
 def _setup_context(ctx, inputs, output):
-    q, k, v, lengths, causal, softmax_scale, deterministic = inputs
-    result, saved_lse, cu_seqlens = output
+    q, k, v, cu_seqlens, max_seqlen, causal, softmax_scale, deterministic = inputs
+    result, saved_lse = output
     ctx.save_for_backward(q, k, v, result, saved_lse, cu_seqlens)
-    ctx.max_seqlen = max(int(length) for length in lengths)
-    ctx.lengths = list(lengths)
+    ctx.max_seqlen = int(max_seqlen)
     ctx.causal = bool(causal)
     ctx.softmax_scale = softmax_scale
     ctx.deterministic = bool(deterministic)
-    ctx.mark_non_differentiable(saved_lse, cu_seqlens)
+    ctx.mark_non_differentiable(saved_lse)
 
 
-def _autograd_backward(ctx, grad_output, _grad_lse, _grad_cu_seqlens):
+def _autograd_backward(ctx, grad_output, _grad_lse):
     q, k, v, output, saved_lse, cu_seqlens = ctx.saved_tensors
     gradients = _backward_op(
         grad_output,
@@ -285,24 +243,33 @@ def _autograd_backward(ctx, grad_output, _grad_lse, _grad_cu_seqlens):
         saved_lse,
         cu_seqlens,
         ctx.max_seqlen,
-        ctx.lengths,
         ctx.causal,
         ctx.softmax_scale,
         ctx.deterministic,
     )
-    return (*gradients, None, None, None, None)
+    return (*gradients, None, None, None, None, None)
 
 
 _forward_op.register_autograd(_autograd_backward, setup_context=_setup_context)
 
 
-def apply(q, k, v, lengths, *, causal=True, softmax_scale=None, deterministic=False):
-    normalized = tuple(int(length) for length in lengths)
-    output, _lse, _cu_seqlens = _forward_op(
+def apply(
+    q,
+    k,
+    v,
+    cu_seqlens,
+    max_seqlen,
+    *,
+    causal=True,
+    softmax_scale=None,
+    deterministic=False,
+):
+    output, _lse = _forward_op(
         q.contiguous(),
         k.contiguous(),
         v.contiguous(),
-        list(normalized),
+        cu_seqlens,
+        int(max_seqlen),
         bool(causal),
         softmax_scale,
         bool(deterministic),

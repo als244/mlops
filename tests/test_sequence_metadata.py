@@ -46,3 +46,26 @@ def test_prepare_packed_sequence_metadata_materializes_caller_owned_cuda_inputs(
     assert cumulative.is_cuda and chunks.is_cuda
     assert cumulative.cpu().tolist() == [0, 65, 129]
     assert chunks.cpu().tolist() == [[0, 0], [0, 1], [1, 0]]
+
+
+def test_a_lengths_tensor_prepares_fixed_shape_metadata():
+    # Four slots, the last empty, over 128 tokens: one chunk row for each of
+    # the ceil(128 / 64) + 4 chunks they could need, and the rows past the
+    # real chunks belong to one more, empty sequence at the end.
+    lengths = torch.tensor([73, 38, 17, 0], dtype=torch.int32)
+    cumulative, chunks = prepare_packed_sequence_metadata(lengths, torch.empty(128))
+    assert cumulative.dtype == chunks.dtype == torch.int64
+    assert cumulative.tolist() == [0, 73, 111, 128, 128, 128]
+    assert chunks.tolist() == [[0, 0], [0, 1], [1, 0], [2, 0], [4, 0], [4, 1]]
+
+
+def test_a_lengths_tensor_keeps_its_shapes_across_packings():
+    like = torch.empty(128)
+    shapes = {
+        tuple(tensor.shape)
+        for packing in ([128, 0, 0, 0], [1, 1, 1, 125], [64, 64, 0, 0])
+        for tensor in prepare_packed_sequence_metadata(
+            torch.tensor(packing, dtype=torch.int32), like
+        )
+    }
+    assert shapes == {(6,), (6, 2)}

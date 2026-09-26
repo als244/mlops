@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from .dispatch import resolve_implementation
 
 
@@ -15,7 +13,6 @@ def linear_attention(
     a,
     a_log,
     dt_bias,
-    lengths: Sequence[int],
     cumulative,
     chunk_indices,
     *,
@@ -26,9 +23,10 @@ def linear_attention(
     ``cumulative`` and ``chunk_indices`` are caller-owned round metadata from
     :func:`mlops.prepare_packed_sequence_metadata`.  Requiring them at this
     boundary prevents a provider from deriving host counts from CUDA tensors
-    (a hidden device synchronization) or retaining an internal cache.
+    (a hidden device synchronization) or retaining an internal cache.  The
+    metadata is data: a captured graph takes it as an input, so one graph
+    serves every packing of the same tokens.
     """
-    lengths = tuple(int(length) for length in lengths)
     scale = q.shape[-1] ** -0.5 if scale is None else float(scale)
     implementation = resolve_implementation(
         "linear_attention",
@@ -39,7 +37,6 @@ def linear_attention(
         a,
         a_log,
         dt_bias,
-        lengths,
         cumulative,
         chunk_indices,
         surface="semantic",
@@ -53,7 +50,6 @@ def linear_attention(
         a,
         a_log,
         dt_bias,
-        lengths,
         cumulative,
         chunk_indices,
         scale=scale,

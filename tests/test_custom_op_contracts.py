@@ -244,7 +244,8 @@ def _flash_attention_args():
     query = _parameter(8, 4, 64)
     key = _parameter(8, 2, 64)
     value = _parameter(8, 2, 64)
-    return query, key, value, [3, 5], True, None, False
+    cu_seqlens = torch.tensor([0, 3, 8, 8], dtype=torch.int32, device="cuda")
+    return query, key, value, cu_seqlens, 5, True, None, False
 
 
 def _dsa_args():
@@ -258,7 +259,7 @@ def _dsa_args():
 
 def _causal_conv_args():
     cumulative = torch.tensor([0, 3, 8], dtype=torch.int64, device="cuda")
-    return _parameter(8, 16), _parameter(16, 1, 3), [3, 5], cumulative
+    return _parameter(8, 16), _parameter(16, 1, 3), cumulative
 
 
 def _l2_norm_args():

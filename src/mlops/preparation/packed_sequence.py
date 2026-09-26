@@ -73,4 +73,32 @@ def prepare(
     return _prepare_op(like, list(lengths), int(chunk_size))
 
 
-__all__ = ["prepare"]
+def prepare_from_tensor(
+    like: torch.Tensor,
+    lengths: torch.Tensor,
+    chunk_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Derive fixed-shape metadata on the device from lengths that are data.
+
+    Plain tensor arithmetic, so a captured graph recomputes it from its
+    lengths input on every call. The offsets gain one empty sequence at the
+    end, and every chunk row past the real chunks belongs to it: a kernel
+    finds that sequence has no tokens and reads and writes nothing.
+    """
+    if lengths.ndim != 1 or lengths.dtype not in (torch.int32, torch.int64):
+        raise ValueError("a lengths tensor must be one-dimensional integers")
+    if lengths.device != like.device:
+        raise ValueError("a lengths tensor must be on the device of like")
+    lengths = lengths.to(torch.int64)
+    ends = torch.cumsum(lengths, 0)
+    cumulative = torch.cat((ends.new_zeros(1), ends, ends[-1:]))
+    chunks = (lengths + chunk_size - 1) // chunk_size
+    chunk_ends = torch.cumsum(chunks, 0)
+    starts = torch.cat((chunk_ends - chunks, chunk_ends[-1:]))
+    bound = -(-like.numel() // chunk_size) + lengths.shape[0]
+    rows = torch.arange(bound, dtype=torch.int64, device=like.device)
+    sequence = torch.searchsorted(chunk_ends, rows, right=True)
+    return cumulative, torch.stack((sequence, rows - starts[sequence]), dim=1)
+
+
+__all__ = ["prepare", "prepare_from_tensor"]

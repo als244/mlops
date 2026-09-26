@@ -694,7 +694,8 @@ flash_attention(
     q: Tensor,
     k: Tensor,
     v: Tensor,
-    lengths: Sequence[int],
+    cu_seqlens: Tensor,
+    max_seqlen: int,
     *,
     causal: bool = True,
     softmax_scale: float | None = None,
@@ -714,7 +715,8 @@ tensors.
 | `q` | `Tensor[T,Hq,Dh]` | queries |
 | `k` | `Tensor[T,Hkv,Dh]` | keys |
 | `v` | `Tensor[T,Hkv,Dh]` | values |
-| `lengths` | `Sequence[int]` | positive packed lengths summing to `T` |
+| `cu_seqlens` | `Tensor[N+1]` | int32 cumulative sequence offsets on the queries' device, from `0` to `T`; a repeated offset is an empty sequence |
+| `max_seqlen` | `int` | an upper bound on any one sequence's length |
 | `causal` | `bool` | whether future keys are masked |
 | `softmax_scale` | `Optional[float]` | explicit logit scale; `None` uses the backend default |
 | `deterministic` | `Optional[bool]` | whether the backward accumulates in a fixed order; `None` follows `deterministic_kernels` |
@@ -725,11 +727,14 @@ tensors.
 
 **Autograd and effects**
 
-The optimized registered path saves Q/K/V, output, cumulative sequence
-metadata, and FP32 log-sum-exp when the native flash primitive supplies it.
-The semantic boundary derives compact device offsets from `lengths` inside the
-opaque forward and exposes them only as a private autograd residual; it retains
-no tensor state. Backward returns gradients for Q/K/V. Inputs are made
+The optimized registered path saves Q/K/V, output, `cu_seqlens`, and FP32
+log-sum-exp when the native flash primitive supplies it; it retains no tensor
+state. Backward returns gradients for Q/K/V.
+
+The offsets are data, not structure: a captured graph takes `cu_seqlens` as
+an input, so one graph serves every packing of the same `T` tokens. To keep
+its shape fixed across packings, pad it by repeating the last offset; each
+repeat is an empty sequence. Inputs are made
 contiguous when needed; caller tensors are not modified.
 
 Under FA3 the variable-length backward accumulates dQ across key blocks with
@@ -753,7 +758,11 @@ already and ignores the request.
 - `k.shape == v.shape`.
 - Q and K head widths must match.
 - `Hq % Hkv == 0`.
-- `lengths` must be nonempty, positive, and sum to `T`.
+- `cu_seqlens` must be one-dimensional int32 on the queries' device, as the
+  kernel reads it; nothing converts it. It must start at `0`, never decrease,
+  and end at `T`, with no sequence longer than `max_seqlen`. Its values stay
+  on the device and are not read on the host, so these are the caller's to
+  guarantee.
 
 Violations detected by the varlen boundary raise `ValueError`.
 
@@ -773,7 +782,8 @@ wheel, the primitive keeps its stock kernels.
 **Example**
 
 ```python
-attended = flash_attention(q, k, v, lengths)  # [T,Hq,Dh]
+cu_seqlens = torch.tensor([0, 731, 943, 1024, 1024], dtype=torch.int32, device=q.device)
+attended = flash_attention(q, k, v, cu_seqlens, 2048)  # [T,Hq,Dh], T=1024
 ```
 
 ### `mla_attention`
@@ -1167,7 +1177,6 @@ output = dsa_attention(query, key, value, indices, lengths)
 causal_conv_silu(
     x: Tensor,
     weight: Tensor,
-    lengths: Sequence[int],
     cumulative: Tensor,
     chunk_indices: Tensor | None = None,
 ) -> Tensor
@@ -1184,7 +1193,6 @@ Convolution history resets at every sequence boundary.
 |---|---|---|
 | `x` | `Tensor[...,C]`, flattened to `[T,C]` | channel-last input |
 | `weight` | `Tensor[C,1,Wc]` | depthwise convolution kernels |
-| `lengths` | `Sequence[int]` | boundaries summing to `T` |
 | `cumulative` | INT64 `Tensor[L+1]`, or empty for one sequence | caller-owned cumulative boundaries |
 | `chunk_indices` | optional INT64 `Tensor[Nchunk,2]`, or empty for one sequence | caller-owned `(sequence, chunk)` map; supplying it avoids reconstructing it inside provider kernels |
 
@@ -1196,12 +1204,13 @@ A tensor matching `x`.
 
 The FLA path saves `x`, `weight`, and the caller-owned cumulative sequence
 metadata. Backward returns gradients for `x` and `weight`. The operation does
-not construct or retain metadata.
+not construct or retain metadata. The metadata is data: a captured graph takes
+it as an input, so one graph serves every packing of the same tokens.
 
 **Constraints and exceptions**
 
-`sum(lengths)` must equal the flattened row count or `ValueError` is
-raised. Weight channels must match `C`.
+The metadata must describe the flattened row count; its values stay on the
+device, so that is the caller's to guarantee. Weight channels must match `C`.
 
 **Implementations**
 
@@ -1211,7 +1220,7 @@ raised. Weight channels must match `C`.
 
 ```python
 cumulative, chunks = prepare_packed_sequence_metadata(lengths, projected)
-convolved = causal_conv_silu(projected, conv.weight, lengths, cumulative, chunks)
+convolved = causal_conv_silu(projected, conv.weight, cumulative, chunks)
 ```
 
 ### `prepare_packed_sequence_metadata`
@@ -1222,7 +1231,7 @@ convolved = causal_conv_silu(projected, conv.weight, lengths, cumulative, chunks
 
 ```python
 prepare_packed_sequence_metadata(
-    lengths: Sequence[int],
+    lengths: Sequence[int] | Tensor,
     like: Tensor,
     *,
     chunk_size: int = 64,
@@ -1242,9 +1251,21 @@ not provider-dispatched, has no differentiable outputs, and retains no state.
 sequence uses empty tensors with shapes `[0]` and `[0,2]`. Multi-sequence CUDA
 results are copied nonblockingly from pinned host values.
 
+`lengths` may instead be a one-dimensional integer tensor on `like.device`,
+zero-padded to a fixed number of sequences `N`. The lengths are then data: the
+metadata comes from graph-visible tensor arithmetic in shapes fixed by `like`
+and `N` alone, so one captured graph serves every packing of the same tokens.
+`like` must then be the packed tokens, whose count `T` bounds the chunks:
+`cumulative` has `N + 2` entries and `chunk_indices` has
+`ceil(T / chunk_size) + N` rows, one for every chunk the sequences could need.
+The extra offset closes one more, empty sequence, and the rows past the real
+chunks belong to it, so kernels read and write nothing for them.
+
 **Constraints and exceptions**
 
-Lengths and `chunk_size` must be positive. Callers pass the same returned
+Integer lengths and `chunk_size` must be positive; a lengths tensor must be
+nonnegative and sum to `T`, which, being on the device, is the caller's to
+guarantee. Callers pass the same returned
 tensors to every causal-convolution and linear-attention layer in the round.
 Providers consume but never retain or reconstruct them.
 
@@ -1269,7 +1290,6 @@ linear_attention(
     a: Tensor,
     a_log: Tensor,
     dt_bias: Tensor,
-    lengths: Sequence[int],
     cumulative: Tensor,
     chunk_indices: Tensor,
     *,
@@ -1292,7 +1312,6 @@ Runs the packed Gated DeltaNet recurrent/chunked delta-rule core.
 | `a` | `Tensor[T,Hv]` | input-dependent decay term |
 | `a_log` | `Tensor[Hv]` | learned log-decay parameter |
 | `dt_bias` | `Tensor[Hv]` | learned decay bias |
-| `lengths` | `Sequence[int]` | recurrent reset boundaries |
 | `cumulative` | INT64 `Tensor[L+1]`, or empty for one sequence | caller-owned cumulative boundaries |
 | `chunk_indices` | INT64 `Tensor[Nchunk,2]`, or empty for one sequence | caller-owned `(sequence, chunk)` map |
 | `scale` | `Optional[float]` | query/key scale; default `Dk**-0.5` |
@@ -1306,13 +1325,15 @@ Runs the packed Gated DeltaNet recurrent/chunked delta-rule core.
 The FLA boundary saves all differentiable inputs, the caller-owned metadata,
 and private gate/matrix residuals. Backward returns seven tensor gradients.
 `a_log` and `dt_bias` gradients are FP32 in the fake/FLA contract. Neither the
-operation nor provider constructs or retains sequence metadata.
+operation nor provider constructs or retains sequence metadata. The metadata
+is data: a captured graph takes it as an input, so one graph serves every
+packing of the same tokens.
 
 **Constraints and exceptions**
 
-Token axes and value-head gating dimensions must agree. Lengths must be
-positive and cover `T`. Multi-sequence calls require matching INT64 cumulative
-and 64-token chunk-index tensors; single-sequence calls use empty sentinels.
+Token axes and value-head gating dimensions must agree. The metadata must
+cover `T`. Multi-sequence calls require matching INT64 cumulative and 64-token
+chunk-index tensors; single-sequence calls use empty sentinels in both.
 Provider-specific unsupported shapes fail during implementation resolution.
 
 **Implementations**
@@ -1325,7 +1346,7 @@ Provider-specific unsupported shapes fail during implementation resolution.
 ```python
 cumulative, chunks = prepare_packed_sequence_metadata(lengths, q)
 values = linear_attention(
-    q, k, v, beta, a, A_log, dt_bias, lengths, cumulative, chunks
+    q, k, v, beta, a, A_log, dt_bias, cumulative, chunks
 )
 ```
 
@@ -2221,7 +2242,6 @@ backward(grad_output, q, k, v, indices, lse, lengths)
 forward(
     x: Tensor[T,C],
     weight: Tensor[C,1,Wc],
-    lengths: Sequence[int],
     cumulative_lengths: Tensor[*],
     chunk_indices: Tensor[*] | None = None,
 ) -> Tensor[T,C]
@@ -2245,7 +2265,7 @@ kernels.
 
 ```python
 forward(
-    q, k, v, beta, a, a_log, dt_bias, lengths,
+    q, k, v, beta, a, a_log, dt_bias,
     cumulative, chunk_indices, *, scale=None,
 ) -> tuple[output, gate, matrix]
 
