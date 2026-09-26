@@ -57,6 +57,9 @@ def validate_adamw_options(group: dict[str, Any]) -> None:
         "master_parameter_dtype",
     ):
         group[name] = normalize_dtype_policy(group[name], name=name)
+    for name in ("parameter_rounding", "state_rounding"):
+        if group.get(name, "nearest") not in {"nearest", "stochastic"}:
+            raise ValueError(f"{name} must be 'nearest' or 'stochastic'")
 
 
 #: The group settings the update reads, which a caller may hold in a tensor.
