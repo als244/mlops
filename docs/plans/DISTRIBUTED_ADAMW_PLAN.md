@@ -60,11 +60,9 @@ Every optimizer parameter group independently specifies:
 | `gradient_dtype` | `torch.bfloat16` | local/packed gradient representation |
 | `reduction_dtype` | `torch.bfloat16` | collective input/output and local-update gradient dtype |
 | `state_dtype` | `torch.bfloat16` | first- and second-moment storage dtype |
-| `master_parameter_dtype` | `torch.bfloat16` | optimizer-owned master storage dtype |
 
-`state_dtype` and `master_parameter_dtype` also accept `"parameter"`. If the
-resolved master dtype equals the model parameter dtype, the parameter itself
-is the master and no extra persistent tensor is created.
+`state_dtype` also accepts `"parameter"`. The optimizer updates each parameter
+at its own dtype and keeps no master copy of it.
 
 The actual eager `.grad` may use another dtype. Packing casts it to
 `gradient_dtype`. If `gradient_dtype != reduction_dtype`, the value is cast to
@@ -209,6 +207,8 @@ metadata and makes every required cast and accumulator object explicit.
 | 2026-08-04 | Make 64 MiB a hard per-collective payload cap | Gloo sharded state required an additional full input-sized temporary for one 2B-element collective and exhausted the 24 GiB rank; element splitting makes peak scratch independent of parameter size |
 | 2026-08-04 | Remove public overlap and stream options | measured overlap benefit was only 0.2–1.2%, Gloo cannot use the same reduce-scatter stream bridge, and serialized buckets enable workspace reuse and one backend-portable implementation |
 | 2026-08-04 | Default unknown ProcessGroup backends to host completion and specialize NCCL | correctness is universal while the known efficient NCCL path remains nonblocking; backend mechanics stay below the optimizer API |
+| 2026-09-25 | Remove `master_parameter_dtype`; the optimizer updates each parameter at its own dtype | a master copy at another precision belongs to what holds the training state -- ShadowSpill keeps one for any optimizer, which steps the masters as its parameters -- so the optimizer keeps none; the standalone fused master updates remain |
+| 2026-09-25 | Bump the distributed checkpoint/execution manifest to V4 | buckets no longer carry a master, so a V3 checkpoint is rejected explicitly rather than read without one |
 
 ## Deferred work
 

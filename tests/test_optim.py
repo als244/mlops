@@ -155,7 +155,6 @@ def test_default_bf16_adamw_matches_torch_optimizer_bitwise():
         **options,
         gradient_dtype=dtype,
         state_dtype=dtype,
-        master_parameter_dtype=dtype,
     )
 
     for _ in range(10):
@@ -197,7 +196,6 @@ def test_other_same_dtype_adamw_matches_torch_moments_bitwise(
         **options,
         gradient_dtype=dtype,
         state_dtype=dtype,
-        master_parameter_dtype=dtype,
     )
     for _ in range(10):
         gradient = torch.randn_like(parameter)
@@ -500,7 +498,6 @@ def test_adamw_constructor_matches_torch_option_names_defaults_and_kinds():
     assert actual["gradient_dtype"].default == torch.bfloat16
     assert actual["reduction_dtype"].default == torch.bfloat16
     assert actual["state_dtype"].default == torch.bfloat16
-    assert actual["master_parameter_dtype"].default == torch.bfloat16
     assert actual["parameter_rounding"].default == "nearest"
     assert actual["state_rounding"].default == "nearest"
     assert actual["replica_group"].default is None
@@ -650,42 +647,30 @@ def test_mixed_dtype_adamw_matches_explicit_storage_rounding(
     assert int(actual[3]) == 8
 
 
-def test_distinct_master_and_state_dtypes_are_independent():
+def test_a_distinct_master_update_writes_the_parameter_from_the_master():
     torch.manual_seed(14906)
-    parameter = torch.nn.Parameter(
-        torch.randn(4096, device="cuda", dtype=torch.bfloat16)
-    )
-    parameter.grad_dtype = torch.float32
-    parameter.grad = torch.randn_like(parameter, dtype=torch.float32)
-    optimizer = AdamW(
-        [parameter],
-        gradient_dtype=torch.float32,
-        state_dtype=torch.float32,
-        master_parameter_dtype=torch.float32,
-        lr=2e-4,
-        betas=(0.9, 0.95),
-    )
-    optimizer.step()
-    state = optimizer.state[parameter]
-    assert state["master_parameter"].dtype == torch.float32
-    assert state["exp_avg"].dtype == torch.float32
-    assert state["exp_avg_sq"].dtype == torch.float32
-    assert parameter.dtype == torch.bfloat16
+    parameter = torch.randn(4096, device="cuda", dtype=torch.bfloat16)
+    master = parameter.float()
+    gradient = torch.randn_like(master)
+    exp_avg = torch.zeros_like(master)
+    exp_avg_sq = torch.zeros_like(master)
+    step = torch.zeros((), device="cuda", dtype=torch.int64)
 
-    before = parameter.detach().clone()
+    before = parameter.clone()
     master_adamw_(
         parameter,
-        state["master_parameter"],
-        parameter.grad,
-        state["exp_avg"],
-        state["exp_avg_sq"],
-        state["step"],
+        master,
+        gradient,
+        exp_avg,
+        exp_avg_sq,
+        step,
         lr=2e-4,
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=0.01,
     )
     assert not torch.equal(parameter, before)
+    assert torch.equal(parameter, master.to(torch.bfloat16))
 
 
 def test_master_out_form_preserves_sources():
@@ -726,19 +711,6 @@ def test_master_out_form_preserves_sources():
         torch.equal(value, reference)
         for value, reference in zip(destinations, expected, strict=True)
     )
-
-
-def test_master_alias_uses_no_extra_persistent_tensor():
-    parameter = torch.nn.Parameter(
-        torch.randn(1024, device="cuda", dtype=torch.bfloat16)
-    )
-    parameter.grad = torch.randn_like(parameter)
-    optimizer = AdamW(
-        [parameter],
-        master_parameter_dtype=torch.bfloat16,
-    )
-    optimizer.step()
-    assert "master_parameter" not in optimizer.state[parameter]
 
 
 def test_adamw_rejects_invalid_options_and_sparse_gradients():
@@ -822,7 +794,6 @@ def test_stochastic_rounding_keeps_updates_that_nearest_rounding_loses():
             lr=1e-3,
             weight_decay=0.0,
             state_dtype=torch.float32,
-            master_parameter_dtype="parameter",
             parameter_rounding=rounding,
         )
         for _ in range(100):
@@ -918,27 +889,6 @@ def test_stochastic_rounding_draws_from_the_step_and_the_salt():
     other_step = update(3, 6)
     assert not torch.equal(first[1], other_step[1])
     assert not torch.equal(first[2], other_step[2])
-
-
-def test_a_master_beside_the_parameter_is_what_rounds_stochastically():
-    """With an FP32 master there is nothing to round in the master; the BF16
-    parameter is the updated master rounded to nearest."""
-
-    torch.manual_seed(14909)
-    parameter = torch.nn.Parameter(
-        torch.randn(4096, device="cuda", dtype=torch.bfloat16)
-    )
-    optimizer = AdamW(
-        [parameter],
-        master_parameter_dtype=torch.float32,
-        parameter_rounding="stochastic",
-        state_rounding="stochastic",
-    )
-    for _ in range(3):
-        parameter.grad = torch.randn_like(parameter)
-        optimizer.step()
-    master = optimizer.state[parameter]["master_parameter"]
-    assert torch.equal(parameter.detach(), master.to(torch.bfloat16))
 
 
 def test_each_parameter_rounds_with_bits_of_its_own():

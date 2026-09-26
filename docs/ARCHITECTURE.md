@@ -38,7 +38,7 @@ each update to the same stateless tensor entrypoints available independently:
 
 ```text
 AdamW.step()
-    -> local: adamw_ / master_adamw_
+    -> local: adamw_
     -> distributed: pack -> collective -> local update -> optional all-gather
     -> registered mutation boundary
     -> allocation-free Triton kernel

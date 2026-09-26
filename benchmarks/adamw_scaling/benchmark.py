@@ -207,7 +207,6 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any] | None:
             gradient_dtype=torch.bfloat16,
             reduction_dtype=torch.bfloat16,
             state_dtype=torch.bfloat16,
-            master_parameter_dtype=torch.bfloat16,
             replica_group=dist.group.WORLD,
             opt_state_strategy=arguments.opt_state_strategy,
             gradient_reduction="mean",
