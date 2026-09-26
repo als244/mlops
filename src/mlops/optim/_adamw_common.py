@@ -54,7 +54,6 @@ def validate_adamw_options(group: dict[str, Any]) -> None:
         "gradient_dtype",
         "reduction_dtype",
         "state_dtype",
-        "master_parameter_dtype",
     ):
         group[name] = normalize_dtype_policy(group[name], name=name)
     for name in ("parameter_rounding", "state_rounding"):

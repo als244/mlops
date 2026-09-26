@@ -62,11 +62,7 @@ def _full_reference_state(
 ) -> torch.Tensor:
     return torch.cat(
         [
-            (
-                optimizer.state[parameter].get("master_parameter", parameter)
-                if name == "master_parameter"
-                else optimizer.state[parameter][name]
-            )
+            (parameter if name == "parameter" else optimizer.state[parameter][name])
             .float()
             .reshape(-1)
             for parameter in parameters
@@ -80,14 +76,7 @@ def _distributed_state(
 ) -> list[torch.Tensor]:
     values = []
     for bucket in optimizer._distributed.buckets:
-        if name == "master_parameter":
-            value = (
-                bucket.master_parameter
-                if bucket.master_parameter is not None
-                else bucket.update_parameter
-            )
-        else:
-            value = getattr(bucket, name)
+        value = getattr(bucket, "update_parameter" if name == "parameter" else name)
         if optimizer.opt_state_strategy == "replicated":
             values.append(value[: bucket.element_count].float())
             continue
@@ -124,12 +113,10 @@ def _run_case(
             {
                 "params": reference[:1],
                 "state_dtype": torch.float32,
-                "master_parameter_dtype": torch.float32,
             },
             {
                 "params": reference[1:],
                 "state_dtype": torch.bfloat16,
-                "master_parameter_dtype": "parameter",
             },
         ],
         lr=3e-4,
@@ -142,12 +129,10 @@ def _run_case(
             {
                 "params": actual[:1],
                 "state_dtype": torch.float32,
-                "master_parameter_dtype": torch.float32,
             },
             {
                 "params": [*actual[1:], frozen],
                 "state_dtype": torch.bfloat16,
-                "master_parameter_dtype": "parameter",
             },
         ],
         lr=3e-4,
@@ -194,7 +179,7 @@ def _run_case(
     assert frozen not in actual_optimizer.state
 
     moment_metrics = {}
-    for name in ("exp_avg", "exp_avg_sq", "master_parameter"):
+    for name in ("exp_avg", "exp_avg_sq", "parameter"):
         expected = _full_reference_state(reference_optimizer, reference, name)
         actual_buckets = _distributed_state(actual_optimizer, name)
         actual_state = torch.cat(actual_buckets)
@@ -248,7 +233,6 @@ def _run_local_slice_canary(rank: int) -> dict[str, object]:
         lr=1e-3,
         gradient_dtype=torch.float32,
         state_dtype=torch.float32,
-        master_parameter_dtype=torch.float32,
     )
     shared_optimizer = AdamW(
         shared_actual,
@@ -256,7 +240,6 @@ def _run_local_slice_canary(rank: int) -> dict[str, object]:
         gradient_dtype=torch.bfloat16,
         reduction_dtype=torch.float32,
         state_dtype=torch.float32,
-        master_parameter_dtype=torch.float32,
         replica_group=dist.group.WORLD,
     )
     # Use an update larger than one BF16 ULP so the local-slice assertion is
