@@ -20,6 +20,30 @@ _FLOAT_DTYPES = {torch.bfloat16, torch.float16, torch.float32}
 if triton is not None:
 
     @triton.jit
+    def _rounded(value, dtype: tl.constexpr, STOCHASTIC: tl.constexpr, bits):
+        """``value`` at ``dtype``: to nearest, or stochastically.
+
+        Stochastic rounding takes the representable neighbour on either side
+        of the value -- toward zero, and one step away from it -- and picks the
+        upper with probability equal to how far along the gap the value lies,
+        so that in expectation nothing is lost: a small update to a weight or
+        a moment kept at low precision accumulates instead of vanishing. It
+        applies to a dtype narrower than FP32; FP32 itself is exact here. A
+        value beyond the largest finite one has no finite neighbour above it,
+        and is rounded to nearest, overflowing as it would there.
+        """
+
+        if STOCHASTIC and dtype.primitive_bitwidth == 16:
+            down = value.to(dtype, fp_downcast_rounding="rtz")
+            up = (down.to(tl.int16, bitcast=True) + 1).to(dtype, bitcast=True)
+            low = down.to(tl.float32)
+            high = up.to(tl.float32)
+            fraction = (value - low) / (high - low)
+            chosen = tl.where(tl.uint_to_uniform_float(bits) < fraction, up, down)
+            return tl.where(tl.abs(high) == float("inf"), value.to(dtype), chosen)
+        return value.to(dtype)
+
+    @triton.jit
     def _adamw_torch_kernel(
         master_parameter,
         gradient,
@@ -40,7 +64,10 @@ if triton is not None:
         eps,
         weight_decay,
         decay_factor,
+        salt,
         MAXIMIZE: tl.constexpr,
+        PARAMETER_STOCHASTIC: tl.constexpr,
+        STATE_STOCHASTIC: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
         offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
@@ -58,23 +85,40 @@ if triton is not None:
         master_f32 = tl.load(
             master_parameter + offsets, mask=mask, other=0
         ).to(tl.float32)
+        if PARAMETER_STOCHASTIC or STATE_STOCHASTIC:
+            # Counter-based bits, a function of the step, the tensor and the
+            # element alone: every implementation of the update draws the same.
+            seed = tl.load(step).to(tl.int64) * 1000003 + salt
+            master_bits, mean_bits, variance_bits, _ = tl.randint4x(seed, offsets)
+        else:
+            master_bits = offsets
+            mean_bits = offsets
+            variance_bits = offsets
 
         # PyTorch's default AdamW is a sequence of in-place tensor primitives.
-        # These casts reproduce the dtype-visible store between primitives.
-        master_f32 = (master_f32 * decay_factor).to(
-            out_master_parameter.dtype.element_ty
-        ).to(tl.float32)
+        # These casts reproduce the dtype-visible store between primitives --
+        # rounded to nearest, which stochastic rounding replaces with the one
+        # rounding of the stored result.
+        master_f32 = master_f32 * decay_factor
+        if not PARAMETER_STOCHASTIC:
+            master_f32 = master_f32.to(out_master_parameter.dtype.element_ty).to(
+                tl.float32
+            )
         mean = libdevice.fma(one_minus_beta1, gradient_f32 - mean, mean)
-        variance = (variance * beta2).to(out_exp_avg_sq.dtype.element_ty).to(
-            tl.float32
-        )
+        variance = variance * beta2
+        if not STATE_STOCHASTIC:
+            variance = variance.to(out_exp_avg_sq.dtype.element_ty).to(tl.float32)
         variance = libdevice.fma(
             one_minus_beta2,
             gradient_f32 * gradient_f32,
             variance,
         )
-        rounded_mean = mean.to(out_exp_avg.dtype.element_ty)
-        rounded_variance = variance.to(out_exp_avg_sq.dtype.element_ty)
+        rounded_mean = _rounded(
+            mean, out_exp_avg.dtype.element_ty, STATE_STOCHASTIC, mean_bits
+        )
+        rounded_variance = _rounded(
+            variance, out_exp_avg_sq.dtype.element_ty, STATE_STOCHASTIC, variance_bits
+        )
         tl.store(out_exp_avg + offsets, rounded_mean, mask=mask)
         tl.store(out_exp_avg_sq + offsets, rounded_variance, mask=mask)
 
@@ -97,7 +141,12 @@ if triton is not None:
             rounded_mean.to(tl.float32) / denominator,
             master_f32,
         )
-        rounded_master = master_f32.to(out_master_parameter.dtype.element_ty)
+        rounded_master = _rounded(
+            master_f32,
+            out_master_parameter.dtype.element_ty,
+            PARAMETER_STOCHASTIC,
+            master_bits,
+        )
         tl.store(out_master_parameter + offsets, rounded_master, mask=mask)
         tl.store(
             out_parameter + offsets,
@@ -126,7 +175,10 @@ if triton is not None:
         eps,
         weight_decay,
         decay_factor,
+        salt,
         MAXIMIZE: tl.constexpr,
+        PARAMETER_STOCHASTIC: tl.constexpr,
+        STATE_STOCHASTIC: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
         offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
@@ -144,11 +196,24 @@ if triton is not None:
         master_f32 = tl.load(
             master_parameter + offsets, mask=mask, other=0
         ).to(tl.float32)
+        if PARAMETER_STOCHASTIC or STATE_STOCHASTIC:
+            # Counter-based bits, a function of the step, the tensor and the
+            # element alone: every implementation of the update draws the same.
+            seed = tl.load(step).to(tl.int64) * 1000003 + salt
+            master_bits, mean_bits, variance_bits, _ = tl.randint4x(seed, offsets)
+        else:
+            master_bits = offsets
+            mean_bits = offsets
+            variance_bits = offsets
 
         mean = mean * beta1 + gradient_f32 * (1.0 - beta1)
         variance = variance * beta2 + gradient_f32 * gradient_f32 * (1.0 - beta2)
-        rounded_mean = mean.to(out_exp_avg.dtype.element_ty)
-        rounded_variance = variance.to(out_exp_avg_sq.dtype.element_ty)
+        rounded_mean = _rounded(
+            mean, out_exp_avg.dtype.element_ty, STATE_STOCHASTIC, mean_bits
+        )
+        rounded_variance = _rounded(
+            variance, out_exp_avg_sq.dtype.element_ty, STATE_STOCHASTIC, variance_bits
+        )
         tl.store(out_exp_avg + offsets, rounded_mean, mask=mask)
         tl.store(out_exp_avg_sq + offsets, rounded_variance, mask=mask)
 
@@ -169,7 +234,12 @@ if triton is not None:
             corrected_mean / (tl.sqrt(corrected_variance) + eps)
             + weight_decay * master_f32
         )
-        rounded_master = master_f32.to(out_master_parameter.dtype.element_ty)
+        rounded_master = _rounded(
+            master_f32,
+            out_master_parameter.dtype.element_ty,
+            PARAMETER_STOCHASTIC,
+            master_bits,
+        )
         tl.store(out_master_parameter + offsets, rounded_master, mask=mask)
         tl.store(
             out_parameter + offsets,
@@ -220,6 +290,9 @@ def _adamw_master_out_raw(
     eps: float,
     weight_decay: float,
     maximize: bool,
+    parameter_stochastic: bool = False,
+    state_stochastic: bool = False,
+    rounding_salt: int = 0,
     out: tuple[
         torch.Tensor,
         torch.Tensor,
@@ -272,7 +345,10 @@ def _adamw_master_out_raw(
         float(eps),
         float(weight_decay),
         float(1.0 - lr * weight_decay),
+        int(rounding_salt),
         MAXIMIZE=bool(maximize),
+        PARAMETER_STOCHASTIC=bool(parameter_stochastic),
+        STATE_STOCHASTIC=bool(state_stochastic),
         BLOCK=block,
     )
     # Every main-grid block must read the old scalar before it is overwritten.
@@ -294,6 +370,9 @@ def adamw_master_out_raw(
     eps: float,
     weight_decay: float,
     maximize: bool,
+    parameter_stochastic: bool = False,
+    state_stochastic: bool = False,
+    rounding_salt: int = 0,
     out: tuple[
         torch.Tensor,
         torch.Tensor,
@@ -317,6 +396,9 @@ def adamw_master_out_raw(
         eps=eps,
         weight_decay=weight_decay,
         maximize=maximize,
+        parameter_stochastic=parameter_stochastic,
+        state_stochastic=state_stochastic,
+        rounding_salt=rounding_salt,
         out=out,
     )
 
@@ -335,6 +417,9 @@ def adamw_master_out_internal_fp32_raw(
     eps: float,
     weight_decay: float,
     maximize: bool,
+    parameter_stochastic: bool = False,
+    state_stochastic: bool = False,
+    rounding_salt: int = 0,
     out: tuple[
         torch.Tensor,
         torch.Tensor,
@@ -358,6 +443,9 @@ def adamw_master_out_internal_fp32_raw(
         eps=eps,
         weight_decay=weight_decay,
         maximize=maximize,
+        parameter_stochastic=parameter_stochastic,
+        state_stochastic=state_stochastic,
+        rounding_salt=rounding_salt,
         out=out,
     )
 
@@ -376,6 +464,9 @@ def _adamw_out_raw(
     eps: float,
     weight_decay: float,
     maximize: bool,
+    parameter_stochastic: bool = False,
+    state_stochastic: bool = False,
+    rounding_salt: int = 0,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     out_parameter, out_exp_avg, out_exp_avg_sq, out_step = out
@@ -392,6 +483,9 @@ def _adamw_out_raw(
         eps=eps,
         weight_decay=weight_decay,
         maximize=maximize,
+        parameter_stochastic=parameter_stochastic,
+        state_stochastic=state_stochastic,
+        rounding_salt=rounding_salt,
         out=(
             out_parameter,
             out_parameter,
@@ -416,6 +510,9 @@ def adamw_out_raw(
     eps: float,
     weight_decay: float,
     maximize: bool,
+    parameter_stochastic: bool = False,
+    state_stochastic: bool = False,
+    rounding_salt: int = 0,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Write one PyTorch-compatible parameter-as-master update."""
@@ -432,6 +529,9 @@ def adamw_out_raw(
         eps=eps,
         weight_decay=weight_decay,
         maximize=maximize,
+        parameter_stochastic=parameter_stochastic,
+        state_stochastic=state_stochastic,
+        rounding_salt=rounding_salt,
         out=out,
     )
 
@@ -449,6 +549,9 @@ def adamw_out_internal_fp32_raw(
     eps: float,
     weight_decay: float,
     maximize: bool,
+    parameter_stochastic: bool = False,
+    state_stochastic: bool = False,
+    rounding_salt: int = 0,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Write one parameter-as-master update with internal-FP32 arithmetic."""
@@ -465,6 +568,9 @@ def adamw_out_internal_fp32_raw(
         eps=eps,
         weight_decay=weight_decay,
         maximize=maximize,
+        parameter_stochastic=parameter_stochastic,
+        state_stochastic=state_stochastic,
+        rounding_salt=rounding_salt,
         out=out,
     )
 

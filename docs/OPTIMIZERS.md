@@ -39,6 +39,8 @@ AdamW(
     reduction_dtype: dtype | "parameter" = torch.bfloat16,
     state_dtype: dtype | "parameter" = torch.bfloat16,
     master_parameter_dtype: dtype | "parameter" = torch.bfloat16,
+    parameter_rounding: Literal["nearest", "stochastic"] = "nearest",
+    state_rounding: Literal["nearest", "stochastic"] = "nearest",
     replica_group=None,
     opt_state_strategy: Literal["replicated", "sharded"] = "sharded",
     gradient_reduction: Literal["sum", "mean"] = "mean",
@@ -148,6 +150,42 @@ optimizer.step()
 optimizer.zero_grad(set_to_none=True)
 ```
 
+### Rounding
+
+The update computes in FP32 and rounds what it stores to the dtype that holds
+it. `parameter_rounding` chooses how the master is rounded -- the parameter
+itself when it is its own master -- and `state_rounding` how the first and
+second moments are, each `"nearest"` (the default) or `"stochastic"`, globally
+or per parameter group.
+
+Stochastic rounding takes the representable neighbour on either side of the
+value and picks the upper with probability equal to how far along the gap
+between them the value lies, so the stored value is the computed one in
+expectation. Rounded to nearest, an update smaller than half the gap to the
+next value is lost every step; rounded stochastically it accumulates. This is
+what lets a BF16 master, or BF16 moments, follow a trajectory that nearest
+rounding would stall. It applies to BF16 and FP16 storage; FP32 storage holds
+the computed value exactly. A model-visible parameter kept beside a distinct
+master is that master rounded to nearest either way: the master is what
+accumulates the updates. A value beyond the dtype's largest finite one is
+rounded to nearest, and overflows as it would there.
+
+The random bits are Philox bits counted from the step, a salt, and the
+element's index, so a run is reproducible, and an update draws the same bits
+eagerly and under anything capturing the step. Locally each parameter's salt
+is its position among the optimizer's parameters. In distributed execution
+each bucket has its own; in sharded execution each rank's shard also has its
+own, and replicas updating a whole bucket draw the same bits, so they stay
+replicas. The salt is a constant of each update, so under stochastic rounding
+no two parameters' updates are the same to anything capturing the step;
+rounded to nearest, every update is given the same salt.
+
+Rounded stochastically, a stored value is rounded once. The
+[PyTorch-compatible kernel](#arithmetic-semantics) otherwise rounds the
+decayed master and the decayed second moment to nearest before the rest of
+the update, as PyTorch's in-place primitives do; those roundings would bias
+what stochastic rounding keeps.
+
 ## `functional_adamw`
 
 ```python
@@ -164,6 +202,9 @@ functional_adamw(
     eps,
     weight_decay,
     maximize=False,
+    parameter_rounding="nearest",
+    state_rounding="nearest",
+    rounding_salt=0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]
 ```
 
@@ -173,7 +214,10 @@ are immutable. `gradient_scale` is applied in FP32 before the moment update.
 scalar tensor, as described under
 [Settings a step can change](#settings-a-step-can-change); the registered
 operators take them as tensors, so a captured update reads them rather than
-folding them in.
+folding them in. `parameter_rounding` and `state_rounding` are as described
+under [Rounding](#rounding); `rounding_salt` picks the stream of random bits
+stochastic rounding draws from, and each tensor updated at a step needs its
+own.
 
 ## `adamw`
 
@@ -191,6 +235,9 @@ adamw(
     eps,
     weight_decay,
     maximize=False,
+    parameter_rounding="nearest",
+    state_rounding="nearest",
+    rounding_salt=0,
     out=(out_parameter, out_exp_avg, out_exp_avg_sq, out_step),
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]
 ```
@@ -215,6 +262,9 @@ adamw_(
     eps,
     weight_decay,
     maximize=False,
+    parameter_rounding="nearest",
+    state_rounding="nearest",
+    rounding_salt=0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]
 ```
 
@@ -238,6 +288,9 @@ functional_master_adamw(
     eps,
     weight_decay,
     maximize=False,
+    parameter_rounding="nearest",
+    state_rounding="nearest",
+    rounding_salt=0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
 ```
 
@@ -261,6 +314,9 @@ master_adamw(
     eps,
     weight_decay,
     maximize=False,
+    parameter_rounding="nearest",
+    state_rounding="nearest",
+    rounding_salt=0,
     out=(
         out_parameter,
         out_master_parameter,
@@ -291,6 +347,9 @@ master_adamw_(
     eps,
     weight_decay,
     maximize=False,
+    parameter_rounding="nearest",
+    state_rounding="nearest",
+    rounding_salt=0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
 ```
 
@@ -333,8 +392,8 @@ host step using Python floating-point arithmetic. mlops keeps the step and
 update CUDA-resident so the operation remains asynchronous and suitable for
 captured/lowered execution. Rare FP16 differences and FP32 last-bit
 differences can therefore remain. `fused=True`, `capturable=True`, mixed dtype
-policies, gradient scaling, and a distinct master are separate arithmetic
-contracts rather than bitwise-equivalence claims.
+policies, gradient scaling, a distinct master, and stochastic rounding are
+separate arithmetic contracts rather than bitwise-equivalence claims.
 
 The original kernel is retained in `mlops.kernels.adamw` as
 `adamw_out_internal_fp32_raw` and
