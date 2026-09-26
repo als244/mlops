@@ -8,25 +8,27 @@ from ...dispatch.registry import Implementation, SupportResult, register_impleme
 from ...kernels.flash_attention import native_torch_attention
 
 
-def _supports(q, k, v, lengths, *, surface, **_kwargs):
+def _supports(q, k, v, cu_seqlens, max_seqlen, *, surface, **_kwargs):
+    del max_seqlen
     if surface == "explicit":
         return SupportResult.no("native SDPA is apply-only; use autograd for its VJP")
-    if not all(isinstance(value, torch.Tensor) for value in (q, k, v)):
-        return SupportResult.no("q, k, and v must be tensors")
-    normalized = tuple(int(length) for length in lengths)
-    if not normalized or any(length <= 0 for length in normalized):
-        return SupportResult.no("lengths must contain positive values")
-    if sum(normalized) != q.shape[0]:
-        return SupportResult.no("lengths must cover the query token axis")
+    if not all(isinstance(value, torch.Tensor) for value in (q, k, v, cu_seqlens)):
+        return SupportResult.no("q, k, v, and cu_seqlens must be tensors")
+    if cu_seqlens.ndim != 1 or cu_seqlens.dtype != torch.int32:
+        return SupportResult.no("cu_seqlens must be one-dimensional int32")
+    if cu_seqlens.device != q.device:
+        return SupportResult.no("cu_seqlens must be on the queries' device")
     return SupportResult.yes()
 
 
-def apply(q, k, v, lengths, *, causal=True, softmax_scale=None, deterministic=False):
+def apply(
+    q, k, v, cu_seqlens, max_seqlen, *, causal=True, softmax_scale=None, deterministic=False
+):
     # Dense SDPA per sequence is already order-stable; the registration says
     # so, and the request needs no kernel change here.
-    del deterministic
+    del max_seqlen, deterministic
     return native_torch_attention(
-        q, k, v, lengths, causal=causal, softmax_scale=softmax_scale
+        q, k, v, cu_seqlens, causal=causal, softmax_scale=softmax_scale
     )
 
 

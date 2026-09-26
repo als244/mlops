@@ -19,9 +19,22 @@ def _supports(first, *_args, surface, **_kwargs):
     return SupportResult.yes()
 
 
-def causal_apply(x, weight, lengths, cumulative, chunk_indices=None):
-    del cumulative, chunk_indices
+def _sequence_lengths(cumulative, tokens):
+    """The lengths the metadata describes, read back to the host.
+
+    A reference loops over sequences in Python, so it may read them. Empty
+    metadata is one sequence of every token; empty sequences are skipped.
+    """
+
+    if cumulative.numel() == 0:
+        return (tokens,)
+    return tuple(length for length in torch.diff(cumulative).tolist() if length)
+
+
+def causal_apply(x, weight, cumulative, chunk_indices=None):
+    del chunk_indices
     flat = x.reshape(-1, x.shape[-1])
+    lengths = _sequence_lengths(cumulative, flat.shape[0])
     return causal_conv_forward(flat, weight, lengths).reshape_as(x)
 
 
@@ -41,14 +54,14 @@ def linear_apply(
     a,
     a_log,
     dt_bias,
-    lengths,
     cumulative,
     chunk_indices,
     *,
     scale=None,
 ):
-    del cumulative, chunk_indices
+    del chunk_indices
     resolved_scale = q.shape[-1] ** -0.5 if scale is None else float(scale)
+    lengths = _sequence_lengths(cumulative, q.shape[0])
     return linear_attention_forward(
         q, k, v, beta, a, a_log, dt_bias, lengths, resolved_scale
     )
