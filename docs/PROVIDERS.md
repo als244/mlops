@@ -76,6 +76,15 @@ honour it raises rather than returning an unordered result. See
 [`deterministic_kernels`](API_REFERENCE.md#dispatch-and-development-apis) for
 the ambient form.
 
+An implementation whose backward returns a weight's gradient reads
+[`weight_gradient_dtype()`](API_REFERENCE.md#dispatch-and-development-apis) in
+`apply`, passes it to its forward and backward operators -- so a captured
+forward records the dtype its backward uses, and fake implementations report
+it -- and returns the gradient at it, unrounded where its kernel sums at a
+wider precision. `None` must leave the implementation exactly as it was. One
+whose weight gradient another library computes and rounds returns it as that
+library does. See [`rms_norm`](OPS.md#rms_norm) for the worked case.
+
 ## Tensor ownership
 
 The registry and provider adapter are stateless: neither may retain an input,

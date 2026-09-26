@@ -198,8 +198,10 @@ deterministic sorted accumulation of repeated token IDs.
 **Autograd and effects**
 
 Only `weight` is differentiable. Backward returns
-`grad_weight[V,D]`; `tokens` is saved as non-differentiable metadata. No
-input is mutated or aliased.
+`grad_weight[V,D]`, at the builtin implementation's
+[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+one is set; `tokens` is saved as non-differentiable metadata. No input is
+mutated or aliased.
 
 **Constraints and exceptions**
 
@@ -248,7 +250,9 @@ Applies RMS normalization over the final dimension followed by an affine gain.
 
 The optimized forward additionally exposes a private FP32 `rstd[R]` residual
 and saves `x`, `weight`, and `rstd`. Backward returns gradients for
-`x` and `weight`. No input is mutated.
+`x` and `weight`, the builtin implementation's `weight` gradient at
+[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+one is set. No input is mutated.
 
 **Constraints and exceptions**
 
@@ -302,7 +306,9 @@ Applies final-dimension LayerNorm with optional affine bias.
 
 The registered forward privately returns FP32 `mean[R]` and `rstd[R]`.
 Backward returns `grad_x`, `grad_weight`, and `grad_bias` when bias is
-present. No input is mutated.
+present, the builtin implementation's `grad_weight` and `grad_bias` at
+[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+one is set. No input is mutated.
 
 **Constraints and exceptions**
 
@@ -1474,7 +1480,10 @@ diagnostics.
 The registered path privately saves router logits, route weights/IDs, sorted
 assignment order, expert offsets, inverse slots, and packed pre-activation
 expert projections. Backward returns gradients for `h2`, `residual`,
-`router_weight`, `w13_experts`, and `w2_experts`. Router bias, counts,
+`router_weight`, `w13_experts`, and `w2_experts`; the builtin implementations
+return the weights' at
+[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+one is set, ScatterMoE its router's. Router bias, counts,
 probability diagnostics, and discrete route metadata do not receive gradients.
 The operation itself does not update router-bias or round counters.
 
@@ -1666,8 +1675,10 @@ Scalar FP32 mean cross-entropy.
 **Autograd and effects**
 
 The chunked forward never retains `[R,V]` logits. It computes and privately
-saves unit-cotangent `grad_hidden[R,D]` and `grad_head_weight[V,D]`.
-Registered backward scales those tensors out-of-place by the incoming loss
+saves unit-cotangent `grad_hidden[R,D]` and `grad_head_weight[V,D]`, the
+latter summed over chunks at
+[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+one is set. Registered backward scales those tensors out-of-place by the incoming loss
 cotangent and does not rerun projection or cross entropy. This supports
 repeated first-order VJPs but not higher-order differentiation.
 

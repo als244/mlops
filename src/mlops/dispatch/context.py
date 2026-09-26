@@ -1,8 +1,9 @@
 """Context-local implementation overrides and warmup-only dispatch tracing.
 
 Each choice can be made for one block -- ``use_implementations``,
-``deterministic_kernels`` -- or from a point on, for a caller that makes it
-once: ``set_implementations``, ``set_deterministic_kernels``.
+``deterministic_kernels``, ``weight_gradients_at`` -- or from a point on, for a
+caller that makes it once: ``set_implementations``,
+``set_deterministic_kernels``, ``set_weight_gradient_dtype``.
 """
 
 from __future__ import annotations
@@ -23,6 +24,9 @@ _TRACE: ContextVar[dict[str, dict[str, int]] | None] = ContextVar(
 )
 _DETERMINISTIC: ContextVar[bool] = ContextVar(
     "operation_deterministic_kernels", default=False
+)
+_WEIGHT_GRADIENT_DTYPE: ContextVar[torch.dtype | None] = ContextVar(
+    "operation_weight_gradient_dtype", default=None
 )
 
 
@@ -111,6 +115,49 @@ def set_deterministic_kernels(enabled: bool = True) -> None:
     what ``deterministic_kernels`` asks for one block, kept for the rest of the
     calling context."""
     _DETERMINISTIC.set(bool(enabled))
+
+
+@torch.compiler.assume_constant_result
+def weight_gradient_dtype() -> torch.dtype | None:
+    """Return the dtype operations give their weights' gradients at, as an
+    artifact constant; ``None`` is each weight's own dtype."""
+    return _WEIGHT_GRADIENT_DTYPE.get()
+
+
+def _floating(dtype: torch.dtype | None) -> torch.dtype | None:
+    if dtype is not None and (
+        not isinstance(dtype, torch.dtype) or not dtype.is_floating_point
+    ):
+        raise ValueError(f"weight gradients need a floating dtype or None; got {dtype!r}")
+    return dtype
+
+
+@contextmanager
+def weight_gradients_at(dtype: torch.dtype | None):
+    """Ask every operation for the gradients of its weights at ``dtype``.
+
+    An operation that sums a weight's gradient over rows -- a norm's weight, an
+    embedding table, a head over its chunks, an expert's weights -- keeps the
+    sum at fp32 and rounds it to the weight's dtype as it returns it. Asked for
+    another dtype, it returns the sum at that one instead: a caller that keeps
+    gradients at fp32 gets them without that rounding. The dtype is read when
+    an operation is called and travels with it, so a captured graph keeps the
+    one it was captured under. ``None``, the default, is each weight's own
+    dtype. Operations whose weight gradients a library computes and rounds
+    itself -- FLA's, Liger's -- return them as that library does.
+    """
+    token = _WEIGHT_GRADIENT_DTYPE.set(_floating(dtype))
+    try:
+        yield dtype
+    finally:
+        _WEIGHT_GRADIENT_DTYPE.reset(token)
+
+
+def set_weight_gradient_dtype(dtype: torch.dtype | None) -> None:
+    """Ask for weight gradients at ``dtype`` from here on: what
+    ``weight_gradients_at`` asks for one block, kept for the rest of the
+    calling context."""
+    _WEIGHT_GRADIENT_DTYPE.set(_floating(dtype))
 
 
 @contextmanager

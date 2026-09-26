@@ -282,9 +282,11 @@ def rms_norm_backward(
     grad_x.copy_(
         (rstd.unsqueeze(-1) * (grad_hat - x_hat * correction)).to(x.dtype).reshape_as(x)
     )
-    output_dtype = weight.dtype if grad_weight_dtype is None else grad_weight_dtype
+    products = grad_output.reshape(rows, width) * x_hat_storage
     grad_weight = (
-        (grad_output.reshape(rows, width) * x_hat_storage).sum(0).to(output_dtype)
+        products.sum(0).to(weight.dtype)
+        if grad_weight_dtype is None
+        else products.sum(0, dtype=grad_weight_dtype)
     )
     return grad_x, grad_weight
 

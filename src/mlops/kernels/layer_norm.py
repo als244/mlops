@@ -250,7 +250,9 @@ def layer_norm_forward(x, weight, bias, eps):
     return output, mean, rstd
 
 
-def layer_norm_backward(grad_output, x, weight, mean, rstd):
+def layer_norm_backward(grad_output, x, weight, mean, rstd, grad_weight_dtype=None):
+    """Return ``(grad_x, grad_weight, grad_bias)``, the weight's and bias's at
+    ``grad_weight_dtype`` -- the weight's own when ``None``."""
     width = x.shape[-1]
     rows = x.numel() // width
     grad_output = grad_output.contiguous()
@@ -280,10 +282,11 @@ def layer_norm_backward(grad_output, x, weight, mean, rstd):
             ROWS_PER_PROGRAM=_ROWS_PER_PROGRAM,
             BLOCK=_BLOCK,
         )
+        output_dtype = weight.dtype if grad_weight_dtype is None else grad_weight_dtype
         return (
             grad_x,
-            partials[0].sum(0).to(weight.dtype),
-            partials[1].sum(0).to(weight.dtype),
+            partials[0].sum(0).to(output_dtype),
+            partials[1].sum(0).to(output_dtype),
         )
     x_float = x.reshape(rows, width).float()
     normalized = (x_float - mean.unsqueeze(-1)) * rstd.unsqueeze(-1)
@@ -301,10 +304,13 @@ def layer_norm_backward(grad_output, x, weight, mean, rstd):
         .to(x.dtype)
         .reshape_as(x)
     )
-    grad_weight = (
-        (grad_output.reshape(rows, width) * normalized_storage).sum(0).to(weight.dtype)
-    )
-    grad_bias = grad_output.reshape(rows, width).sum(0).to(weight.dtype)
+    products = grad_output.reshape(rows, width) * normalized_storage
+    if grad_weight_dtype is None:
+        grad_weight = products.sum(0).to(weight.dtype)
+        grad_bias = grad_output.reshape(rows, width).sum(0).to(weight.dtype)
+    else:
+        grad_weight = products.sum(0, dtype=grad_weight_dtype)
+        grad_bias = grad_output.reshape(rows, width).sum(0, dtype=grad_weight_dtype)
     return grad_x, grad_weight, grad_bias
 
 
