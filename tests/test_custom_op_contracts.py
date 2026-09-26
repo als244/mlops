@@ -2,6 +2,7 @@
 
 import ast
 import importlib
+from functools import partial
 from pathlib import Path
 
 import mlops
@@ -153,16 +154,21 @@ def _parameter(*shape, dtype=torch.bfloat16):
     return torch.randn(*shape, device="cuda", dtype=dtype, requires_grad=True)
 
 
-def _embedding_args():
-    return torch.tensor([[1, 3, 1, 5]], device="cuda"), _parameter(17, 16)
+def _embedding_args(weight_grad_dtype=None):
+    tokens = torch.tensor([[1, 3, 1, 5]], device="cuda")
+    return tokens, _parameter(17, 16), weight_grad_dtype
 
 
 def _rms_norm_args():
     return _parameter(6, 16), _parameter(16), 1e-5
 
 
-def _layer_norm_args():
-    return _parameter(6, 16), _parameter(16), _parameter(16), 1e-5
+def _builtin_rms_norm_args(weight_grad_dtype=None):
+    return (*_rms_norm_args(), weight_grad_dtype)
+
+
+def _layer_norm_args(weight_grad_dtype=None):
+    return _parameter(6, 16), _parameter(16), _parameter(16), 1e-5, weight_grad_dtype
 
 
 def _rope_args():
@@ -230,13 +236,14 @@ def _cross_entropy_args():
     )
 
 
-def _head_args():
+def _head_args(weight_grad_dtype=None):
     return (
         _parameter(7, 16),
         _parameter(31, 16),
         torch.randint(0, 31, (7,), device="cuda"),
         4,
         7,
+        weight_grad_dtype,
     )
 
 
@@ -287,7 +294,7 @@ def _linear_attention_args():
     )
 
 
-def _moe_args():
+def _moe_args(weight_grad_dtype=None):
     return (
         _parameter(8, 32),
         _parameter(8, 32),
@@ -304,26 +311,12 @@ def _moe_args():
         1.0,
         [8],
         "float32",
+        weight_grad_dtype,
     )
 
 
-def _scattermoe_args():
-    arguments = _moe_args()
-    return (
-        *arguments[:5],
-        arguments[5],
-        arguments[6],
-        arguments[7],
-        arguments[8],
-        arguments[9],
-        arguments[10],
-        arguments[11],
-        arguments[12],
-    )
-
-
-def _moe_prepare_args():
-    arguments = _moe_args()
+def _moe_prepare_args(weight_grad_dtype=None):
+    arguments = _moe_args(weight_grad_dtype)
     return (
         arguments[0],
         arguments[2],
@@ -336,12 +329,13 @@ def _moe_prepare_args():
         arguments[10],
         arguments[11],
         arguments[12],
+        arguments[13],
     )
 
 
-def _moe_finish_args():
-    arguments = _moe_args()
-    prepared = moe_composed._prepare_op(*_moe_prepare_args())
+def _moe_finish_args(weight_grad_dtype=None):
+    arguments = _moe_args(weight_grad_dtype)
+    prepared = moe_composed._prepare_op(*_moe_prepare_args(weight_grad_dtype))
     return (
         prepared[9],
         arguments[4],
@@ -351,13 +345,14 @@ def _moe_finish_args():
         prepared[8],
         arguments[1],
         arguments[6],
+        weight_grad_dtype,
     )
 
 
 OPCHECK_CASES = (
     ("cross_entropy", cross_entropy._forward_op, _cross_entropy_args),
     ("embedding", embedding._forward_op, _embedding_args),
-    ("rms_norm_builtin", rms_norm_builtin._forward_op, _rms_norm_args),
+    ("rms_norm_builtin", rms_norm_builtin._forward_op, _builtin_rms_norm_args),
     ("rms_norm_liger", rms_norm_liger._forward_op, _rms_norm_args),
     ("layer_norm", layer_norm._forward_op, _layer_norm_args),
     ("rope_table", rope._table_forward_op, _rope_args),
@@ -382,7 +377,21 @@ OPCHECK_CASES = (
     ("moe", moe._forward_op, _moe_args),
     ("moe_prepare", moe_composed._prepare_op, _moe_prepare_args),
     ("moe_finish", moe_composed._finish_op, _moe_finish_args),
-    ("scattermoe", scattermoe._forward_op, _scattermoe_args),
+    ("scattermoe", scattermoe._forward_op, _moe_args),
+    # The operations that return weight gradients, asked for them at fp32.
+    *(
+        (f"{name}_fp32_weight_gradients", operator, partial(make, torch.float32))
+        for name, operator, make in (
+            ("embedding", embedding._forward_op, _embedding_args),
+            ("rms_norm_builtin", rms_norm_builtin._forward_op, _builtin_rms_norm_args),
+            ("layer_norm", layer_norm._forward_op, _layer_norm_args),
+            ("head", head._forward_op, _head_args),
+            ("moe", moe._forward_op, _moe_args),
+            ("moe_prepare", moe_composed._prepare_op, _moe_prepare_args),
+            ("moe_finish", moe_composed._finish_op, _moe_finish_args),
+            ("scattermoe", scattermoe._forward_op, _moe_args),
+        )
+    ),
 )
 
 

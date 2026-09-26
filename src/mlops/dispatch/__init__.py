@@ -7,8 +7,11 @@ from .context import (
     dispatch_manifest,
     set_deterministic_kernels,
     set_implementations,
+    set_weight_gradient_dtype,
     use_implementation,
     use_implementations,
+    weight_gradient_dtype,
+    weight_gradients_at,
 )
 from .costs import CostHints, estimate_implementation
 from .gradcheck import (
@@ -43,6 +46,9 @@ __all__ = [
     "resolve_implementation",
     "set_deterministic_kernels",
     "set_implementations",
+    "set_weight_gradient_dtype",
     "use_implementation",
     "use_implementations",
+    "weight_gradient_dtype",
+    "weight_gradients_at",
 ]
