@@ -327,7 +327,7 @@ def test_explicit_flash_attention_matches_registered_autograd_vjp():
         pytest.skip("explicit FlashAttention VJP requires native flash")
     cotangent = torch.randn_like(q)
 
-    expected_output = semantic_flash_attention(q, k, v, lengths)
+    expected_output = semantic_flash_attention(q, k, v, cu_seqlens, 5)
     expected_gradients = torch.autograd.grad(
         expected_output,
         (q, k, v),

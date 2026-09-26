@@ -25,6 +25,13 @@ def _fa3_unavailable_reason() -> str | None:
 _UNAVAILABLE = _fa3_unavailable_reason()
 
 
+def _offsets(lengths):
+    offsets = [0]
+    for length in lengths:
+        offsets.append(offsets[-1] + length)
+    return torch.tensor(offsets, dtype=torch.int32, device="cuda")
+
+
 @pytest.mark.skipif(_UNAVAILABLE is not None, reason=_UNAVAILABLE or "available")
 def test_builtin_flash_attention_activates_fa3_on_hopper():
     lengths = (64, 96, 32)
@@ -33,7 +40,7 @@ def test_builtin_flash_attention_activates_fa3_on_hopper():
         torch.randn(sum(lengths), 4, 128, device="cuda", dtype=torch.bfloat16)
         for _ in range(3)
     )
-    output = mlops.flash_attention(q, k, v, lengths, causal=True)
+    output = mlops.flash_attention(q, k, v, _offsets(lengths), max(lengths), causal=True)
     assert builtin_flash_attention._FA3_ACTIVE
 
     references = []
@@ -71,10 +78,18 @@ def _attention_gradients(*, deterministic, ambient=False):
             tensor.grad = None
         if ambient:
             with deterministic_kernels():
-                output = mlops.flash_attention(q, k, v, lengths, causal=True)
+                output = mlops.flash_attention(
+                    q, k, v, _offsets(lengths), max(lengths), causal=True
+                )
         else:
             output = mlops.flash_attention(
-                q, k, v, lengths, causal=True, deterministic=deterministic
+                q,
+                k,
+                v,
+                _offsets(lengths),
+                max(lengths),
+                causal=True,
+                deterministic=deterministic,
             )
         output.backward(grad_output)
         return tuple(tensor.grad.detach().clone() for tensor in (q, k, v))

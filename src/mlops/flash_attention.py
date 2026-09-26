@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import torch
 
 from .dispatch import deterministic_required, resolve_implementation
@@ -13,7 +11,8 @@ def flash_attention(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    lengths: Sequence[int],
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
     *,
     causal: bool = True,
     softmax_scale: float | None = None,
@@ -21,13 +20,19 @@ def flash_attention(
 ) -> torch.Tensor:
     """Apply an exact variable-length attention implementation.
 
+    ``cu_seqlens`` are the cumulative sequence offsets along the token axis, a
+    one-dimensional integer tensor from 0 to the token count, and
+    ``max_seqlen`` bounds the longest sequence. The offsets are data: a
+    captured graph takes them as an input, so one graph serves every packing
+    of the same tokens. A repeated trailing offset is an empty sequence, which
+    pads the tensor to a fixed size.
+
     ``deterministic`` asks for a backward whose accumulation order is fixed,
     so one step from one seed always lands on the same gradients.  It costs
     throughput, so it defaults to whatever ``deterministic_kernels`` is in
     effect, which is off.
     """
     q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
-    normalized_lengths = tuple(int(length) for length in lengths)
     # Resolve the request here rather than inside the implementation: the
     # answer is baked into any graph captured from this call, and a context
     # variable read at replay time would report the wrong era.
@@ -37,7 +42,8 @@ def flash_attention(
         q,
         k,
         v,
-        normalized_lengths,
+        cu_seqlens,
+        int(max_seqlen),
         surface="semantic",
         causal=bool(causal),
         softmax_scale=softmax_scale,
@@ -47,7 +53,8 @@ def flash_attention(
         q,
         k,
         v,
-        normalized_lengths,
+        cu_seqlens,
+        int(max_seqlen),
         causal=bool(causal),
         softmax_scale=softmax_scale,
         deterministic=required,

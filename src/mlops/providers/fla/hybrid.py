@@ -36,20 +36,13 @@ def _cuda_support(*tensors):
     return SupportResult.yes()
 
 
-def _causal_support(
-    x, weight, lengths, cumulative, chunk_indices=None, *, surface, **_kwargs
-):
+def _causal_support(x, weight, cumulative, chunk_indices=None, *, surface, **_kwargs):
     del surface
     supported = _cuda_support(x, weight, cumulative)
     if not supported:
         return supported
     if cumulative.dtype != torch.int64 or cumulative.ndim != 1:
         return SupportResult.no("cumulative must be a one-dimensional INT64 tensor")
-    expected = 0 if len(lengths) == 1 else len(lengths) + 1
-    if lengths and cumulative.numel() != expected:
-        return SupportResult.no(
-            f"cumulative must contain {expected} values for {len(lengths)} sequences"
-        )
     if chunk_indices is not None and (
         not isinstance(chunk_indices, torch.Tensor)
         or chunk_indices.dtype != torch.int64
@@ -63,9 +56,8 @@ def _causal_support(
     return SupportResult.yes()
 
 
-def causal_forward(x, weight, lengths, cumulative, chunk_indices=None):
+def causal_forward(x, weight, cumulative, chunk_indices=None):
     with torch.no_grad():
-        del lengths
         return fla_causal_conv_forward(
             x, weight, cumulative, chunk_indices
         )
@@ -80,11 +72,9 @@ def causal_backward(
         )
 
 
-def causal_apply(x, weight, lengths, cumulative, chunk_indices=None):
+def causal_apply(x, weight, cumulative, chunk_indices=None):
     flat = x.reshape(-1, x.shape[-1])
-    output = _causal_forward_op(
-        flat, weight, list(lengths), cumulative, chunk_indices
-    )
+    output = _causal_forward_op(flat, weight, cumulative, chunk_indices)
     return output.reshape_as(x)
 
 
@@ -94,16 +84,15 @@ def causal_apply(x, weight, lengths, cumulative, chunk_indices=None):
 def _causal_forward_op(
     x: torch.Tensor,
     weight: torch.Tensor,
-    lengths: list[int],
     cumulative: torch.Tensor,
     chunk_indices: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    return causal_forward(x, weight, lengths, cumulative, chunk_indices)
+    return causal_forward(x, weight, cumulative, chunk_indices)
 
 
 @_causal_forward_op.register_fake
-def _causal_forward_fake(x, weight, lengths, cumulative, chunk_indices=None):
-    del weight, lengths, cumulative, chunk_indices
+def _causal_forward_fake(x, weight, cumulative, chunk_indices=None):
+    del weight, cumulative, chunk_indices
     return torch.empty_like(x)
 
 
@@ -131,11 +120,11 @@ def _causal_backward_fake(
 
 
 def _setup_causal_context(ctx, inputs, output):
-    x, weight, _lengths, cumulative, chunk_indices = inputs
+    x, weight, cumulative, chunk_indices = inputs
+    ctx.has_chunk_indices = chunk_indices is not None
     if chunk_indices is None:
         chunk_indices = cumulative.new_empty((0, 2))
     ctx.save_for_backward(x, weight, cumulative, chunk_indices)
-    ctx.has_chunk_indices = inputs[4] is not None
 
 
 def _causal_autograd_backward(ctx, grad_output):
@@ -147,7 +136,7 @@ def _causal_autograd_backward(ctx, grad_output):
         cumulative,
         chunk_indices if ctx.has_chunk_indices else None,
     )
-    return grad_x, grad_weight, None, None, None
+    return grad_x, grad_weight, None, None
 
 
 _causal_forward_op.register_autograd(
@@ -321,7 +310,6 @@ def _linear_support(
     a,
     a_log,
     dt_bias,
-    lengths,
     cumulative,
     chunk_indices,
     *,
@@ -341,19 +329,15 @@ def _linear_support(
         chunk_indices.ndim != 2 or chunk_indices.shape[1] != 2
     ):
         return SupportResult.no("chunk_indices must have shape [chunks, 2] and dtype INT64")
-    if len(lengths) == 1:
-        if cumulative.numel() or chunk_indices.numel():
-            return SupportResult.no("single-sequence metadata must use empty tensors")
-    elif lengths and cumulative.numel() != len(lengths) + 1:
-        return SupportResult.no("cumulative size must equal len(lengths) + 1")
+    if (cumulative.numel() == 0) != (chunk_indices.numel() == 0):
+        return SupportResult.no("single-sequence metadata is empty in both tensors")
     return SupportResult.yes()
 
 
 def linear_forward(
-    q, k, v, beta, a, a_log, dt_bias, lengths, cumulative, chunk_indices, *, scale
+    q, k, v, beta, a, a_log, dt_bias, cumulative, chunk_indices, *, scale
 ):
     with torch.no_grad():
-        del lengths
         output, gate, matrix = (
             fla_linear_attention_forward(
                 q,
@@ -403,7 +387,6 @@ def linear_apply(
     a,
     a_log,
     dt_bias,
-    lengths,
     cumulative,
     chunk_indices,
     *,
@@ -449,7 +432,6 @@ def _linear_forward_op(
         a,
         a_log,
         dt_bias,
-        (),
         cumulative,
         chunk_indices,
         scale=float(scale),

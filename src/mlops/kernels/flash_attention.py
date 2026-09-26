@@ -11,7 +11,28 @@ import torch
 import torch.nn.functional as functional
 
 
-def _block_causal_mask(lengths: tuple[int, ...], device: torch.device) -> torch.Tensor:
+def _sequence_ids(
+    sequences: tuple[int, ...] | torch.Tensor, total: int, device: torch.device
+) -> torch.Tensor:
+    """The sequence each token belongs to.
+
+    ``sequences`` is integer lengths, or cumulative offsets as a tensor, whose
+    repeated trailing offsets are empty sequences that own no token.
+    """
+    if isinstance(sequences, torch.Tensor):
+        tokens = torch.arange(total, dtype=sequences.dtype, device=sequences.device)
+        return torch.searchsorted(sequences[1:], tokens, right=True)
+    return torch.cat(
+        [
+            torch.full((length,), index, dtype=torch.int64, device=device)
+            for index, length in enumerate(sequences)
+        ]
+    )
+
+
+def _block_causal_mask(
+    sequences: tuple[int, ...] | torch.Tensor, total: int, device: torch.device
+) -> torch.Tensor:
     """Build the packed causal mask without mutation.
 
     A slice-assignment implementation is mathematically straightforward but
@@ -20,13 +41,7 @@ def _block_causal_mask(lengths: tuple[int, ...], device: torch.device) -> torch.
     pure expression.  This keeps the native-Torch correctness provider usable
     by strict Export/AOTAutograd as well as ordinary eager autograd.
     """
-    total = sum(lengths)
-    sequence_ids = torch.cat(
-        [
-            torch.full((length,), index, dtype=torch.int64, device=device)
-            for index, length in enumerate(lengths)
-        ]
-    )
+    sequence_ids = _sequence_ids(sequences, total, device)
     positions = torch.arange(total, dtype=torch.int64, device=device)
     allowed = (sequence_ids[:, None] == sequence_ids[None, :]) & (
         positions[:, None] >= positions[None, :]
@@ -40,20 +55,24 @@ def native_torch_attention(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    lengths,
+    sequences,
     *,
     causal: bool = True,
     softmax_scale: float | None = None,
 ) -> torch.Tensor:
-    """Match the raw models' single-call packed varlen SDPA expression."""
-    lengths = tuple(int(length) for length in lengths)
+    """Match the raw models' single-call packed varlen SDPA expression.
+
+    ``sequences`` is integer lengths or a cumulative-offsets tensor.
+    """
+    if not isinstance(sequences, torch.Tensor):
+        sequences = tuple(int(length) for length in sequences)
     if not causal:
         raise ValueError("reference packed SDPA currently requires causal=True")
     repeat = q.shape[1] // k.shape[1]
     query = q.transpose(0, 1).unsqueeze(0)
     key = k.repeat_interleave(repeat, dim=1).transpose(0, 1).unsqueeze(0)
     value = v.repeat_interleave(repeat, dim=1).transpose(0, 1).unsqueeze(0)
-    mask = _block_causal_mask(lengths, q.device).to(q.dtype)
+    mask = _block_causal_mask(sequences, q.shape[0], q.device).to(q.dtype)
     output = functional.scaled_dot_product_attention(
         query,
         key,
