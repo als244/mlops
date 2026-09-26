@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 import torch
 
-from ..providers.builtin.adamw import Rounding, adamw_, master_adamw_
+from ..providers.builtin.adamw import Rounding, adamw_
 from ._adamw_common import (
     DTypePolicy,
     hold_settings_on_host,
@@ -43,7 +43,6 @@ class AdamW(torch.optim.Optimizer):
         gradient_dtype: DTypePolicy = torch.bfloat16,
         reduction_dtype: DTypePolicy = torch.bfloat16,
         state_dtype: DTypePolicy = torch.bfloat16,
-        master_parameter_dtype: DTypePolicy = torch.bfloat16,
         parameter_rounding: Rounding = "nearest",
         state_rounding: Rounding = "nearest",
         replica_group: Any | None = None,
@@ -69,9 +68,6 @@ class AdamW(torch.optim.Optimizer):
                 reduction_dtype, name="reduction_dtype"
             ),
             "state_dtype": normalize_dtype_policy(state_dtype, name="state_dtype"),
-            "master_parameter_dtype": normalize_dtype_policy(
-                master_parameter_dtype, name="master_parameter_dtype"
-            ),
             "parameter_rounding": parameter_rounding,
             "state_rounding": state_rounding,
         }
@@ -123,12 +119,9 @@ class AdamW(torch.optim.Optimizer):
         state: dict[str, Any],
     ) -> None:
         state_dtype = resolve_dtype(group["state_dtype"], parameter)
-        master_dtype = resolve_dtype(group["master_parameter_dtype"], parameter)
         state["step"] = torch.zeros((), dtype=torch.int64, device=parameter.device)
         state["exp_avg"] = torch.zeros_like(parameter, dtype=state_dtype)
         state["exp_avg_sq"] = torch.zeros_like(parameter, dtype=state_dtype)
-        if master_dtype != parameter.dtype:
-            state["master_parameter"] = parameter.detach().to(master_dtype).clone()
 
     @torch.no_grad()
     def _local_step(self) -> None:
@@ -176,26 +169,14 @@ class AdamW(torch.optim.Optimizer):
                     # capturing the step.
                     "rounding_salt": salt if "stochastic" in roundings else 0,
                 }
-                master = state.get("master_parameter")
-                if master is None:
-                    adamw_(
-                        parameter,
-                        update_gradient,
-                        state["exp_avg"],
-                        state["exp_avg_sq"],
-                        state["step"],
-                        **common,
-                    )
-                else:
-                    master_adamw_(
-                        parameter,
-                        master,
-                        update_gradient,
-                        state["exp_avg"],
-                        state["exp_avg_sq"],
-                        state["step"],
-                        **common,
-                    )
+                adamw_(
+                    parameter,
+                    update_gradient,
+                    state["exp_avg"],
+                    state["exp_avg_sq"],
+                    state["step"],
+                    **common,
+                )
 
     @torch.no_grad()
     def step(self, closure=None):

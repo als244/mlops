@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 import torch.distributed as dist
 
-from ..providers.builtin.adamw import adamw_, master_adamw_
+from ..providers.builtin.adamw import adamw_
 from ._adamw_common import resolve_dtype, validate_adamw_options
 
 if TYPE_CHECKING:
@@ -60,13 +60,11 @@ class _Bucket:
     gradient_dtype: torch.dtype
     reduction_dtype: torch.dtype
     state_dtype: torch.dtype
-    master_dtype: torch.dtype
     element_count: int
     padded_element_count: int
     shard_element_count: int
     flat_parameter: torch.Tensor | None = None
     update_parameter: torch.Tensor | None = None
-    master_parameter: torch.Tensor | None = None
     exp_avg: torch.Tensor | None = None
     exp_avg_sq: torch.Tensor | None = None
     step: torch.Tensor | None = None
@@ -130,7 +128,7 @@ class DistributedAdamWRuntime:
         self._parameters = parameters
         self.buckets = self._make_buckets()
         self.spec = DistributedAdamWSpec(
-            schema_version="mlops.distributed_adamw.v3",
+            schema_version="mlops.distributed_adamw.v4",
             opt_state_strategy=str(optimizer.opt_state_strategy),
             gradient_reduction=optimizer.gradient_reduction,
             bucket_bytes=optimizer.bucket_bytes,
@@ -192,11 +190,6 @@ class DistributedAdamWRuntime:
                         "state_dtype": _dtype_name(
                             resolve_dtype(group["state_dtype"], parameter)
                         ),
-                        "master_dtype": _dtype_name(
-                            resolve_dtype(
-                                group["master_parameter_dtype"], parameter
-                            )
-                        ),
                         "lr": float(group["lr"]),
                         "betas": [float(value) for value in group["betas"]],
                         "eps": float(group["eps"]),
@@ -234,7 +227,6 @@ class DistributedAdamWRuntime:
                 gradient_dtype,
                 reduction_dtype,
                 state_dtype,
-                master_dtype,
             ) = active_signature
             bucket_element_offset = 0
             records = []
@@ -275,7 +267,6 @@ class DistributedAdamWRuntime:
                     gradient_dtype=gradient_dtype,
                     reduction_dtype=reduction_dtype,
                     state_dtype=state_dtype,
-                    master_dtype=master_dtype,
                     element_count=active_elements,
                     padded_element_count=padded,
                     shard_element_count=padded // multiple,
@@ -296,7 +287,6 @@ class DistributedAdamWRuntime:
                     resolve_dtype(group["gradient_dtype"], parameter),
                     reduction_dtype,
                     resolve_dtype(group["state_dtype"], parameter),
-                    resolve_dtype(group["master_parameter_dtype"], parameter),
                 )
                 if signature != active_signature:
                     flush()
@@ -439,10 +429,6 @@ class DistributedAdamWRuntime:
             )
             bucket.exp_avg_sq = torch.zeros_like(bucket.exp_avg)
             bucket.step = torch.zeros((), device=self.device, dtype=torch.int64)
-            if bucket.master_dtype != bucket.parameter_dtype:
-                bucket.master_parameter = bucket.update_parameter.to(
-                    bucket.master_dtype
-                ).clone()
         self._materialized = True
 
     def _workspace_key(self, bucket: _Bucket) -> tuple[torch.dtype, torch.dtype]:
@@ -592,25 +578,14 @@ class DistributedAdamWRuntime:
                 else 0
             ),
         }
-        if bucket.master_parameter is None:
-            adamw_(
-                bucket.update_parameter,
-                reduced_gradient,
-                bucket.exp_avg,
-                bucket.exp_avg_sq,
-                bucket.step,
-                **common,
-            )
-        else:
-            master_adamw_(
-                bucket.update_parameter,
-                bucket.master_parameter,
-                reduced_gradient,
-                bucket.exp_avg,
-                bucket.exp_avg_sq,
-                bucket.step,
-                **common,
-            )
+        adamw_(
+            bucket.update_parameter,
+            reduced_gradient,
+            bucket.exp_avg,
+            bucket.exp_avg_sq,
+            bucket.step,
+            **common,
+        )
 
     def _launch_all_gather(self, bucket: _Bucket) -> None:
         work = dist.all_gather_single(
@@ -669,7 +644,6 @@ class DistributedAdamWRuntime:
                         "exp_avg": bucket.exp_avg,
                         "exp_avg_sq": bucket.exp_avg_sq,
                         "step": bucket.step,
-                        "master_parameter": bucket.master_parameter,
                     }
                     for bucket in self.buckets
                 ],
@@ -705,12 +679,6 @@ class DistributedAdamWRuntime:
             bucket.exp_avg.copy_(saved["exp_avg"])
             bucket.exp_avg_sq.copy_(saved["exp_avg_sq"])
             bucket.step.copy_(saved["step"])
-            if (bucket.master_parameter is None) != (
-                saved["master_parameter"] is None
-            ):
-                raise ValueError("distributed AdamW checkpoint master policy differs")
-            if bucket.master_parameter is not None:
-                bucket.master_parameter.copy_(saved["master_parameter"])
 
     def execution_manifest(self) -> dict[str, Any]:
         """Describe local objects and internal workspace for lowering."""
@@ -731,14 +699,10 @@ class DistributedAdamWRuntime:
                 if self.optimizer.opt_state_strategy == "replicated"
                 else bucket.shard_element_count
             )
-            persistent_bytes = state_elements * (
-                2 * bucket.state_dtype.itemsize
-                + (
-                    bucket.master_dtype.itemsize
-                    if bucket.master_dtype != bucket.parameter_dtype
-                    else 0
-                )
-            ) + torch.tensor([], dtype=torch.int64).element_size()
+            persistent_bytes = (
+                state_elements * 2 * bucket.state_dtype.itemsize
+                + torch.tensor([], dtype=torch.int64).element_size()
+            )
             parameter_shard_bytes = (
                 bucket.shard_element_count * bucket.parameter_dtype.itemsize
                 if self.optimizer.opt_state_strategy == "sharded"

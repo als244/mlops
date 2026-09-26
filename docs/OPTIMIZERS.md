@@ -38,7 +38,6 @@ AdamW(
     gradient_dtype: dtype | "parameter" = torch.bfloat16,
     reduction_dtype: dtype | "parameter" = torch.bfloat16,
     state_dtype: dtype | "parameter" = torch.bfloat16,
-    master_parameter_dtype: dtype | "parameter" = torch.bfloat16,
     parameter_rounding: Literal["nearest", "stochastic"] = "nearest",
     state_rounding: Literal["nearest", "stochastic"] = "nearest",
     replica_group=None,
@@ -89,7 +88,7 @@ a setting held in a tensor is a branch on data a capture cannot resolve.
 
 ### dtype policies
 
-The four dtype policies are independent and may be set globally or in an
+The three dtype policies are independent and may be set globally or in an
 individual parameter-group dictionary:
 
 | Option | Meaning | Default |
@@ -97,15 +96,14 @@ individual parameter-group dictionary:
 | `gradient_dtype` | dtype used while packing a local gradient | BF16 |
 | `reduction_dtype` | collective input/output and update-gradient dtype | BF16 |
 | `state_dtype` | first- and second-moment dtype | BF16 |
-| `master_parameter_dtype` | optimizer master dtype | BF16 |
 
-`"parameter"` resolves to each parameter's storage dtype. When
-`master_parameter_dtype` equals the parameter dtype, the parameter is its own
-master in local and replicated execution, so no extra master tensor is
-allocated. In sharded execution, each rank retains only its update shard while
-the full model-visible parameter remains available to forward computation.
-When a distinct higher-precision master exists, that master is authoritative
-for AdamW arithmetic; the model-visible parameter is its cast/published form.
+`"parameter"` resolves to each parameter's storage dtype. The optimizer updates
+each parameter at its own dtype and keeps no other copy of it: a master copy at
+another precision belongs to whatever holds the training state, which hands the
+optimizer the masters as its parameters -- with `gradient_dtype="parameter"`
+for masters whose gradients arrive at their dtype. In sharded execution, each
+rank retains only its update shard while the full model-visible parameter
+remains available to forward computation.
 
 `replica_group=None` selects local execution. Supplying a replica ProcessGroup
 makes the optimizer own synchronization and selects
@@ -128,8 +126,7 @@ fallback. Do not combine a group-backed optimizer with another wrapper that
 also synchronizes the same gradients.
 
 For local execution, each admitted parameter's standard optimizer state
-contains scalar `step`, `exp_avg`, and `exp_avg_sq`; a distinct
-`master_parameter` appears only when required by its dtype policy. Distributed
+contains scalar `step`, `exp_avg`, and `exp_avg_sq`. Distributed
 state is stored in deterministic rank-local buckets because a parameter may
 span buckets and sharded state is not a full per-parameter tensor. Frozen
 parameters and parameters without local gradients are skipped by local
@@ -153,8 +150,8 @@ optimizer.zero_grad(set_to_none=True)
 ### Rounding
 
 The update computes in FP32 and rounds what it stores to the dtype that holds
-it. `parameter_rounding` chooses how the master is rounded -- the parameter
-itself when it is its own master -- and `state_rounding` how the first and
+it. `parameter_rounding` chooses how the parameter is rounded, and
+`state_rounding` how the first and
 second moments are, each `"nearest"` (the default) or `"stochastic"`, globally
 or per parameter group.
 
@@ -163,11 +160,9 @@ value and picks the upper with probability equal to how far along the gap
 between them the value lies, so the stored value is the computed one in
 expectation. Rounded to nearest, an update smaller than half the gap to the
 next value is lost every step; rounded stochastically it accumulates. This is
-what lets a BF16 master, or BF16 moments, follow a trajectory that nearest
+what lets a BF16 parameter, or BF16 moments, follow a trajectory that nearest
 rounding would stall. It applies to BF16 and FP16 storage; FP32 storage holds
-the computed value exactly. A model-visible parameter kept beside a distinct
-master is that master rounded to nearest either way: the master is what
-accumulates the updates. A value beyond the dtype's largest finite one is
+the computed value exactly. A value beyond the dtype's largest finite one is
 rounded to nearest, and overflows as it would there.
 
 The random bits are Philox bits counted from the step, a salt, and the
@@ -182,7 +177,7 @@ rounded to nearest, every update is given the same salt.
 
 Rounded stochastically, a stored value is rounded once. The
 [PyTorch-compatible kernel](#arithmetic-semantics) otherwise rounds the
-decayed master and the decayed second moment to nearest before the rest of
+decayed parameter and the decayed second moment to nearest before the rest of
 the update, as PyTorch's in-place primitives do; those roundings would bias
 what stochastic rounding keeps.
 
