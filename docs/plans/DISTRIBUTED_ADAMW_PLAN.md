@@ -59,9 +59,9 @@ Every optimizer parameter group independently specifies:
 | model parameter dtype | existing tensor dtype | dtype consumed by model compute |
 | `gradient_dtype` | `torch.bfloat16` | local/packed gradient representation |
 | `reduction_dtype` | `torch.bfloat16` | collective input/output and local-update gradient dtype |
-| `state_dtype` | `torch.bfloat16` | first- and second-moment storage dtype |
+| `opt_state_dtype` | `torch.bfloat16` | first- and second-moment storage dtype |
 
-`state_dtype` also accepts `"parameter"`. The optimizer updates each parameter
+`opt_state_dtype` also accepts `"parameter"`. The optimizer updates each parameter
 at its own dtype and keeps no master copy of it.
 
 The actual eager `.grad` may use another dtype. Packing casts it to

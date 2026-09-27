@@ -291,7 +291,7 @@ def _adamw_master_out_raw(
     weight_decay: float,
     maximize: bool,
     parameter_stochastic: bool = False,
-    state_stochastic: bool = False,
+    opt_state_stochastic: bool = False,
     rounding_salt: int = 0,
     out: tuple[
         torch.Tensor,
@@ -348,7 +348,7 @@ def _adamw_master_out_raw(
         int(rounding_salt),
         MAXIMIZE=bool(maximize),
         PARAMETER_STOCHASTIC=bool(parameter_stochastic),
-        STATE_STOCHASTIC=bool(state_stochastic),
+        STATE_STOCHASTIC=bool(opt_state_stochastic),
         BLOCK=block,
     )
     # Every main-grid block must read the old scalar before it is overwritten.
@@ -371,7 +371,7 @@ def adamw_master_out_raw(
     weight_decay: float,
     maximize: bool,
     parameter_stochastic: bool = False,
-    state_stochastic: bool = False,
+    opt_state_stochastic: bool = False,
     rounding_salt: int = 0,
     out: tuple[
         torch.Tensor,
@@ -397,7 +397,7 @@ def adamw_master_out_raw(
         weight_decay=weight_decay,
         maximize=maximize,
         parameter_stochastic=parameter_stochastic,
-        state_stochastic=state_stochastic,
+        opt_state_stochastic=opt_state_stochastic,
         rounding_salt=rounding_salt,
         out=out,
     )
@@ -418,7 +418,7 @@ def adamw_master_out_internal_fp32_raw(
     weight_decay: float,
     maximize: bool,
     parameter_stochastic: bool = False,
-    state_stochastic: bool = False,
+    opt_state_stochastic: bool = False,
     rounding_salt: int = 0,
     out: tuple[
         torch.Tensor,
@@ -444,7 +444,7 @@ def adamw_master_out_internal_fp32_raw(
         weight_decay=weight_decay,
         maximize=maximize,
         parameter_stochastic=parameter_stochastic,
-        state_stochastic=state_stochastic,
+        opt_state_stochastic=opt_state_stochastic,
         rounding_salt=rounding_salt,
         out=out,
     )
@@ -465,7 +465,7 @@ def _adamw_out_raw(
     weight_decay: float,
     maximize: bool,
     parameter_stochastic: bool = False,
-    state_stochastic: bool = False,
+    opt_state_stochastic: bool = False,
     rounding_salt: int = 0,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -484,7 +484,7 @@ def _adamw_out_raw(
         weight_decay=weight_decay,
         maximize=maximize,
         parameter_stochastic=parameter_stochastic,
-        state_stochastic=state_stochastic,
+        opt_state_stochastic=opt_state_stochastic,
         rounding_salt=rounding_salt,
         out=(
             out_parameter,
@@ -511,7 +511,7 @@ def adamw_out_raw(
     weight_decay: float,
     maximize: bool,
     parameter_stochastic: bool = False,
-    state_stochastic: bool = False,
+    opt_state_stochastic: bool = False,
     rounding_salt: int = 0,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -530,7 +530,7 @@ def adamw_out_raw(
         weight_decay=weight_decay,
         maximize=maximize,
         parameter_stochastic=parameter_stochastic,
-        state_stochastic=state_stochastic,
+        opt_state_stochastic=opt_state_stochastic,
         rounding_salt=rounding_salt,
         out=out,
     )
@@ -550,7 +550,7 @@ def adamw_out_internal_fp32_raw(
     weight_decay: float,
     maximize: bool,
     parameter_stochastic: bool = False,
-    state_stochastic: bool = False,
+    opt_state_stochastic: bool = False,
     rounding_salt: int = 0,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -569,7 +569,7 @@ def adamw_out_internal_fp32_raw(
         weight_decay=weight_decay,
         maximize=maximize,
         parameter_stochastic=parameter_stochastic,
-        state_stochastic=state_stochastic,
+        opt_state_stochastic=opt_state_stochastic,
         rounding_salt=rounding_salt,
         out=out,
     )

@@ -37,9 +37,9 @@ AdamW(
     fused: bool | None = None,
     gradient_dtype: dtype | "parameter" = torch.bfloat16,
     reduction_dtype: dtype | "parameter" = torch.bfloat16,
-    state_dtype: dtype | "parameter" = torch.bfloat16,
+    opt_state_dtype: dtype | "parameter" = torch.bfloat16,
     parameter_rounding: Literal["nearest", "stochastic"] = "nearest",
-    state_rounding: Literal["nearest", "stochastic"] = "nearest",
+    opt_state_rounding: Literal["nearest", "stochastic"] = "nearest",
     replica_group=None,
     opt_state_strategy: Literal["replicated", "sharded"] = "sharded",
     gradient_reduction: Literal["sum", "mean"] = "mean",
@@ -95,7 +95,7 @@ individual parameter-group dictionary:
 |---|---|---|
 | `gradient_dtype` | dtype used while packing a local gradient | BF16 |
 | `reduction_dtype` | collective input/output and update-gradient dtype | BF16 |
-| `state_dtype` | first- and second-moment dtype | BF16 |
+| `opt_state_dtype` | first- and second-moment dtype | BF16 |
 
 `"parameter"` resolves to each parameter's storage dtype. The optimizer updates
 each parameter at its own dtype and keeps no other copy of it: a master copy at
@@ -151,7 +151,7 @@ optimizer.zero_grad(set_to_none=True)
 
 The update computes in FP32 and rounds what it stores to the dtype that holds
 it. `parameter_rounding` chooses how the parameter is rounded, and
-`state_rounding` how the first and
+`opt_state_rounding` how the first and
 second moments are, each `"nearest"` (the default) or `"stochastic"`, globally
 or per parameter group.
 
@@ -198,7 +198,7 @@ functional_adamw(
     weight_decay,
     maximize=False,
     parameter_rounding="nearest",
-    state_rounding="nearest",
+    opt_state_rounding="nearest",
     rounding_salt=0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]
 ```
@@ -209,7 +209,7 @@ are immutable. `gradient_scale` is applied in FP32 before the moment update.
 scalar tensor, as described under
 [Settings a step can change](#settings-a-step-can-change); the registered
 operators take them as tensors, so a captured update reads them rather than
-folding them in. `parameter_rounding` and `state_rounding` are as described
+folding them in. `parameter_rounding` and `opt_state_rounding` are as described
 under [Rounding](#rounding); `rounding_salt` picks the stream of random bits
 stochastic rounding draws from, and each tensor updated at a step needs its
 own.
@@ -231,7 +231,7 @@ adamw(
     weight_decay,
     maximize=False,
     parameter_rounding="nearest",
-    state_rounding="nearest",
+    opt_state_rounding="nearest",
     rounding_salt=0,
     out=(out_parameter, out_exp_avg, out_exp_avg_sq, out_step),
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]
@@ -258,7 +258,7 @@ adamw_(
     weight_decay,
     maximize=False,
     parameter_rounding="nearest",
-    state_rounding="nearest",
+    opt_state_rounding="nearest",
     rounding_salt=0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]
 ```
@@ -284,7 +284,7 @@ functional_master_adamw(
     weight_decay,
     maximize=False,
     parameter_rounding="nearest",
-    state_rounding="nearest",
+    opt_state_rounding="nearest",
     rounding_salt=0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
 ```
@@ -310,7 +310,7 @@ master_adamw(
     weight_decay,
     maximize=False,
     parameter_rounding="nearest",
-    state_rounding="nearest",
+    opt_state_rounding="nearest",
     rounding_salt=0,
     out=(
         out_parameter,
@@ -343,7 +343,7 @@ master_adamw_(
     weight_decay,
     maximize=False,
     parameter_rounding="nearest",
-    state_rounding="nearest",
+    opt_state_rounding="nearest",
     rounding_salt=0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
 ```

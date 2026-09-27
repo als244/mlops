@@ -33,7 +33,7 @@ def _exercise_world_one(
         "weight_decay": 0.03,
         "gradient_dtype": torch.bfloat16,
         "reduction_dtype": torch.float32,
-        "state_dtype": torch.float32,
+        "opt_state_dtype": torch.float32,
     }
     reference_optimizer = AdamW(reference, **common)
     actual_optimizer = AdamW(
@@ -172,7 +172,7 @@ def _round_replicas_stochastically(rank: int, store: str, result: str) -> None:
         optimizer = AdamW(
             [parameter],
             parameter_rounding="stochastic",
-            state_rounding="stochastic",
+            opt_state_rounding="stochastic",
             replica_group=dist.group.WORLD,
             opt_state_strategy="replicated",
             bucket_bytes=512,

@@ -53,10 +53,10 @@ def validate_adamw_options(group: dict[str, Any]) -> None:
     for name in (
         "gradient_dtype",
         "reduction_dtype",
-        "state_dtype",
+        "opt_state_dtype",
     ):
         group[name] = normalize_dtype_policy(group[name], name=name)
-    for name in ("parameter_rounding", "state_rounding"):
+    for name in ("parameter_rounding", "opt_state_rounding"):
         if group.get(name, "nearest") not in {"nearest", "stochastic"}:
             raise ValueError(f"{name} must be 'nearest' or 'stochastic'")
 

@@ -112,11 +112,11 @@ def _run_case(
         [
             {
                 "params": reference[:1],
-                "state_dtype": torch.float32,
+                "opt_state_dtype": torch.float32,
             },
             {
                 "params": reference[1:],
-                "state_dtype": torch.bfloat16,
+                "opt_state_dtype": torch.bfloat16,
             },
         ],
         lr=3e-4,
@@ -128,11 +128,11 @@ def _run_case(
         [
             {
                 "params": actual[:1],
-                "state_dtype": torch.float32,
+                "opt_state_dtype": torch.float32,
             },
             {
                 "params": [*actual[1:], frozen],
-                "state_dtype": torch.bfloat16,
+                "opt_state_dtype": torch.bfloat16,
             },
         ],
         lr=3e-4,
@@ -232,14 +232,14 @@ def _run_local_slice_canary(rank: int) -> dict[str, object]:
         shared_reference,
         lr=1e-3,
         gradient_dtype=torch.float32,
-        state_dtype=torch.float32,
+        opt_state_dtype=torch.float32,
     )
     shared_optimizer = AdamW(
         shared_actual,
         lr=1e-3,
         gradient_dtype=torch.bfloat16,
         reduction_dtype=torch.float32,
-        state_dtype=torch.float32,
+        opt_state_dtype=torch.float32,
         replica_group=dist.group.WORLD,
     )
     # Use an update larger than one BF16 ULP so the local-slice assertion is

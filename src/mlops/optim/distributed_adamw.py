@@ -59,7 +59,7 @@ class _Bucket:
     parameter_dtype: torch.dtype
     gradient_dtype: torch.dtype
     reduction_dtype: torch.dtype
-    state_dtype: torch.dtype
+    opt_state_dtype: torch.dtype
     element_count: int
     padded_element_count: int
     shard_element_count: int
@@ -187,8 +187,8 @@ class DistributedAdamWRuntime:
                         "reduction_dtype": _dtype_name(
                             resolve_dtype(group["reduction_dtype"], parameter)
                         ),
-                        "state_dtype": _dtype_name(
-                            resolve_dtype(group["state_dtype"], parameter)
+                        "opt_state_dtype": _dtype_name(
+                            resolve_dtype(group["opt_state_dtype"], parameter)
                         ),
                         "lr": float(group["lr"]),
                         "betas": [float(value) for value in group["betas"]],
@@ -226,7 +226,7 @@ class DistributedAdamWRuntime:
                 parameter_dtype,
                 gradient_dtype,
                 reduction_dtype,
-                state_dtype,
+                opt_state_dtype,
             ) = active_signature
             bucket_element_offset = 0
             records = []
@@ -266,7 +266,7 @@ class DistributedAdamWRuntime:
                     parameter_dtype=parameter_dtype,
                     gradient_dtype=gradient_dtype,
                     reduction_dtype=reduction_dtype,
-                    state_dtype=state_dtype,
+                    opt_state_dtype=opt_state_dtype,
                     element_count=active_elements,
                     padded_element_count=padded,
                     shard_element_count=padded // multiple,
@@ -286,7 +286,7 @@ class DistributedAdamWRuntime:
                     parameter.dtype,
                     resolve_dtype(group["gradient_dtype"], parameter),
                     reduction_dtype,
-                    resolve_dtype(group["state_dtype"], parameter),
+                    resolve_dtype(group["opt_state_dtype"], parameter),
                 )
                 if signature != active_signature:
                     flush()
@@ -425,7 +425,7 @@ class DistributedAdamWRuntime:
             bucket.exp_avg = torch.zeros(
                 state_count,
                 device=self.device,
-                dtype=bucket.state_dtype,
+                dtype=bucket.opt_state_dtype,
             )
             bucket.exp_avg_sq = torch.zeros_like(bucket.exp_avg)
             bucket.step = torch.zeros((), device=self.device, dtype=torch.int64)
@@ -554,7 +554,7 @@ class DistributedAdamWRuntime:
         reduced_gradient: torch.Tensor,
     ) -> None:
         group = self.optimizer.param_groups[bucket.group_index]
-        roundings = (group["parameter_rounding"], group["state_rounding"])
+        roundings = (group["parameter_rounding"], group["opt_state_rounding"])
         common = {
             "gradient_scale": (
                 1.0 / self.world_size
@@ -567,7 +567,7 @@ class DistributedAdamWRuntime:
             "weight_decay": group["weight_decay"],
             "maximize": bool(group["maximize"]),
             "parameter_rounding": group["parameter_rounding"],
-            "state_rounding": group["state_rounding"],
+            "opt_state_rounding": group["opt_state_rounding"],
             # Each bucket draws its own bits, and so does each rank updating a
             # shard of it. Replicas updating the whole bucket draw the same, so
             # that they stay replicas. Only stochastic rounding reads the salt.
@@ -700,7 +700,7 @@ class DistributedAdamWRuntime:
                 else bucket.shard_element_count
             )
             persistent_bytes = (
-                state_elements * 2 * bucket.state_dtype.itemsize
+                state_elements * 2 * bucket.opt_state_dtype.itemsize
                 + torch.tensor([], dtype=torch.int64).element_size()
             )
             parameter_shard_bytes = (

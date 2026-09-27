@@ -154,7 +154,7 @@ def test_default_bf16_adamw_matches_torch_optimizer_bitwise():
         [mlops_parameter],
         **options,
         gradient_dtype=dtype,
-        state_dtype=dtype,
+        opt_state_dtype=dtype,
     )
 
     for _ in range(10):
@@ -195,7 +195,7 @@ def test_other_same_dtype_adamw_matches_torch_moments_bitwise(
         [mlops_parameter],
         **options,
         gradient_dtype=dtype,
-        state_dtype=dtype,
+        opt_state_dtype=dtype,
     )
     for _ in range(10):
         gradient = torch.randn_like(parameter)
@@ -497,9 +497,9 @@ def test_adamw_constructor_matches_torch_option_names_defaults_and_kinds():
         assert actual[name].default == expected[name].default
     assert actual["gradient_dtype"].default == torch.bfloat16
     assert actual["reduction_dtype"].default == torch.bfloat16
-    assert actual["state_dtype"].default == torch.bfloat16
+    assert actual["opt_state_dtype"].default == torch.bfloat16
     assert actual["parameter_rounding"].default == "nearest"
-    assert actual["state_rounding"].default == "nearest"
+    assert actual["opt_state_rounding"].default == "nearest"
     assert actual["replica_group"].default is None
     assert actual["opt_state_strategy"].default == "sharded"
 
@@ -579,7 +579,7 @@ def test_adamw_registry_identity_and_support_gate_are_explicit():
 
 
 @pytest.mark.parametrize(
-    ("parameter_dtype", "gradient_dtype", "state_dtype"),
+    ("parameter_dtype", "gradient_dtype", "opt_state_dtype"),
     [
         (torch.bfloat16, torch.float32, torch.float32),
         (torch.float32, torch.bfloat16, torch.bfloat16),
@@ -589,13 +589,13 @@ def test_adamw_registry_identity_and_support_gate_are_explicit():
 def test_mixed_dtype_adamw_matches_explicit_storage_rounding(
     parameter_dtype,
     gradient_dtype,
-    state_dtype,
+    opt_state_dtype,
 ):
     torch.manual_seed(14905)
     parameter = torch.randn(8192, device="cuda", dtype=parameter_dtype)
     gradient = torch.randn(8192, device="cuda", dtype=gradient_dtype)
-    exp_avg = torch.randn(8192, device="cuda", dtype=state_dtype)
-    exp_avg_sq = torch.rand(8192, device="cuda", dtype=state_dtype)
+    exp_avg = torch.randn(8192, device="cuda", dtype=opt_state_dtype)
+    exp_avg_sq = torch.rand(8192, device="cuda", dtype=opt_state_dtype)
     step = torch.tensor(7, device="cuda", dtype=torch.int64)
     options = {
         "lr": 2e-4,
@@ -610,24 +610,24 @@ def test_mixed_dtype_adamw_matches_explicit_storage_rounding(
         exp_avg.float(),
         gradient_f32,
         1.0 - beta1,
-    ).to(state_dtype)
-    scaled_variance = (exp_avg_sq.float() * beta2).to(state_dtype)
+    ).to(opt_state_dtype)
+    scaled_variance = (exp_avg_sq.float() * beta2).to(opt_state_dtype)
     expected_variance = torch.addcmul(
         scaled_variance.float(),
         gradient_f32,
         gradient_f32,
         value=1.0 - beta2,
-    ).to(state_dtype)
+    ).to(opt_state_dtype)
     next_step = float(step) + 1.0
     expected_parameter = (
         parameter.float()
         * (1.0 - options["lr"] * options["weight_decay"])
     ).to(parameter_dtype)
-    denominator = expected_variance.float().sqrt().to(state_dtype)
+    denominator = expected_variance.float().sqrt().to(opt_state_dtype)
     denominator = (
         denominator.float() / (1.0 - beta2**next_step) ** 0.5
-    ).to(state_dtype)
-    denominator = (denominator.float() + options["eps"]).to(state_dtype)
+    ).to(opt_state_dtype)
+    denominator = (denominator.float() + options["eps"]).to(opt_state_dtype)
     expected_parameter = torch.add(
         expected_parameter.float(),
         expected_mean.float() / denominator.float(),
@@ -724,14 +724,14 @@ def test_adamw_rejects_invalid_options_and_sparse_gradients():
         AdamW([], differentiable=True)
     with pytest.raises(ValueError, match="parameter_rounding"):
         AdamW([], parameter_rounding="up")
-    with pytest.raises(ValueError, match="state_rounding"):
+    with pytest.raises(ValueError, match="opt_state_rounding"):
         functional_adamw(
             *_state(32),
             lr=3e-4,
             betas=(0.9, 0.95),
             eps=1e-8,
             weight_decay=0.1,
-            state_rounding="up",
+            opt_state_rounding="up",
         )
 
     parameter = torch.nn.Parameter(
@@ -793,7 +793,7 @@ def test_stochastic_rounding_keeps_updates_that_nearest_rounding_loses():
             [parameter],
             lr=1e-3,
             weight_decay=0.0,
-            state_dtype=torch.float32,
+            opt_state_dtype=torch.float32,
             parameter_rounding=rounding,
         )
         for _ in range(100):
@@ -811,14 +811,14 @@ def test_stochastic_rounding_keeps_updates_that_nearest_rounding_loses():
     assert float(stochastic.std()) > 0
 
 
-@pytest.mark.parametrize("state_dtype", [torch.bfloat16, torch.float16])
-def test_stochastic_rounding_keeps_moments_in_expectation(state_dtype):
+@pytest.mark.parametrize("opt_state_dtype", [torch.bfloat16, torch.float16])
+def test_stochastic_rounding_keeps_moments_in_expectation(opt_state_dtype):
     """Moments that land three tenths of the way from one representable value
     to the next are, stored stochastically, the FP32 moments on average;
     stored to nearest, they are all off the same way."""
 
     elements = 1 << 16
-    gap = torch.finfo(state_dtype).eps
+    gap = torch.finfo(opt_state_dtype).eps
     parameter = torch.zeros(elements, device="cuda")
     # From moments of one, each moves 0.1 of its distance to about 1 + 3 gaps.
     gradient = torch.full((elements,), 1.0 + 3 * gap, device="cuda")
@@ -834,13 +834,13 @@ def test_stochastic_rounding_keeps_moments_in_expectation(state_dtype):
             betas=(0.9, 0.95),
             eps=1e-8,
             weight_decay=0.0,
-            state_rounding=rounding,
+            opt_state_rounding=rounding,
         )
         return mean.float(), variance.float()
 
     exact = moments(torch.float32, "nearest")
-    nearest = moments(state_dtype, "nearest")
-    stochastic = moments(state_dtype, "stochastic")
+    nearest = moments(opt_state_dtype, "nearest")
+    stochastic = moments(opt_state_dtype, "stochastic")
     for exact_value, nearest_value, stochastic_value in zip(
         exact, nearest, stochastic, strict=True
     ):
@@ -871,7 +871,7 @@ def test_stochastic_rounding_draws_from_the_step_and_the_salt():
             eps=1e-8,
             weight_decay=0.1,
             parameter_rounding="stochastic",
-            state_rounding="stochastic",
+            opt_state_rounding="stochastic",
             rounding_salt=salt,
         )
 
@@ -899,7 +899,7 @@ def test_each_parameter_rounds_with_bits_of_its_own():
     optimizer = AdamW(
         parameters,
         parameter_rounding="stochastic",
-        state_rounding="stochastic",
+        opt_state_rounding="stochastic",
     )
     for parameter in parameters:
         parameter.grad = gradient.clone()
@@ -916,16 +916,42 @@ def test_a_state_dict_that_names_no_rounding_restores_nearest():
     optimizer = AdamW(
         [parameter],
         parameter_rounding="stochastic",
-        state_rounding="stochastic",
+        opt_state_rounding="stochastic",
     )
     saved = optimizer.state_dict()
     for group in saved["param_groups"]:
-        del group["parameter_rounding"], group["state_rounding"]
+        del group["parameter_rounding"], group["opt_state_rounding"]
     optimizer.load_state_dict(saved)
     group = optimizer.param_groups[0]
-    assert group["parameter_rounding"] == group["state_rounding"] == "nearest"
+    assert group["parameter_rounding"] == group["opt_state_rounding"] == "nearest"
     parameter.grad = torch.randn_like(parameter)
     optimizer.step()
+
+
+def test_a_state_dict_saved_under_the_earlier_names_keeps_its_settings():
+    """A checkpoint saved while the settings were named state_dtype and
+    state_rounding restores them under opt_state_dtype and opt_state_rounding,
+    stochastic rounding included, and keeps no key of the earlier names."""
+
+    parameter = torch.nn.Parameter(
+        torch.randn(64, device="cuda", dtype=torch.bfloat16)
+    )
+    optimizer = AdamW(
+        [parameter], opt_state_dtype=torch.float32, opt_state_rounding="stochastic"
+    )
+    saved = optimizer.state_dict()
+    for group in saved["param_groups"]:
+        group["state_dtype"] = group.pop("opt_state_dtype")
+        group["state_rounding"] = group.pop("opt_state_rounding")
+    restored = AdamW([parameter])
+    restored.load_state_dict(saved)
+    group = restored.param_groups[0]
+    assert group["opt_state_dtype"] == torch.float32
+    assert group["opt_state_rounding"] == "stochastic"
+    assert "state_dtype" not in group and "state_rounding" not in group
+    parameter.grad = torch.randn_like(parameter)
+    restored.step()
+    assert restored.state[parameter]["exp_avg"].dtype == torch.float32
 
 
 def test_only_stochastic_rounding_gives_each_update_a_salt_of_its_own(monkeypatch):
@@ -949,7 +975,7 @@ def test_only_stochastic_rounding_gives_each_update_a_salt_of_its_own(monkeypatc
     ]
     for rounding, expected in (("nearest", [0, 0, 0]), ("stochastic", [0, 1, 2])):
         salts.clear()
-        optimizer = AdamW(parameters, state_rounding=rounding)
+        optimizer = AdamW(parameters, opt_state_rounding=rounding)
         for parameter in parameters:
             parameter.grad = torch.randn_like(parameter)
         optimizer.step()

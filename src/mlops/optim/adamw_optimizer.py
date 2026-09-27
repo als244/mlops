@@ -42,9 +42,9 @@ class AdamW(torch.optim.Optimizer):
         fused: bool | None = None,
         gradient_dtype: DTypePolicy = torch.bfloat16,
         reduction_dtype: DTypePolicy = torch.bfloat16,
-        state_dtype: DTypePolicy = torch.bfloat16,
+        opt_state_dtype: DTypePolicy = torch.bfloat16,
         parameter_rounding: Rounding = "nearest",
-        state_rounding: Rounding = "nearest",
+        opt_state_rounding: Rounding = "nearest",
         replica_group: Any | None = None,
         opt_state_strategy: Literal["replicated", "sharded"] = "sharded",
         gradient_reduction: Literal["sum", "mean"] = "mean",
@@ -67,9 +67,11 @@ class AdamW(torch.optim.Optimizer):
             "reduction_dtype": normalize_dtype_policy(
                 reduction_dtype, name="reduction_dtype"
             ),
-            "state_dtype": normalize_dtype_policy(state_dtype, name="state_dtype"),
+            "opt_state_dtype": normalize_dtype_policy(
+                opt_state_dtype, name="opt_state_dtype"
+            ),
             "parameter_rounding": parameter_rounding,
-            "state_rounding": state_rounding,
+            "opt_state_rounding": opt_state_rounding,
         }
         validate_adamw_options(defaults)
         if opt_state_strategy not in {"replicated", "sharded"}:
@@ -102,10 +104,19 @@ class AdamW(torch.optim.Optimizer):
     def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)
         # A group restored from a state dict that names no rounding was
-        # rounded to nearest.
+        # rounded to nearest. One saved while these settings were named
+        # state_dtype and state_rounding keeps its values under the current
+        # names: defaulting them instead would quietly turn a stochastic
+        # rounding of the moments into rounding to nearest.
         for group in self.param_groups:
+            for saved, name in (
+                ("state_dtype", "opt_state_dtype"),
+                ("state_rounding", "opt_state_rounding"),
+            ):
+                if saved in group:
+                    group.setdefault(name, group.pop(saved))
             group.setdefault("parameter_rounding", "nearest")
-            group.setdefault("state_rounding", "nearest")
+            group.setdefault("opt_state_rounding", "nearest")
 
     @property
     def distributed_spec(self):
@@ -118,10 +129,10 @@ class AdamW(torch.optim.Optimizer):
         group: dict[str, Any],
         state: dict[str, Any],
     ) -> None:
-        state_dtype = resolve_dtype(group["state_dtype"], parameter)
+        opt_state_dtype = resolve_dtype(group["opt_state_dtype"], parameter)
         state["step"] = torch.zeros((), dtype=torch.int64, device=parameter.device)
-        state["exp_avg"] = torch.zeros_like(parameter, dtype=state_dtype)
-        state["exp_avg_sq"] = torch.zeros_like(parameter, dtype=state_dtype)
+        state["exp_avg"] = torch.zeros_like(parameter, dtype=opt_state_dtype)
+        state["exp_avg_sq"] = torch.zeros_like(parameter, dtype=opt_state_dtype)
 
     @torch.no_grad()
     def _local_step(self) -> None:
@@ -154,7 +165,7 @@ class AdamW(torch.optim.Optimizer):
                 state = self.state[parameter]
                 if not state:
                     self._initialize_parameter_state(parameter, group, state)
-                roundings = (group["parameter_rounding"], group["state_rounding"])
+                roundings = (group["parameter_rounding"], group["opt_state_rounding"])
                 common = {
                     "lr": group["lr"],
                     "betas": tuple(group["betas"]),
@@ -162,7 +173,7 @@ class AdamW(torch.optim.Optimizer):
                     "weight_decay": group["weight_decay"],
                     "maximize": bool(group["maximize"]),
                     "parameter_rounding": group["parameter_rounding"],
-                    "state_rounding": group["state_rounding"],
+                    "opt_state_rounding": group["opt_state_rounding"],
                     # Only stochastic rounding reads the salt. It is a constant
                     # of the update, so passing it otherwise would make every
                     # parameter's update differ from every other's to anything
