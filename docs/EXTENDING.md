@@ -23,7 +23,7 @@ never needs to know which implementation was added.
 | New implementation variant from an existing provider | existing provider module or a focused sibling module | No |
 | New mathematical operation | semantic façade, at least one provider, exports, docs, usually explicit module | Yes |
 | Add explicit forward/VJP access to an existing operation | `src/mlops/explicit/<operation>.py`, provider entrypoints, docs | Yes, explicit API only |
-| Add or improve cost hints | operation estimator and/or `Implementation.estimate` | No execution change |
+| Add or improve cost hints | the operation's estimator in `src/mlops/dispatch/logical_costs.py` and/or `Implementation.estimate` | No execution change |
 | Add a raw Torch/Triton kernel | `src/mlops/kernels/<operation>.py` plus an implementation adapter | No by itself |
 | Add an optional dependency | provider adapter, support gate, project optional dependency | No |
 | Add dispatch/development infrastructure | `src/mlops/dispatch/`, exports, API docs | Contributor API only |
@@ -203,12 +203,34 @@ residuals can remain private to the registered custom-op path. If the existing
 explicit ABI cannot represent the new provider without generic metadata,
 prefer an apply-only implementation and document why.
 
-### 7. Add optional cost hints
+### 7. Register flop formulas, and optional physical cost hints
 
-`Implementation.estimate` may report implementation FLOPs, bytes accessed, and
-invocation-local workspace. Return `None` for unknown, never a guessed zero.
-Do not change the canonical logical estimator merely because one provider does
-extra work.
+Every custom operator the implementation registers, forward and backward,
+declares its FLOP count with `flop_formula` from `mlops.dispatch.costs`, placed
+beside the operator. The formula takes the operator's arguments plus `out_val`
+and delegates to the operation's canonical estimator in
+`src/mlops/dispatch/logical_costs.py`; it adds no arithmetic of its own, so
+every provider of one operation reports the same logical work:
+
+```python
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import flop_formula
+
+
+@flop_formula(_forward_op)
+def _forward_flops(x, weight, *_rest, out_val=None, **_kwargs):
+    del out_val
+    return logical.rms_norm(x, weight, entrypoint="forward").logical_flops
+```
+
+Variants that compute the same function share one formula by naming several
+operators. `tests/test_flop_formulas.py` requires a formula of every operator
+in the `mlops` namespace, so a missing one fails the suite.
+
+`Implementation.estimate` may additionally report physical FLOPs, bytes
+accessed, and invocation-local workspace. Return `None` for unknown, never a
+guessed zero. Do not change the canonical logical estimator merely because one
+provider does extra work.
 
 ### 8. Register the implementation
 
@@ -543,11 +565,13 @@ Follow [Add an implementation for an existing operation](#add-an-implementation-
 for each builtin or third-party path. Register a custom op only for opaque
 boundaries; visible ATen graphs do not need one.
 
-### 6. Add logical cost hints
+### 6. Add the operation's logical cost
 
-Register at most one canonical operation estimator with
-`register_operation_estimator`. It describes mathematical FLOPs and minimum
-bytes, independent of provider. Concrete implementations may overlay physical
+Add one estimator to `src/mlops/dispatch/logical_costs.py` and register it in
+that module's table. It takes the operation's forward arguments plus
+`entrypoint` and reports logical FLOPs and minimum tensor traffic for the
+forward and the backward, independent of provider; every provider's flop
+formulas then delegate to it. Concrete implementations may overlay physical
 cost and workspace through their `estimate` functions.
 
 ### 7. Wire discovery and documentation
@@ -588,10 +612,12 @@ remain registered with clear explicit-surface rejection reasons.
 
 ### Add or refine cost hints
 
-Canonical estimators describe provider-independent logical work. Exact
-implementation estimators describe physical work and workspace. They must
-inspect metadata without running kernels or retaining tensors. Profiling
-remains authoritative.
+Canonical estimators, one per operation in
+`src/mlops/dispatch/logical_costs.py`, describe provider-independent logical
+work, and every operator's flop formula delegates to them. Exact implementation
+estimators describe physical work and workspace. All of them must inspect
+metadata without running kernels or retaining tensors. Profiling remains
+authoritative.
 
 ### Add a raw kernel
 
@@ -620,7 +646,7 @@ correctly. Diagnostic controls must not become hidden compiled-artifact state.
 | Existing op, opaque implementation | all native checks plus fake metadata over model-authentic contiguous/non-contiguous layouts, opcheck, runtime output-layout comparison, target retention, repeated backward, immutability |
 | Existing op, explicit entrypoints | explicit forward and arbitrary-cotangent VJP parity, no autograd recording, no `.grad` writes |
 | New semantic operation | public export/docs coverage, native oracle, every provider, semantic/explicit/AOT composition |
-| Cost-only change | exact arithmetic tests, undefined-versus-zero behavior, no tensor retention or kernel execution |
+| Cost-only change | exact arithmetic tests on fake tensors, flop formulas counted under `FlopCounterMode`, undefined-versus-zero behavior, no tensor retention or kernel execution |
 | Raw-kernel-only change | owning provider tests; raw kernel must remain unreachable without an adapter |
 | Optional dependency | installed and missing-dependency cases |
 
@@ -645,5 +671,7 @@ ruff check src/mlops tests
 - [ ] Explicit entrypoints share raw math and expose all caller-owned residuals.
 - [ ] Inputs, residuals, and cotangents survive repeated backward unchanged.
 - [ ] Logical and physical cost hints do not confuse state with workspace.
+- [ ] Every registered custom operator, forward and backward, has a flop
+      formula delegating to its operation's canonical estimator.
 - [ ] API references, quick indexes, examples, and contributor docs are updated.
 - [ ] Standalone tests, documentation checks, and lint pass.

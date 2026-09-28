@@ -107,7 +107,7 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 |---|---|
 | `src/mlops/<operation>.py` | public semantic façade; no kernel branches |
 | `src/mlops/explicit/<operation>.py` | public explicit forward/VJP façade |
-| `src/mlops/dispatch/` | scalar metadata, exact selection, overrides, tracing, cost hints, gradcheck |
+| `src/mlops/dispatch/` | scalar metadata, exact selection, overrides, tracing, logical costs and flop formulas, gradcheck |
 | `src/mlops/providers/<source>/` | exact implementation adapters; opaque custom-op/fake/autograd registration |
 | `src/mlops/kernels/` | raw Torch/Triton mechanics; no selection or fallback |
 | `src/mlops/optim/` | standard optimizers plus functional, `out=`, and in-place update entrypoints |
@@ -207,12 +207,34 @@ to supply offsets directly.
 
 ## Cost hints
 
-`estimate_implementation(...)` returns a `CostHints` record. Canonical
-operation estimators may report logical FLOPs and minimum bytes. Exact
-implementations may report physical FLOPs, physical bytes, and invocation-local
-workspace. Every field is `int | None`: `None` means unknown and `0` means
+`estimate_implementation(...)` returns a `CostHints` record: the operation's
+canonical logical estimate merged with the exact implementation's optional
+physical one. Every field is `int | None`: `None` means unknown and `0` means
 known-zero. Hints are advisory; measured runtime and allocator profiling remain
 authoritative.
+
+The canonical estimates live in one module,
+`src/mlops/dispatch/logical_costs.py`: one estimator per operation, taking the
+operation's forward arguments plus `entrypoint` and reporting logical FLOPs and
+minimum tensor traffic for the forward and the backward. Logical means the
+mathematical work -- two per multiply-add of a matrix product, a small constant
+per element of an elementwise or normalizing pass, zero for a gather -- and
+work whose extent a shape cannot show is bounded from the shapes: packed
+attention charges every token at `max_seqlen`, a mixture of experts charges
+every assignment as one row of dense expert work. Exact implementations overlay
+physical FLOPs, physical bytes, and invocation-local workspace through their
+own `estimate`.
+
+The same arithmetic reaches PyTorch's flop counter. Every registered custom
+operator, forward and backward, carries a flop formula, registered with
+`flop_formula(...)` beside the operator and delegating to the operation's
+canonical estimator, so `torch.utils.flop_counter.FlopCounterMode` counts an
+mlops operator as it counts `aten.mm`, on fake tensors as readily as real ones.
+A consumer that prices a graph by arithmetic intensity -- a partitioner
+deciding what is cheap enough to recompute -- therefore sees each operator as
+it is rather than as unknown. `has_flop_formula(operator)` reports the
+registration, and the test suite requires one of every operator in the `mlops`
+namespace.
 
 ## Gradcheck
 
