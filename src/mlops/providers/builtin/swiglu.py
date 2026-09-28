@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.swiglu import (
     swiglu_backward,
@@ -236,6 +238,32 @@ def packed_apply(packed):
 
 def packed_legacy_apply(packed):
     return _packed_legacy_forward_op(packed)
+
+
+# The legacy kernels compute the same function; both variants of each pair
+# share one formula.
+@flop_formula(_forward_op, _legacy_forward_op)
+def _forward_flops(gate, up, *, out_val=None, **_kwargs):
+    del out_val
+    return logical.swiglu(gate, up, entrypoint="forward").logical_flops
+
+
+@flop_formula(_backward_op, _legacy_backward_op)
+def _backward_flops(grad_output, gate, up, *, out_val=None, **_kwargs):
+    del grad_output, out_val
+    return logical.swiglu(gate, up, entrypoint="backward").logical_flops
+
+
+@flop_formula(_packed_forward_op, _packed_legacy_forward_op)
+def _packed_forward_flops(packed, *, out_val=None, **_kwargs):
+    del out_val
+    return logical.packed_swiglu(packed, entrypoint="forward").logical_flops
+
+
+@flop_formula(_packed_backward_op, _packed_legacy_backward_op)
+def _packed_backward_flops(grad_output, packed, *, out_val=None, **_kwargs):
+    del grad_output, out_val
+    return logical.packed_swiglu(packed, entrypoint="backward").logical_flops
 
 
 IMPLEMENTATIONS = tuple(

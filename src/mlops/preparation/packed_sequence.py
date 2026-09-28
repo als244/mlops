@@ -6,6 +6,8 @@ from collections.abc import Sequence
 
 import torch
 
+from ..dispatch.costs import flop_formula
+
 
 def _materialize(
     lengths: Sequence[int],
@@ -62,6 +64,13 @@ def _prepare_fake(like, lengths, chunk_size):
         torch.empty(cumulative, dtype=torch.int64, device=like.device),
         torch.empty((chunks, 2), dtype=torch.int64, device=like.device),
     )
+
+
+@flop_formula(_prepare_op)
+def _prepare_flops(*_arguments, out_val=None, **_kwargs):
+    """Metadata is written, not computed."""
+    del out_val
+    return 0
 
 
 def prepare(

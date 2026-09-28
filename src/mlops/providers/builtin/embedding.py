@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
 from ...dispatch.context import weight_gradient_dtype
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.embedding import embedding_backward
 
@@ -74,6 +76,26 @@ def _backward_fake(tokens, grad_output, num_embeddings, weight_grad_dtype):
         (num_embeddings, grad_output.shape[-1]),
         dtype=grad_output.dtype if weight_grad_dtype is None else weight_grad_dtype,
     )
+
+
+@flop_formula(_forward_op)
+def _forward_flops(tokens, weight, *_rest, out_val=None, **_kwargs):
+    del out_val
+    return logical.embedding(tokens, weight, entrypoint="forward").logical_flops
+
+
+@flop_formula(_backward_op)
+def _backward_flops(
+    tokens, grad_output, num_embeddings, *_rest, out_val=None, **_kwargs
+):
+    del out_val
+    # The table's shape is all the estimate needs, so stand in for it on meta.
+    table = torch.empty(
+        (int(num_embeddings), grad_output.shape[-1]),
+        dtype=grad_output.dtype,
+        device="meta",
+    )
+    return logical.embedding(tokens, table, entrypoint="backward").logical_flops
 
 
 def _setup_context(ctx, inputs, output):

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from ...dispatch.costs import CostHints, register_operation_estimator
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import CostHints, flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.cross_entropy import (
     cross_entropy_backward_triton,
@@ -39,47 +40,6 @@ def _supports(
     if not standalone_cross_entropy_available():
         return SupportResult.no("Triton is unavailable")
     return SupportResult.yes()
-
-
-def _logical_cost(
-    logits,
-    targets,
-    weight=None,
-    ignore_index=-100,
-    reduction="mean",
-    *,
-    entrypoint,
-    **_kwargs,
-) -> CostHints:
-    del ignore_index, reduction, _kwargs
-    rows, vocabulary = logits.shape
-    elements = logits.numel()
-    logits_bytes = elements * logits.element_size()
-    targets_bytes = targets.numel() * targets.element_size()
-    weight_bytes = 0 if weight is None else weight.numel() * weight.element_size()
-    if entrypoint == "forward":
-        return CostHints(
-            logical_flops=4 * elements + 2 * rows,
-            logical_bytes_accessed=(
-                logits_bytes + targets_bytes + weight_bytes + 4 * rows
-            ),
-            notes=(
-                f"logical estimate assumes {rows} rows and vocabulary {vocabulary}",
-                "comparisons and max reductions are excluded from the FLOP count",
-            ),
-        )
-    return CostHints(
-        logical_flops=4 * elements,
-        logical_bytes_accessed=(
-            2 * logits_bytes + targets_bytes + weight_bytes + 8 * rows
-        ),
-        notes=(
-            "backward bytes include logits, per-row cotangent/LSE, and logits VJP",
-        ),
-    )
-
-
-register_operation_estimator("cross_entropy", _logical_cost)
 
 
 def _estimate(
@@ -192,6 +152,18 @@ def _backward_op(
 def _backward_fake(grad_losses, logits, targets, logsumexp, ignore_index):
     del grad_losses, targets, logsumexp, ignore_index
     return torch.empty_like(logits)
+
+
+@flop_formula(_forward_op)
+def _forward_flops(logits, targets, *_rest, out_val=None, **_kwargs):
+    del out_val
+    return logical.cross_entropy(logits, targets, entrypoint="forward").logical_flops
+
+
+@flop_formula(_backward_op)
+def _backward_flops(grad_losses, logits, targets, *_rest, out_val=None, **_kwargs):
+    del grad_losses, out_val
+    return logical.cross_entropy(logits, targets, entrypoint="backward").logical_flops
 
 
 def _setup_context(ctx, inputs, output):

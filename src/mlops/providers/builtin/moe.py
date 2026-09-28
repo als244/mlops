@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
 from ...dispatch.context import weight_gradient_dtype
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.moe_router import current_route_weight_precision
 from ..moe_common import _backward_with_engine, _forward_with_engine
@@ -240,6 +242,32 @@ def _backward_fake(
         torch.empty_like(w13_experts, dtype=weight_grad_dtype),
         torch.empty_like(w2_experts, dtype=weight_grad_dtype),
     )
+
+
+@flop_formula(_forward_op)
+def _forward_flops(
+    h2, residual, router_weight, w13_experts, w2_experts, router_bias, top_k,
+    *_rest, out_val=None, **_kwargs,
+):
+    del router_bias, out_val
+    return logical.moe(
+        h2, residual, router_weight, w13_experts, w2_experts,
+        top_k=top_k, entrypoint="forward",
+    ).logical_flops
+
+
+@flop_formula(_backward_op)
+def _backward_flops(
+    grad_output, grad_aux, grad_probability_sum, h2, router_weight, w13_experts,
+    w2_experts, logits, route_weights, route_ids, order, offsets, slots, h13, top_k,
+    *_rest, out_val=None, **_kwargs,
+):
+    del grad_aux, grad_probability_sum, logits, route_weights, route_ids
+    del order, offsets, slots, h13, out_val
+    return logical.moe(
+        h2, grad_output, router_weight, w13_experts, w2_experts,
+        top_k=top_k, entrypoint="backward",
+    ).logical_flops
 
 
 def _setup_context(ctx, inputs, output):
