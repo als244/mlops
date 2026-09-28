@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Callable, Mapping
 
+import torch
+from torch.utils.flop_counter import flop_registry
+from torch.utils.flop_counter import register_flop_formula as _register_flop_formula
+
 from .context import use_implementation
 from .registry import implementations_for
 from .resolution import explain_implementation
@@ -68,6 +72,7 @@ def register_operation_estimator(operation: str, estimator: Callable[..., CostHi
 def operation_estimators() -> Mapping[str, Callable[..., CostHints]]:
     """Return registered canonical estimators without evaluating them."""
     from ..providers import ensure_implementations_registered
+    from . import logical_costs  # noqa: F401  # registers every operation's estimator
 
     ensure_implementations_registered()
     return MappingProxyType(dict(_OPERATION_ESTIMATORS))
@@ -120,9 +125,62 @@ def estimate_implementation(
     return canonical.merged(implementation_hints)
 
 
+def _overload_packet(operator) -> torch._ops.OpOverloadPacket:
+    if isinstance(operator, torch._ops.OpOverloadPacket):
+        return operator
+    if isinstance(operator, torch._ops.OpOverload):
+        return operator.overloadpacket
+    overload = getattr(operator, "_opoverload", None)
+    if isinstance(overload, torch._ops.OpOverload):
+        return overload.overloadpacket
+    raise TypeError(
+        "flop_formula takes a registered custom operator or its torch.ops packet, "
+        f"not {type(operator).__name__}"
+    )
+
+
+def flop_formula(*operators):
+    """Register the decorated function as the FLOP count of ``operators``.
+
+    ``operators`` are registered custom operators -- the objects
+    ``torch.library.custom_op`` returns -- or their ``torch.ops`` packets. The
+    decorated function takes the operator's own arguments, positionally or by
+    name, plus ``out_val``, the operator's result, and returns an ``int``.
+    ``torch.utils.flop_counter.FlopCounterMode`` calls it whenever the operator
+    runs under it, with fake tensors as readily as real ones, so a formula
+    reads shapes, dtypes and static arguments and nothing else.
+
+    The count is logical work, not what one kernel happens to do: two per
+    multiply-add of a matrix product, a small constant per element of an
+    elementwise or normalizing pass, zero for a gather. Work whose extent
+    depends on values a shape cannot show -- the sequence lengths behind a
+    packed attention, the routing behind a mixture of experts -- is bounded
+    from the shapes instead. Every operator this package registers has one,
+    forward and backward alike, so a consumer pricing a graph by its
+    arithmetic sees each mlops operator as it is rather than as unknown.
+    """
+    packets = tuple(_overload_packet(operator) for operator in operators)
+    if not packets:
+        raise ValueError("flop_formula requires at least one operator")
+
+    def register(formula):
+        for packet in packets:
+            _register_flop_formula(packet, get_raw=True)(formula)
+        return formula
+
+    return register
+
+
+def has_flop_formula(operator) -> bool:
+    """Whether ``operator`` has a registered FLOP formula."""
+    return _overload_packet(operator) in flop_registry
+
+
 __all__ = [
     "CostHints",
     "estimate_implementation",
+    "flop_formula",
+    "has_flop_formula",
     "operation_estimators",
     "register_operation_estimator",
 ]
