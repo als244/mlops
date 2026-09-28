@@ -13,7 +13,7 @@ from .context import (
     weight_gradient_dtype,
     weight_gradients_at,
 )
-from .costs import CostHints, estimate_implementation
+from .costs import CostHints, estimate_implementation, flop_formula, has_flop_formula
 from .gradcheck import (
     GradcheckCase,
     GradcheckResult,
@@ -39,8 +39,10 @@ __all__ = [
     "dispatch_manifest",
     "explain_implementation",
     "estimate_implementation",
+    "flop_formula",
     "gradcheck_implementation",
     "gradcheck_implementations",
+    "has_flop_formula",
     "implementation_pairs",
     "implementation_registry",
     "resolve_implementation",

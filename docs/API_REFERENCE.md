@@ -78,6 +78,8 @@ weight_gradient_dtype()
 capture_dispatch()
 dispatch_manifest(trace)
 estimate_implementation(operation, *args, entrypoint="forward", **kwargs)
+flop_formula(*operators)
+has_flop_formula(operator)
 gradcheck_implementation(operation, implementation_id, inputs, **options)
 gradcheck_implementations(cases, **options)
 ```
@@ -120,9 +122,16 @@ a parameter its gradient at the parameter's dtype, so eager training rounds
 the result again there; a caller that keeps gradients itself (ShadowSpill's
 `grad_dtype`) keeps what the operation returned. `weight_gradient_dtype`
 reports the setting.
-Cost hints contain scalar metadata only and may be undefined. Gradcheck uses
-normal semantic calls and reports low-precision-only implementations as
-unsupported instead of substituting another backend.
+
+Cost hints contain scalar metadata only and may be undefined. The canonical
+estimate of every operation with an opaque operator lives in
+`mlops.dispatch.logical_costs`, one estimator per operation. `flop_formula`
+registers the decorated function as the FLOP count of one or more registered
+custom operators with PyTorch's flop counter, and `has_flop_formula` reports
+whether an operator has one; every operator this package registers does,
+forward and backward, delegating to its operation's canonical estimator.
+Gradcheck uses normal semantic calls and reports low-precision-only
+implementations as unsupported instead of substituting another backend.
 
 ## Private implementation boundary
 

@@ -1806,9 +1806,30 @@ allocator cache, and runtime leeway.
 
 ### `estimate_implementation`
 
-Returns canonical logical hints merged with the exact implementation's optional
-physical/workspace hints. Estimation examines metadata only and retains no
-tensors. Profiling remains authoritative.
+Returns the operation's canonical logical hints merged with the exact
+implementation's optional physical/workspace hints. Every operation with an
+opaque operator has a canonical estimator, in `mlops.dispatch.logical_costs`.
+Estimation examines metadata only and retains no tensors. Profiling remains
+authoritative.
+
+### `flop_formula`
+
+```python
+flop_formula(*operators)
+```
+
+Registers the decorated function as the FLOP count of one or more registered
+custom operators -- the objects `torch.library.custom_op` returns, or their
+`torch.ops` packets -- with `torch.utils.flop_counter`. The function takes the
+operator's arguments, positionally or by name, plus `out_val`, and returns an
+`int`; it runs on fake tensors as readily as real ones and reads shapes, dtypes
+and static arguments only. Every operator in the `mlops` namespace has one,
+forward and backward, delegating to its operation's canonical estimator.
+
+### `has_flop_formula`
+
+Reports whether a registered custom operator, or its `torch.ops` packet, has a
+flop formula.
 
 ### `GradcheckCase`
 

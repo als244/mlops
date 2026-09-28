@@ -206,9 +206,16 @@ Never execute a kernel or silently select another implementation.
 
 `estimate(...)` is optional. It may report:
 
-- operation-level logical FLOPs and minimum bytes;
 - implementation-specific physical FLOPs and accessed bytes; and
 - invocation-local workspace bytes.
+
+Operation-level logical FLOPs and minimum bytes are not the adapter's to
+report: they come from the operation's canonical estimator in
+`src/mlops/dispatch/logical_costs.py`. What the adapter must do is give every
+custom operator it registers, forward and backward, a flop formula that
+delegates to that estimator, with `flop_formula` from `mlops.dispatch.costs`,
+so PyTorch's flop counter prices the operator as it prices an ATen matrix
+product.
 
 Use `None` for unknown and `0` only for known-zero. Workspace excludes model
 state, inputs, outputs, autograd residuals, reusable tables/prepacked weights,
@@ -225,7 +232,9 @@ The adapter:
 - preserves Llama cast semantics, offset zero, and `in_place=False`;
 - derives launch scalars from input geometry;
 - gates the exact supported CUDA dtype/layout/width range;
-- reports Liger's per-invocation dweight partials as backward workspace; and
+- reports Liger's per-invocation dweight partials as backward workspace;
+- gives both custom operators flop formulas that delegate to the RMSNorm
+  canonical estimate; and
 - owns functional fake/autograd custom-op targets.
 
 This is the template for a small third-party kernel integration.
@@ -290,6 +299,8 @@ boundaries. The complete two-operation workflow is documented in
       caller-derived metadata is passed explicitly.
 - [ ] Every opaque forward passes `torch.library.opcheck`.
 - [ ] Fake outputs match real metadata.
+- [ ] Every registered custom operator, forward and backward, has a flop
+      formula.
 - [ ] Repeated non-unit backward preserves saved inputs and cotangents.
 - [ ] Float64-capable paths pass registry-aware `gradcheck`; low-precision-only
       paths record an explicit skip and pass direct VJP parity.

@@ -1,0 +1,19 @@
+Give every operation one logical cost, and register it as its flop formula
+
+Cost hints lived next to the providers that happened to have them: two
+operations carried an estimator, the rest none, and nothing outside mlops
+could ask what an operation costs. A partitioner deciding whether a value is
+cheap to regenerate needs exactly that, through a channel it already reads.
+
+`mlops.dispatch.logical_costs` now holds one estimator per operation, in the
+operation's own semantic signature, returning its logical flops and bytes
+for the forward and the backward entrypoints. `flop_formula(*operators)`
+registers a function as the flop count of custom operators in PyTorch's flop
+registry, so `torch.utils.flop_counter.FlopCounterMode` counts them like any
+matrix product, and `has_flop_formula(operator)` says whether one is
+registered. The provider-local estimators are gone; `estimate_implementation`
+reaches the canonical ones.
+
+The architecture, API, operations, extending and providers documents
+describe the module, the two functions, and the step a new operation or
+provider takes to declare its cost.
