@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import torch
 
 from .dispatch import resolve_implementation
@@ -15,8 +17,17 @@ def head_loss(
     *,
     chunk_size: int | None = None,
     valid_rows: int | None = None,
+    reduction: Literal["mean", "sum"] = "mean",
 ) -> torch.Tensor:
-    """Return mean cross entropy from normalized hidden states."""
+    """Return the next-token cross entropy from normalized hidden states.
+
+    ``"mean"`` divides the summed cross entropy by the rows, or by
+    ``valid_rows`` of them when given; ``"sum"`` returns the sum itself, for
+    a caller that divides by a total of its own -- a step's trained tokens
+    across its microbatches, say. A row whose target is negative counts in
+    neither: it adds nothing to the sum and, under ``"mean"`` without
+    ``valid_rows``, is still one of the rows divided by.
+    """
     implementation = resolve_implementation(
         "head_loss",
         hidden,
@@ -25,6 +36,7 @@ def head_loss(
         surface="semantic",
         chunk_size=chunk_size,
         valid_rows=valid_rows,
+        reduction=reduction,
     )
     return implementation.apply(
         hidden,
@@ -32,6 +44,7 @@ def head_loss(
         targets,
         chunk_size=chunk_size,
         valid_rows=valid_rows,
+        reduction=reduction,
     )
 
 

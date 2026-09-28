@@ -1650,13 +1650,16 @@ head_loss(
     *,
     chunk_size: int | None = None,
     valid_rows: int | None = None,
+    reduction: Literal["mean", "sum"] = "mean",
 ) -> Tensor
 ```
 
 **Purpose**
 
-Computes vocabulary projection and mean next-token cross entropy from already
-normalized hidden states with a bounded chunk-local logits footprint.
+Computes vocabulary projection and next-token cross entropy from already
+normalized hidden states with a bounded chunk-local logits footprint: the mean
+over the rows, or the sum for a caller that divides by a total of its own,
+such as a step's trained tokens across its microbatches.
 
 **Parameters**
 
@@ -1666,11 +1669,14 @@ normalized hidden states with a bounded chunk-local logits footprint.
 | `head_weight` | `Tensor[V,D]` | vocabulary projection |
 | `targets` | integer `Tensor[hidden.shape[:-1]]` | next-token IDs |
 | `chunk_size` | positive `Optional[int]` | explicit token rows per logits chunk |
-| `valid_rows` | `Optional[int]` | denominator in `[1,R]`; `None` uses `R` |
+| `valid_rows` | `Optional[int]` | the mean's denominator in `[1,R]`; `None` uses `R`; not with `reduction="sum"` |
+| `reduction` | `"mean"` or `"sum"` | divide the summed cross entropy by the rows, or return the sum |
 
 **Returns**
 
-Scalar FP32 mean cross-entropy.
+Scalar FP32 cross entropy: the mean over the rows, or the sum. A row whose
+target is negative adds nothing to the sum and, under `"mean"` without
+`valid_rows`, is still one of the rows divided by.
 
 **Autograd and effects**
 
@@ -1685,8 +1691,8 @@ repeated first-order VJPs but not higher-order differentiation.
 **Constraints and exceptions**
 
 Hidden/target row counts must match; targets must lie in `[0,V)`;
-`chunk_size > 0`; and `1 <= valid_rows <= R`. Detected chunked-path
-violations raise `ValueError`.
+`chunk_size > 0`; `1 <= valid_rows <= R`; and `valid_rows` is not given with
+`reduction="sum"`. Detected chunked-path violations raise `ValueError`.
 
 **Implementations**
 

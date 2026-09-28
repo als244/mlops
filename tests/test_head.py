@@ -148,3 +148,43 @@ def test_explicit_head_matches_semantic_vjp_without_autograd_state():
         torch.testing.assert_close(actual_gradient, expected_gradient)
         assert actual_gradient.grad_fn is None
     assert hidden.grad is None and weight.grad is None
+
+
+def test_head_sum_reduction_is_the_summed_cross_entropy_over_valid_rows():
+    """A caller dividing by a total of its own asks for the sum: the mean
+    times the rows, on both providers, with a negative target adding nothing
+    and, unlike the mean, counting for nothing."""
+
+    torch.manual_seed(9107)
+    targets = torch.randint(0, 17, (8,))
+    targets[2] = -100
+    chunked = _clone_parameters(torch.randn(8, 12), torch.randn(17, 12))
+    native = _clone_parameters(*chunked)
+    mean_inputs = _clone_parameters(*chunked)
+    summed = head_loss(*chunked, targets, chunk_size=3, reduction="sum")
+    with use_implementation("head_loss", "native_torch.head_loss"):
+        native_sum = head_loss(*native, targets, reduction="sum")
+    mean = head_loss(*mean_inputs, targets, chunk_size=3)
+    torch.testing.assert_close(summed, native_sum)
+    torch.testing.assert_close(summed, mean * 8)
+    raw = functional.cross_entropy(
+        mean_inputs[0].detach() @ mean_inputs[1].detach().T,
+        targets,
+        ignore_index=-100,
+        reduction="sum",
+    )
+    torch.testing.assert_close(summed.detach(), raw)
+    for summed_gradient, mean_gradient in zip(
+        torch.autograd.grad(summed, chunked),
+        torch.autograd.grad(mean, mean_inputs),
+        strict=True,
+    ):
+        torch.testing.assert_close(
+            summed_gradient, mean_gradient * 8, atol=2e-6, rtol=2e-6
+        )
+    try:
+        head_loss(*_clone_parameters(*chunked), targets, valid_rows=6, reduction="sum")
+    except ValueError as error:
+        assert "valid_rows" in str(error)
+    else:
+        raise AssertionError("a sum has no denominator for valid_rows to name")

@@ -15,12 +15,13 @@ from ...kernels.matmul import add_product_
 
 def _common_support(hidden, head_weight, targets):
     if not all(
-        isinstance(value, torch.Tensor)
-        for value in (hidden, head_weight, targets)
+        isinstance(value, torch.Tensor) for value in (hidden, head_weight, targets)
     ):
         return SupportResult.no("head inputs must be tensors")
     if hidden.ndim < 1 or head_weight.ndim != 2:
-        return SupportResult.no("hidden must have rows and head_weight must be rank two")
+        return SupportResult.no(
+            "hidden must have rows and head_weight must be rank two"
+        )
     if head_weight.shape[-1] != hidden.shape[-1]:
         return SupportResult.no("hidden and head widths are incompatible")
     if targets.numel() != hidden.numel() // hidden.shape[-1]:
@@ -38,10 +39,11 @@ def _supports(
     surface,
     chunk_size=None,
     valid_rows=None,
+    reduction="mean",
     _entrypoint="forward",
     **_kwargs,
 ):
-    del surface, chunk_size, valid_rows
+    del surface, chunk_size, valid_rows, reduction
     if _entrypoint == "backward":
         if not all(isinstance(value, torch.Tensor) for value in (hidden, head_weight)):
             return SupportResult.no("explicit backward seeds must be tensors")
@@ -49,16 +51,24 @@ def _supports(
     return _common_support(hidden, head_weight, targets)
 
 
-def _policy(hidden, head_weight, chunk_size, valid_rows):
+def _policy(hidden, head_weight, chunk_size, valid_rows, reduction):
+    """The chunk of rows per logits block, and what the summed cross entropy
+    is divided by: the rows, ``valid_rows`` of them, or one for a sum."""
     rows = hidden.numel() // hidden.shape[-1]
     chunk = (
         default_head_chunk_size(head_weight.shape[0])
         if chunk_size is None
         else int(chunk_size)
     )
-    normalizer = rows if valid_rows is None else int(valid_rows)
     if chunk <= 0:
         raise ValueError(f"chunk_size must be positive; got {chunk}")
+    if reduction not in ("mean", "sum"):
+        raise ValueError(f"reduction must be 'mean' or 'sum'; got {reduction!r}")
+    if reduction == "sum":
+        if valid_rows is not None:
+            raise ValueError("valid_rows names the mean's denominator; a sum has none")
+        return chunk, 1
+    normalizer = rows if valid_rows is None else int(valid_rows)
     if not 0 < normalizer <= rows:
         raise ValueError(f"valid_rows must be in [1, {rows}]; got {normalizer}")
     return chunk, normalizer
@@ -71,6 +81,7 @@ def forward(
     *,
     chunk_size=None,
     valid_rows=None,
+    reduction="mean",
     weight_grad_dtype=None,
 ):
     """Return loss and seed-one hidden/head VJPs with bounded logits.
@@ -79,7 +90,13 @@ def forward(
     chunk's product added as the multiply writes it; ``None`` keeps it at the
     head's own dtype, adding each chunk's product rounded to it.
     """
-    chunk, normalizer = _policy(hidden, head_weight, chunk_size, valid_rows)
+    chunk, normalizer = _policy(hidden, head_weight, chunk_size, valid_rows, reduction)
+    return _run(hidden, head_weight, targets, chunk, normalizer, weight_grad_dtype)
+
+
+def _run(hidden, head_weight, targets, chunk, normalizer, weight_grad_dtype):
+    """The chunked pass itself: the summed cross entropy over ``normalizer``
+    and both seed-one gradients, ``chunk`` rows of logits at a time."""
     rows = hidden.numel() // hidden.shape[-1]
     with torch.no_grad():
         hidden_2d = hidden.reshape(rows, hidden.shape[-1])
@@ -123,25 +140,25 @@ def _forward_op(
     head_weight: torch.Tensor,
     targets: torch.Tensor,
     chunk_size: int,
-    valid_rows: int,
+    normalizer: int,
     weight_grad_dtype: torch.dtype | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    loss, grad_hidden, grad_head = forward(
+    loss, grad_hidden, grad_head = _run(
         hidden,
         head_weight,
         targets,
-        chunk_size=chunk_size,
-        valid_rows=valid_rows,
-        weight_grad_dtype=weight_grad_dtype,
+        chunk_size,
+        normalizer,
+        weight_grad_dtype,
     )
     return loss, grad_hidden.reshape(-1, hidden.shape[-1]), grad_head
 
 
 @_forward_op.register_fake
 def _forward_fake(
-    hidden, head_weight, targets, chunk_size, valid_rows, weight_grad_dtype
+    hidden, head_weight, targets, chunk_size, normalizer, weight_grad_dtype
 ):
-    del targets, chunk_size, valid_rows
+    del targets, chunk_size, normalizer
     rows = hidden.numel() // hidden.shape[-1]
     return (
         hidden.new_empty((), dtype=torch.float32),
@@ -185,9 +202,10 @@ def apply(
     *,
     chunk_size=None,
     valid_rows=None,
+    reduction="mean",
 ):
     """Apply the autograd-enabled bounded-logits head loss."""
-    chunk, normalizer = _policy(hidden, head_weight, chunk_size, valid_rows)
+    chunk, normalizer = _policy(hidden, head_weight, chunk_size, valid_rows, reduction)
     loss, *_seeds = _forward_op(
         hidden,
         head_weight,
