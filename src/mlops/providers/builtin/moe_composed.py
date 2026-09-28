@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
 from ...dispatch.context import weight_gradient_dtype
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.matmul import product_at
 from ...kernels.moe_dispatch import (
@@ -460,6 +462,43 @@ def _prepare_backward_fake(
     )
 
 
+@flop_formula(_prepare_op)
+def _prepare_flops(
+    h2, router_weight, w13_experts, router_bias, top_k, *_rest, out_val=None, **_kwargs
+):
+    del router_bias, out_val
+    return logical.moe_prepare(
+        h2, router_weight, w13_experts, top_k=top_k, entrypoint="forward"
+    ).logical_flops
+
+
+@flop_formula(_prepare_backward_op)
+def _prepare_backward_flops(
+    grad_aux,
+    grad_probability_sum,
+    grad_route_weights,
+    grad_h13,
+    h2,
+    router_weight,
+    w13_experts,
+    logits,
+    route_weights,
+    route_ids,
+    order,
+    offsets,
+    slots,
+    top_k,
+    *_rest,
+    out_val=None,
+    **_kwargs,
+):
+    del grad_aux, grad_probability_sum, grad_route_weights, grad_h13, logits
+    del route_weights, route_ids, order, offsets, slots, out_val
+    return logical.moe_prepare(
+        h2, router_weight, w13_experts, top_k=top_k, entrypoint="backward"
+    ).logical_flops
+
+
 def _prepare_context(ctx, inputs, output):
     (
         h2,
@@ -691,6 +730,21 @@ def _finish_backward_donate_h13_fake(
         torch.empty_like(route_weights),
         torch.empty_like(grad_output),
     )
+
+
+@flop_formula(_finish_op)
+def _finish_flops(h13, w2_experts, *_rest, out_val=None, **_kwargs):
+    del out_val
+    return logical.moe_finish(h13, w2_experts, entrypoint="forward").logical_flops
+
+
+# Donating h13 changes where the gradient is written, not what is computed.
+@flop_formula(_finish_backward_op, _finish_backward_donate_h13_op)
+def _finish_backward_flops(
+    grad_output, h13, w2_experts, *_rest, out_val=None, **_kwargs
+):
+    del grad_output, out_val
+    return logical.moe_finish(h13, w2_experts, entrypoint="backward").logical_flops
 
 
 def _finish_context(ctx, inputs, output):

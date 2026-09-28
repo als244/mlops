@@ -6,6 +6,8 @@ from functools import lru_cache
 
 import torch
 
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.flash_attention import (
     flash_attention_backward,
@@ -219,6 +221,37 @@ def _backward_fake(
     del grad_output, output, saved_lse, cu_seqlens, max_seqlen
     del causal, softmax_scale, deterministic
     return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+
+
+@flop_formula(_forward_op)
+def _forward_flops(
+    q, k, v, cu_seqlens, max_seqlen, causal=True, *_rest, out_val=None, **_kwargs
+):
+    del out_val
+    return logical.flash_attention(
+        q, k, v, cu_seqlens, max_seqlen, causal=causal, entrypoint="forward"
+    ).logical_flops
+
+
+@flop_formula(_backward_op)
+def _backward_flops(
+    grad_output,
+    q,
+    k,
+    v,
+    output,
+    saved_lse,
+    cu_seqlens,
+    max_seqlen,
+    causal=True,
+    *_rest,
+    out_val=None,
+    **_kwargs,
+):
+    del grad_output, output, saved_lse, out_val
+    return logical.flash_attention(
+        q, k, v, cu_seqlens, max_seqlen, causal=causal, entrypoint="backward"
+    ).logical_flops
 
 
 def _setup_context(ctx, inputs, output):

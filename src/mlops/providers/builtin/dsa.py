@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.dsa import sparse_attention_backward, sparse_attention_forward
 from ...kernels.dsa_indexer import index_scores as raw_index_scores
@@ -88,6 +90,24 @@ def _attention_backward_op(
 def _attention_backward_fake(grad_output, q, k, v, indices, lse, lengths):
     del grad_output, indices, lse, lengths
     return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+
+
+@flop_formula(_attention_forward_op)
+def _attention_forward_flops(q, k, v, indices, lengths, *, out_val=None, **_kwargs):
+    del out_val
+    return logical.dsa_attention(
+        q, k, v, indices, lengths, entrypoint="forward"
+    ).logical_flops
+
+
+@flop_formula(_attention_backward_op)
+def _attention_backward_flops(
+    grad_output, q, k, v, indices, lse, lengths, *, out_val=None, **_kwargs
+):
+    del grad_output, lse, out_val
+    return logical.dsa_attention(
+        q, k, v, indices, lengths, entrypoint="backward"
+    ).logical_flops
 
 
 def _setup_attention_context(ctx, inputs, output):

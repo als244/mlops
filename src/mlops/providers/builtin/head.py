@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
 from ...dispatch.context import weight_gradient_dtype
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.cross_entropy import cross_entropy_fwd_bwd
 from ...kernels.head import default_head_chunk_size
@@ -146,6 +148,14 @@ def _forward_fake(
         hidden.new_empty((rows, hidden.shape[-1])),
         torch.empty_like(head_weight, dtype=weight_grad_dtype),
     )
+
+
+@flop_formula(_forward_op)
+def _forward_flops(hidden, head_weight, targets, *_rest, out_val=None, **_kwargs):
+    del out_val
+    return logical.head_loss(
+        hidden, head_weight, targets, entrypoint="forward"
+    ).logical_flops
 
 
 def _setup_context(ctx, inputs, output):

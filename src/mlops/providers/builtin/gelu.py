@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.gelu import gelu_backward, gelu_forward
 
@@ -48,6 +50,18 @@ def _backward_op(grad_output: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
 def _backward_fake(grad_output, x):
     del grad_output
     return torch.empty_like(x)
+
+
+@flop_formula(_forward_op)
+def _forward_flops(x, *, out_val=None, **_kwargs):
+    del out_val
+    return logical.gelu(x, entrypoint="forward").logical_flops
+
+
+@flop_formula(_backward_op)
+def _backward_flops(grad_output, x, *, out_val=None, **_kwargs):
+    del grad_output, out_val
+    return logical.gelu(x, entrypoint="backward").logical_flops
 
 
 def _setup_context(ctx, inputs, output):

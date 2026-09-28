@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
 from ...dispatch.context import weight_gradient_dtype
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.layer_norm import layer_norm_backward, layer_norm_forward
 
@@ -79,6 +81,18 @@ def _backward_fake(grad_output, x, weight, mean, rstd, weight_grad_dtype):
         torch.empty_like(weight, dtype=weight_grad_dtype),
         torch.empty_like(weight, dtype=weight_grad_dtype),
     )
+
+
+@flop_formula(_forward_op)
+def _forward_flops(x, weight, bias, *_rest, out_val=None, **_kwargs):
+    del out_val
+    return logical.layer_norm(x, weight, bias, entrypoint="forward").logical_flops
+
+
+@flop_formula(_backward_op)
+def _backward_flops(grad_output, x, weight, *_rest, out_val=None, **_kwargs):
+    del grad_output, out_val
+    return logical.layer_norm(x, weight, entrypoint="backward").logical_flops
 
 
 def _setup_context(ctx, inputs, output):
