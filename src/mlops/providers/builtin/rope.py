@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from ...dispatch.costs import CostHints
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import CostHints, flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.rope import rope_backward, rope_forward
 
@@ -220,6 +221,26 @@ def _analytic_autograd_backward(ctx, grad_output):
 _analytic_forward_op.register_autograd(
     _analytic_autograd_backward, setup_context=_setup_context
 )
+
+
+# The table and analytic kernels do the same rotation; how each finds its
+# angles is physical work its own estimate reports.
+@flop_formula(_table_forward_op, _analytic_forward_op)
+def _forward_flops(x, positions, base, cosine, sine, *, out_val=None, **_kwargs):
+    del out_val
+    return logical.rope(
+        x, positions, base, cosine, sine, entrypoint="forward"
+    ).logical_flops
+
+
+@flop_formula(_table_backward_op, _analytic_backward_op)
+def _backward_flops(
+    grad_output, positions, base, cosine, sine, *, out_val=None, **_kwargs
+):
+    del out_val
+    return logical.rope(
+        grad_output, positions, base, cosine, sine, entrypoint="backward"
+    ).logical_flops
 
 
 IMPLEMENTATIONS = tuple(

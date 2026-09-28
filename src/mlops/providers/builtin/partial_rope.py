@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.partial_rope import partial_rope_backward, partial_rope_forward
 
@@ -91,6 +93,26 @@ def _backward_op(
 def _backward_fake(grad_output, positions, base, rotary_dim, cosine, sine):
     del positions, base, rotary_dim, cosine, sine
     return torch.empty_like(grad_output)
+
+
+@flop_formula(_forward_op)
+def _forward_flops(
+    x, positions, base, rotary_dim, cosine, sine, *, out_val=None, **_kwargs
+):
+    del out_val
+    return logical.partial_rope(
+        x, positions, base, rotary_dim, cosine, sine, entrypoint="forward"
+    ).logical_flops
+
+
+@flop_formula(_backward_op)
+def _backward_flops(
+    grad_output, positions, base, rotary_dim, cosine, sine, *, out_val=None, **_kwargs
+):
+    del out_val
+    return logical.partial_rope(
+        grad_output, positions, base, rotary_dim, cosine, sine, entrypoint="backward"
+    ).logical_flops
 
 
 def _setup_context(ctx, inputs, output):

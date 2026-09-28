@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.causal_conv import fla_causal_conv_backward, fla_causal_conv_forward
 from ...kernels.gated_rms_norm import (
@@ -119,6 +121,26 @@ def _causal_backward_fake(
     return torch.empty_like(x), torch.empty_like(weight)
 
 
+@flop_formula(_causal_forward_op)
+def _causal_forward_flops(
+    x, weight, cumulative, chunk_indices=None, *, out_val=None, **_kwargs
+):
+    del out_val
+    return logical.causal_conv_silu(
+        x, weight, cumulative, chunk_indices, entrypoint="forward"
+    ).logical_flops
+
+
+@flop_formula(_causal_backward_op)
+def _causal_backward_flops(
+    grad_output, x, weight, cumulative, chunk_indices=None, *, out_val=None, **_kwargs
+):
+    del grad_output, out_val
+    return logical.causal_conv_silu(
+        x, weight, cumulative, chunk_indices, entrypoint="backward"
+    ).logical_flops
+
+
 def _setup_causal_context(ctx, inputs, output):
     x, weight, cumulative, chunk_indices = inputs
     ctx.has_chunk_indices = chunk_indices is not None
@@ -200,6 +222,18 @@ def _l2_backward_fake(grad_output, output, rstd, eps):
     return torch.empty_like(output)
 
 
+@flop_formula(_l2_forward_op)
+def _l2_forward_flops(x, eps, *, out_val=None, **_kwargs):
+    del out_val
+    return logical.l2_norm(x, eps, entrypoint="forward").logical_flops
+
+
+@flop_formula(_l2_backward_op)
+def _l2_backward_flops(grad_output, output, rstd, eps, *, out_val=None, **_kwargs):
+    del grad_output, rstd, out_val
+    return logical.l2_norm(output, eps, entrypoint="backward").logical_flops
+
+
 def _setup_l2_context(ctx, inputs, output):
     _x, eps = inputs
     normalized, rstd = output
@@ -279,6 +313,20 @@ def _gated_backward_op(
 def _gated_backward_fake(grad_output, x, gate, weight, rstd, eps):
     del grad_output, rstd, eps
     return torch.empty_like(x), torch.empty_like(gate), torch.empty_like(weight)
+
+
+@flop_formula(_gated_forward_op)
+def _gated_forward_flops(x, gate, weight, eps, *, out_val=None, **_kwargs):
+    del out_val
+    return logical.gated_rms_norm(x, gate, weight, eps, entrypoint="forward").logical_flops
+
+
+@flop_formula(_gated_backward_op)
+def _gated_backward_flops(
+    grad_output, x, gate, weight, rstd, eps, *, out_val=None, **_kwargs
+):
+    del grad_output, rstd, out_val
+    return logical.gated_rms_norm(x, gate, weight, eps, entrypoint="backward").logical_flops
 
 
 def _setup_gated_context(ctx, inputs, output):
@@ -507,6 +555,30 @@ def _linear_backward_fake(
         torch.empty_like(a_log, dtype=torch.float32),
         torch.empty_like(dt_bias, dtype=torch.float32),
     )
+
+
+@flop_formula(_linear_forward_op)
+def _linear_forward_flops(
+    q, k, v, beta, a, a_log, dt_bias, cumulative, chunk_indices, *_rest,
+    out_val=None, **_kwargs,
+):
+    del out_val
+    return logical.linear_attention(
+        q, k, v, beta, a, a_log, dt_bias, cumulative, chunk_indices,
+        entrypoint="forward",
+    ).logical_flops
+
+
+@flop_formula(_linear_backward_op)
+def _linear_backward_flops(
+    grad_output, q, k, v, beta, a, a_log, dt_bias, gate, matrix, cumulative,
+    chunk_indices, *_rest, out_val=None, **_kwargs,
+):
+    del grad_output, gate, matrix, out_val
+    return logical.linear_attention(
+        q, k, v, beta, a, a_log, dt_bias, cumulative, chunk_indices,
+        entrypoint="backward",
+    ).logical_flops
 
 
 def _setup_linear_context(ctx, inputs, output):

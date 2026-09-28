@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import torch
 
+from ...dispatch import logical_costs as logical
 from ...dispatch.context import weight_gradient_dtype
-from ...dispatch.costs import CostHints, register_operation_estimator
+from ...dispatch.costs import CostHints, flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.rms_norm import (
     rms_norm_backward_triton,
@@ -25,35 +26,6 @@ def _supports(x, weight, _eps=1e-5, *, surface, **_kwargs) -> SupportResult:
     if not rms_norm_triton_available():
         return SupportResult.no("Triton is unavailable")
     return SupportResult.yes()
-
-
-def _logical_cost(x, weight, _eps=1e-5, *, entrypoint, **_kwargs) -> CostHints:
-    """Estimate ideal RMSNorm work, independent of a concrete kernel."""
-    elements = x.numel()
-    rows = elements // x.shape[-1]
-    activation_bytes = elements * x.element_size()
-    weight_bytes = weight.numel() * weight.element_size()
-    if entrypoint == "forward":
-        return CostHints(
-            logical_flops=5 * elements + 3 * rows,
-            logical_bytes_accessed=2 * activation_bytes + weight_bytes,
-            notes=(
-                "logical FLOPs count square, reduction, scale, rsqrt, and two multiplies",
-                "logical bytes are minimum tensor traffic and exclude saved residuals",
-            ),
-        )
-    return CostHints(
-        logical_flops=10 * elements + rows,
-        logical_bytes_accessed=(
-            3 * activation_bytes + 2 * weight_bytes + 4 * rows
-        ),
-        notes=(
-            "backward logical bytes include dy/x/weight/rstd reads and dx/dweight writes",
-        ),
-    )
-
-
-register_operation_estimator("rms_norm", _logical_cost)
 
 
 def _estimate(x, weight, _eps=1e-5, *, entrypoint, **_kwargs) -> CostHints:
@@ -151,6 +123,18 @@ def _backward_op(
 def _backward_fake(grad_output, x, weight, rstd, weight_grad_dtype):
     del grad_output, rstd
     return torch.empty_like(x), torch.empty_like(weight, dtype=weight_grad_dtype)
+
+
+@flop_formula(_forward_op)
+def _forward_flops(x, weight, *_rest, out_val=None, **_kwargs):
+    del out_val
+    return logical.rms_norm(x, weight, entrypoint="forward").logical_flops
+
+
+@flop_formula(_backward_op)
+def _backward_flops(grad_output, x, weight, *_rest, out_val=None, **_kwargs):
+    del grad_output, out_val
+    return logical.rms_norm(x, weight, entrypoint="backward").logical_flops
 
 
 def _setup_context(ctx, inputs, output):

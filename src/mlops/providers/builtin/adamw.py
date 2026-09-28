@@ -6,7 +6,8 @@ from typing import Literal
 
 import torch
 
-from ...dispatch.costs import CostHints
+from ...dispatch import logical_costs as logical
+from ...dispatch.costs import CostHints, flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.adamw import adamw_master_out_raw, adamw_out_raw
 
@@ -419,6 +420,36 @@ def _master_in_place_op(
 @_master_in_place_op.register_fake
 def _master_in_place_fake(*args, **kwargs):
     del args, kwargs
+
+
+# The functional, out= and in-place forms do one update each; the master
+# forms step the master and write the parameter from it, the same arithmetic.
+@flop_formula(_functional_op, _out_op, _in_place_op)
+def _update_flops(
+    parameter, gradient, exp_avg, exp_avg_sq, step, *_rest, out_val=None, **_kwargs
+):
+    del out_val
+    return logical.adamw(
+        parameter, gradient, exp_avg, exp_avg_sq, step, entrypoint="forward"
+    ).logical_flops
+
+
+@flop_formula(_master_functional_op, _master_out_op, _master_in_place_op)
+def _master_update_flops(
+    parameter,
+    master_parameter,
+    gradient,
+    exp_avg,
+    exp_avg_sq,
+    step,
+    *_rest,
+    out_val=None,
+    **_kwargs,
+):
+    del parameter, out_val
+    return logical.adamw(
+        master_parameter, gradient, exp_avg, exp_avg_sq, step, entrypoint="forward"
+    ).logical_flops
 
 
 def _scalar_arguments(
