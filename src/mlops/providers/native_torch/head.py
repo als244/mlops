@@ -16,15 +16,22 @@ def _supports(
     surface,
     chunk_size=None,
     valid_rows=None,
+    reduction="mean",
     **_kwargs,
 ):
-    del chunk_size, valid_rows
+    del chunk_size, valid_rows, reduction
     if surface == "explicit":
         return SupportResult.no("native full-logits head is apply-only")
     return _common_support(hidden, head_weight, targets)
 
 
-def _normalizer(hidden, valid_rows):
+def _normalizer(hidden, valid_rows, reduction):
+    if reduction not in ("mean", "sum"):
+        raise ValueError(f"reduction must be 'mean' or 'sum'; got {reduction!r}")
+    if reduction == "sum":
+        if valid_rows is not None:
+            raise ValueError("valid_rows names the mean's denominator; a sum has none")
+        return 1
     rows = hidden.numel() // hidden.shape[-1]
     normalizer = rows if valid_rows is None else int(valid_rows)
     if not 0 < normalizer <= rows:
@@ -39,17 +46,21 @@ def apply(
     *,
     chunk_size=None,
     valid_rows=None,
+    reduction="mean",
 ):
     """Materialize full logits and return the canonical scalar objective."""
     del chunk_size
-    normalizer = _normalizer(hidden, valid_rows)
+    normalizer = _normalizer(hidden, valid_rows, reduction)
     hidden_2d = hidden.reshape(-1, hidden.shape[-1])
     logits = hidden_2d @ head_weight.T
-    return functional.cross_entropy(
-        logits.float(),
-        targets.reshape(-1).long(),
-        reduction="sum",
-    ) / normalizer
+    return (
+        functional.cross_entropy(
+            logits.float(),
+            targets.reshape(-1).long(),
+            reduction="sum",
+        )
+        / normalizer
+    )
 
 
 IMPLEMENTATION = register_implementation(
