@@ -97,6 +97,13 @@ individual parameter-group dictionary:
 | `reduction_dtype` | collective input/output and update-gradient dtype | BF16 |
 | `opt_state_dtype` | first- and second-moment dtype | BF16 |
 
+Optimizer moments default to BF16 independently of parameter and gradient dtype.
+Set `opt_state_dtype=torch.float32` for FP32 moments, including on devices that
+do not support BF16, or `torch.float16` for FP16 moments. With FP16 moments, an epsilon such as `1e-8` rounds to zero during the
+optimizer's dtype-visible denominator calculation; FP32 state avoids that default
+precision problem. The stateless update functions use caller-supplied state tensors
+and do not change their dtype.
+
 `"parameter"` resolves to each parameter's storage dtype. The optimizer updates
 each parameter at its own dtype and keeps no other copy of it: a master copy at
 another precision belongs to whatever holds the training state, which hands the
@@ -395,3 +402,17 @@ The original kernel is retained in `mlops.kernels.adamw` as
 `adamw_master_out_internal_fp32_raw`. It keeps more intermediates in FP32 and
 is a developer-only accuracy/performance ablation; registered operations and
 `mlops.optim.AdamW` use the PyTorch-compatible kernel by default.
+
+### FP16 parameters and FP32 state
+
+`AdamW(parameters, gradient_dtype="parameter", opt_state_dtype=torch.float32)`
+uses FP32 moments independently of FP16 parameter storage. Set FP32 explicitly
+on devices without BF16 support; the package default remains BF16. Checkpoint loading
+preserves the saved moment policy and values, including values that FP16 could
+not represent, and caller load hooks observe the restored dtypes.
+
+Stock `torch.optim.AdamW` has no independent optimizer-state dtype setting.
+When using it with an FP16 model, keep FP32 master parameters and have AdamW
+step those masters; cast the updated masters back into the model weights.
+Merely replacing AdamW's FP16 moments with FP32 tensors is not supported by
+its scalar, foreach, or fused updates.
