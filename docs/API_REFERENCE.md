@@ -97,6 +97,20 @@ applies the same validated overrides for the rest of the calling context, for a
 process that chooses once, and so do `set_deterministic_kernels` and
 `set_weight_gradient_dtype` for the requests below.
 
+Without an override, resolution filters unsupported candidates and selects the
+highest-priority remaining implementation. Variable-length FlashAttention requires
+CUDA compute capability 8.0 or newer. On an RTX 2080 Ti (7.5), ordinary
+`mlops.flash_attention` resolves to the PyTorch SDPA provider,
+`native_torch.flash_attention`, which supports autograd and graph capture.
+An exact override selecting `builtin.flash_attention.aten` remains an error on
+that GPU; remove the override to allow automatic selection. The SDPA provider
+serves the model-facing API, not the separate explicit forward/VJP API.
+
+Before `torch.compile` or export, run a representative eager call under
+`capture_dispatch()`, obtain its `dispatch_manifest(trace)`, and apply that manifest
+with `use_implementations(...)` during capture. This freezes the supported choice
+for the captured graph. Capture itself does not perform automatic resolution.
+
 `deterministic_kernels` is the same kind of context-local request, but it asks
 for a property rather than an identity: kernels that reach one answer by an
 order that varies run to run take their ordered variant instead, so one step

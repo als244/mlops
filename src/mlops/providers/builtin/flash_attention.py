@@ -71,7 +71,10 @@ def _supports(
     if cu_seqlens.device != q.device:
         return SupportResult.no("cu_seqlens must be on the queries' device")
     if not native_flash_attention_supported(q, k, v):
-        return SupportResult.no("PyTorch native variable-length flash is unsupported")
+        return SupportResult.no(
+            "PyTorch variable-length FlashAttention requires contiguous FP16/BF16 "
+            "CUDA tensors and compute capability 8.0 or newer"
+        )
     return SupportResult.yes()
 
 
