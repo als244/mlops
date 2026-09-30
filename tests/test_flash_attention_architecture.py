@@ -100,7 +100,7 @@ def test_pre_ampere_fallback_forward_backward_and_compilation():
     for got, want in zip(gradients, expected_gradients, strict=True):
         torch.testing.assert_close(got, want, rtol=3e-3, atol=3e-3)
 
-    # Freeze the resolved identity before capture, as the dispatch API requires.
+    # Explicitly selecting a supported identity remains available for capture.
     compiled = torch.compile(mlops.flash_attention, fullgraph=True)
     with use_implementations(selected):
         output = compiled(q, k, v, offsets, 32)
@@ -108,3 +108,37 @@ def test_pre_ampere_fallback_forward_backward_and_compilation():
     torch.testing.assert_close(output, actual, rtol=3e-3, atol=3e-3)
     for got, want in zip(compiled_gradients, gradients, strict=True):
         torch.testing.assert_close(got, want, rtol=3e-3, atol=3e-3)
+
+    # The same call also selects SDPA automatically during full-graph capture.
+    torch._dynamo.reset()
+    automatic = torch.compile(mlops.flash_attention, fullgraph=True)
+    output = automatic(q, k, v, offsets, 32)
+    automatic_gradients = torch.autograd.grad(output, (q, k, v), cotangent)
+    torch.testing.assert_close(output, actual, rtol=3e-3, atol=3e-3)
+    for got, want in zip(automatic_gradients, gradients, strict=True):
+        torch.testing.assert_close(got, want, rtol=3e-3, atol=3e-3)
+
+
+def test_compiled_resolution_does_not_execute_intermediate_tensors():
+    calls = []
+
+    @torch.library.custom_op("mlops_test::dispatch_input_probe", mutates_args=())
+    def probe(value: torch.Tensor) -> torch.Tensor:
+        calls.append(1)
+        return value.clone()
+
+    @probe.register_fake
+    def probe_fake(value):
+        return torch.empty_like(value)
+
+    def attention(value, offsets):
+        projected = probe(value)
+        return mlops.flash_attention(projected, projected, projected, offsets, 16)
+
+    value = torch.randn(16, 2, 32)
+    offsets = torch.tensor([0, 16], dtype=torch.int32)
+    compiled = torch.compile(attention, backend="eager", fullgraph=True)
+    result = compiled(value, offsets)
+    assert calls == [1]  # One execution; capture did not run the input producer.
+    assert result.shape == value.shape
+    assert torch.isfinite(result).all()

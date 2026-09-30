@@ -50,6 +50,7 @@ def _flash_attention_3_activated(capability_major: int) -> bool:
     return True
 
 
+@torch.compiler.assume_constant_result
 def _maybe_activate_fa3(device: torch.device) -> bool:
     """Activate FA3 once for this process, if this device can run it."""
 

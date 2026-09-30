@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
-
-import torch
 
 from .context import implementation_override, record_dispatch
 from .registry import (
@@ -40,7 +38,7 @@ def _support_result(
         return SupportResult.no(f"unknown surface {surface!r}")
     try:
         result = implementation.supports(*args, surface=surface, **kwargs)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - report optional provider rejection
         return SupportResult.no(f"support check failed: {type(error).__name__}: {error}")
     if isinstance(result, SupportResult):
         return result
@@ -71,13 +69,15 @@ def explain_implementation(
     if forced is not None:
         selected = forced if results[forced].supported else None
     else:
-        supported = [
-            implementation
-            for implementation_id, implementation in implementations.items()
-            if results[implementation_id].supported
-        ]
-        supported.sort(key=lambda item: (-item.priority, item.implementation_id))
-        selected = supported[0].implementation_id if supported else None
+        best = None
+        for implementation_id, implementation in implementations.items():
+            if results[implementation_id].supported and (
+                best is None or
+                (-implementation.priority, implementation_id) <
+                (-best.priority, best.implementation_id)
+            ):
+                best = implementation
+        selected = None if best is None else best.implementation_id
     return ImplementationExplanation(
         operation=operation,
         surface=str(surface),
@@ -94,13 +94,6 @@ def resolve_implementation(
     **kwargs,
 ) -> Implementation:
     """Resolve one implementation or fail with all concrete rejection reasons."""
-    if torch.compiler.is_compiling():
-        forced = implementation_override(str(operation))
-        if forced is None:
-            raise RuntimeError(
-                f"operation {operation!r} was not frozen before graph capture"
-            )
-        return frozen_implementation(str(operation), forced)
     explanation = explain_implementation(
         operation, *args, surface=surface, **kwargs
     )
@@ -116,7 +109,7 @@ def resolve_implementation(
         raise RuntimeError(
             f"{prefix} for {explanation.operation!r} on {surface!r} surface; {reasons}"
         )
-    implementation = implementations_for(explanation.operation)[explanation.selected]
+    implementation = frozen_implementation(explanation.operation, explanation.selected)
     record_dispatch(explanation.operation, implementation.implementation_id)
     return implementation
 
