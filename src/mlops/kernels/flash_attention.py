@@ -8,7 +8,7 @@ plain per-segment SDPA implementation for CPU tests and unsupported dtypes.
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as functional
+from torch.nn import functional
 
 
 def _sequence_ids(
@@ -126,6 +126,9 @@ def native_flash_attention_supported(
         and q.is_contiguous()
         and k.is_contiguous()
         and v.is_contiguous()
+        # PyTorch's varlen FlashAttention kernels require Ampere or newer.
+        # Tensor allocation and BF16 emulation do not establish kernel support.
+        and torch.cuda.get_device_capability(q.device) >= (8, 0)
     )
 
 
