@@ -138,16 +138,6 @@ for module_name, package_name in (
     import_module(module_name)
     print(f"{package_name}: {version(package_name)}")
 
-# FlashAttention-3 is optional and hardware-specific. mlops asks for it only
-# on a device that can run it, so a machine without it is installed
-# correctly; saying so beats failing an install over an accelerator nothing
-# on this host would dispatch to.
-try:
-    import_module("flash_attn_interface")
-except ImportError as error:
-    print(f"flash-attn-3: unavailable ({error})")
-else:
-    print(f"flash-attn-3: {version('flash-attn-3')}")
 PY
 
 echo "mlops setup is complete."
