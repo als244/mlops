@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Callable, Mapping
+
+import torch
+
 
 @dataclass(frozen=True)
 class SupportResult:
@@ -14,11 +17,11 @@ class SupportResult:
     reason: str = ""
 
     @classmethod
-    def yes(cls) -> "SupportResult":
+    def yes(cls) -> SupportResult:
         return cls(True, "supported")
 
     @classmethod
-    def no(cls, reason: str) -> "SupportResult":
+    def no(cls, reason: str) -> SupportResult:
         return cls(False, str(reason))
 
     def __bool__(self) -> bool:
@@ -79,11 +82,20 @@ def implementation_registry() -> Mapping[str, Mapping[str, Implementation]]:
     )
 
 
+@torch.compiler.assume_constant_result
+def _prepare_registry() -> None:
+    # Registration imports Python modules, but never needs input tensor values
+    # or a CUDA context. Keep it outside tracing, including on the first call.
+    from ..providers import ensure_implementations_registered
+
+    ensure_implementations_registered()
+
+
 def implementations_for(operation: str) -> Mapping[str, Implementation]:
     """Return implementations for one exact operation."""
-    registry = implementation_registry()
+    _prepare_registry()
     try:
-        return registry[str(operation)]
+        return MappingProxyType(_REGISTRY[str(operation)])
     except KeyError as error:
         raise ValueError(f"unknown semantic operation {operation!r}") from error
 
@@ -99,8 +111,8 @@ def frozen_implementation(operation: str, implementation_id: str) -> Implementat
 __all__ = [
     "Implementation",
     "SupportResult",
+    "frozen_implementation",
     "implementation_registry",
     "implementations_for",
-    "frozen_implementation",
     "register_implementation",
 ]

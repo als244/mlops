@@ -106,10 +106,17 @@ An exact override selecting `builtin.flash_attention.aten` remains an error on
 that GPU; remove the override to allow automatic selection. The SDPA provider
 serves the model-facing API, not the separate explicit forward/VJP API.
 
-Before `torch.compile` or export, run a representative eager call under
-`capture_dispatch()`, obtain its `dispatch_manifest(trace)`, and apply that manifest
-with `use_implementations(...)` during capture. This freezes the supported choice
-for the captured graph. Capture itself does not perform automatic resolution.
+`torch.compile` and export can resolve implementations during graph capture.
+Support checks inspect tensor metadata (device, dtype, shape, and strides),
+without executing the model or reading tensor contents. The captured graph
+contains the selected implementation; replay does not resolve providers again.
+Only catalog registration and device-only extension activation run outside
+tracing. Importing mlops still does not initialize CUDA.
+
+To explicitly fix implementation identities, optionally run an eager call under
+`capture_dispatch()`, obtain its `dispatch_manifest(trace)`, and use that manifest
+with `use_implementations(...)`. Explicit choices are checked for support during
+capture too. A full eager-model warmup is not required for automatic selection.
 
 `deterministic_kernels` is the same kind of context-local request, but it asks
 for a property rather than an identity: kernels that reach one answer by an
