@@ -216,9 +216,54 @@ class AdamW(torch.optim.Optimizer):
     def load_state_dict(self, state_dict):
         """Restore standard local state or matching distributed state."""
         if self._distributed is None:
-            return super().load_state_dict(state_dict)
+            return self._load_local_state_dict(state_dict)
         self._distributed.load_state_dict(state_dict)
         return None
+
+    def _load_local_state_dict(self, state_dict):
+        # Optimizer.load_state_dict normally casts every floating state tensor
+        # to the parameter dtype. Keep our separately typed state out of that
+        # cast, and restore it before callers' post-hooks inspect the result.
+        # The temporary hooks retain PyTorch's validation and caller pre-hooks.
+        saved = {}
+
+        def preserve(_optimizer, incoming):
+            saved.update(incoming)
+            parameter_keys = {
+                key for group in incoming["param_groups"] for key in group["params"]
+            }
+            states = {
+                key: (
+                    {name: value for name, value in entries.items()
+                     if name not in {"exp_avg", "exp_avg_sq", "step"}}
+                    if key in parameter_keys else entries
+                )
+                for key, entries in incoming["state"].items()
+            }
+            return {**incoming, "state": states}
+
+        def restore(_optimizer):
+            for group, source in zip(self.param_groups, saved["param_groups"], strict=True):
+                for parameter, key in zip(group["params"], source["params"], strict=True):
+                    entries = saved["state"].get(key, {})
+                    for name in ("exp_avg", "exp_avg_sq", "step"):
+                        if name not in entries:
+                            continue
+                        dtype = (
+                            torch.int64 if name == "step" else
+                            resolve_dtype(group["opt_state_dtype"], parameter)
+                        )
+                        self.state[parameter][name] = entries[name].to(
+                            device=parameter.device, dtype=dtype, copy=True
+                        )
+
+        pre = self.register_load_state_dict_pre_hook(preserve)
+        post = self.register_load_state_dict_post_hook(restore, prepend=True)
+        try:
+            return super().load_state_dict(state_dict)
+        finally:
+            pre.remove()
+            post.remove()
 
     def execution_manifest(self):
         """Return distributed lowering hints, or ``None`` locally."""
