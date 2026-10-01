@@ -10,9 +10,9 @@ layers over one set of implementation adapters:
 - exact, per-operation implementation selection under `mlops.dispatch`.
 
 It also provides standard `torch.optim.Optimizer` implementations under
-`mlops.optim`, beginning with allocation-free mixed-precision AdamW. The same
-class supports local execution and optional ProcessGroup-backed replicated or
-sharded-state execution.
+`mlops.optim`, beginning with allocation-free mixed-precision AdamW. Optimizers
+update local tensors; the caller or training engine owns gradient communication
+and parameter/state sharding.
 
 ```python
 optimizer = mlops.optim.AdamW(
@@ -26,22 +26,6 @@ optimizer = mlops.optim.AdamW(
 These settings are held in host scalars, so a schedule writes into them rather
 than rebuilding the optimizer -- see
 [Settings a step can change](docs/OPTIMIZERS.md#settings-a-step-can-change).
-
-Supplying no group is local. Supplying a group defaults to sharded optimizer
-state:
-
-```python
-optimizer = mlops.optim.AdamW(
-    model.parameters(),
-    replica_group=group,
-    opt_state_strategy="sharded",
-)
-```
-
-The same public optimizer supports NCCL and Gloo groups. Its 64 MiB default is
-a hard per-collective payload cap, including for individual parameters larger
-than one bucket. NCCL uses the efficient nonblocking completion path; Gloo is
-a correct, slower portability path selected internally.
 
 The constructor follows the normal `torch.optim.AdamW` option and
 parameter-group surface; [the optimizer reference](docs/OPTIMIZERS.md) lists
@@ -112,9 +96,3 @@ mlops/
 python -m pytest -q tests
 ruff check src/mlops tests
 ```
-
-The real two-host optimizer canary is
-`tests/distributed/adamw_worker.py`; see the
-[distributed optimizer plan](docs/plans/DISTRIBUTED_ADAMW_PLAN.md).
-The reproducible two-host size sweep is documented under
-[`benchmarks/adamw_scaling`](benchmarks/adamw_scaling/README.md).

@@ -36,20 +36,15 @@ AdamW(
     differentiable: bool = False,
     fused: bool | None = None,
     gradient_dtype: dtype | "parameter" = torch.bfloat16,
-    reduction_dtype: dtype | "parameter" = torch.bfloat16,
     opt_state_dtype: dtype | "parameter" = torch.bfloat16,
     parameter_rounding: Literal["nearest", "stochastic"] = "nearest",
     opt_state_rounding: Literal["nearest", "stochastic"] = "nearest",
-    replica_group=None,
-    opt_state_strategy: Literal["replicated", "sharded"] = "sharded",
-    gradient_reduction: Literal["sum", "mean"] = "mean",
-    bucket_bytes: int = 64 << 20,
 )
 ```
 
 `params`, `lr`, `betas`, `eps`, `weight_decay`, `amsgrad`, `maximize`,
 `foreach`, `capturable`, `differentiable`, and `fused` retain the normal
-`torch.optim.AdamW` meanings. AMSGrad and differentiable updates are not
+`torch.optim.AdamW` meanings, except that zero LR has the diagnostic semantics below. AMSGrad and differentiable updates are not
 supported. `foreach` and `fused` are accepted as source/state-dict metadata;
 choosing this class already selects the mlops implementation.
 
@@ -86,15 +81,36 @@ For the same reason, options are validated where they are set -- at
 construction, and when a group is added -- rather than on every step: comparing
 a setting held in a tensor is a branch on data a capture cannot resolve.
 
+### Zero-learning-rate diagnostic steps
+
+For every MLOps AdamW surface, `lr=0` runs the update kernels but preserves the
+stored parameter, optional master, moments, and step counter exactly. Functional
+and `out=` forms write unchanged values to their distinct outputs; in-place forms
+write those same values back. This differs from PyTorch AdamW, which still advances
+moments and counters at zero LR.
+
+The rate remains a runtime argument: switching between zero and positive LR does
+not specialize or recapture the update, and no Python early return skips the
+optimizer work. Stochastic rounding is counter-based; keeping the counter fixed
+also preserves the next real update's rounding stream. MLOps consumes no global
+PyTorch RNG state for this rounding.
+
+The optimizer class still initializes missing state to zeros on its first call.
+Perform that setup before measuring diagnostic steps. `zero_lr_preserves_state=True`
+lets an execution engine discover this contract without depending on MLOps.
+Model buffers, model RNG, data iteration and caller-owned communication remain the
+training engine's responsibility; zero LR changes only the optimizer's writes.
+As with any predicated kernel, identical task structure does not guarantee identical
+hardware timing. Inspect measured traces when comparing diagnostic and real updates.
+
 ### dtype policies
 
-The three dtype policies are independent and may be set globally or in an
+The two dtype policies are independent and may be set globally or in an
 individual parameter-group dictionary:
 
 | Option | Meaning | Default |
 |---|---|---|
-| `gradient_dtype` | dtype used while packing a local gradient | BF16 |
-| `reduction_dtype` | collective input/output and update-gradient dtype | BF16 |
+| `gradient_dtype` | dtype read by the local parameter update | BF16 |
 | `opt_state_dtype` | first- and second-moment dtype | BF16 |
 
 Optimizer moments default to BF16 independently of parameter and gradient dtype.
@@ -108,37 +124,18 @@ and do not change their dtype.
 each parameter at its own dtype and keeps no other copy of it: a master copy at
 another precision belongs to whatever holds the training state, which hands the
 optimizer the masters as its parameters -- with `gradient_dtype="parameter"`
-for masters whose gradients arrive at their dtype. In sharded execution, each
-rank retains only its update shard while the full model-visible parameter
-remains available to forward computation.
+for masters whose gradients arrive at their dtype.
 
-`replica_group=None` selects local execution. Supplying a replica ProcessGroup
-makes the optimizer own synchronization and selects
-`opt_state_strategy="sharded"` by default; `"replicated"` is the other
-supported state-ownership strategy. `gradient_reduction`
-controls sum or mean semantics. `bucket_bytes` is a hard upper bound on each
-full collective payload; an individual parameter may be split at arbitrary
-element boundaries. Buckets with compatible dtype policies reuse task-lifetime
-packing/reduction workspace, so live scratch is bounded by the largest bucket
-per dtype class rather than the model size or number of buckets.
+Each parameter's standard optimizer state contains scalar `step`, `exp_avg`,
+and `exp_avg_sq`. Frozen parameters and parameters without gradients are skipped.
+`step()` returns the optional closure result. Updates are enqueued on the current
+CUDA stream and follow the ordinary PyTorch optimizer completion convention.
 
-The same serialized algorithm supports NCCL and Gloo ProcessGroups. NCCL uses
-a nonblocking current-stream completion bridge. Other backends use the
-portable `Work.wait()` completion boundary; this is correct for Gloo's CUDA
-reduce-scatter even though that Work type has no stream future in PyTorch 2.13.
-Backend selection and completion policy are internal and expose no optimizer
-option. The caller creates the replica group in the normal PyTorch way; NCCL
-is the intended/default GPU training backend, while Gloo is a correct slower
-fallback. Do not combine a group-backed optimizer with another wrapper that
-also synchronizes the same gradients.
-
-For local execution, each admitted parameter's standard optimizer state
-contains scalar `step`, `exp_avg`, and `exp_avg_sq`. Distributed
-state is stored in deterministic rank-local buckets because a parameter may
-span buckets and sharded state is not a full per-parameter tensor. Frozen
-parameters and parameters without local gradients are skipped by local
-execution. `step()` returns the optional closure result and `synchronize()`
-retires distributed work (a no-op locally).
+Communication and state sharding belong to the caller or training engine.
+`supports_flat_parameter_shards=True` declares that this coordinate-wise update can
+operate on owned parameter slices. The engine supplies each slice and its
+matching gradient, moments, and optional master weights; MLOps performs no
+collectives and has no process-group configuration.
 
 The exact compiler identity is `builtin.adamw.triton`.
 
@@ -175,10 +172,10 @@ rounded to nearest, and overflows as it would there.
 The random bits are Philox bits counted from the step, a salt, and the
 element's index, so a run is reproducible, and an update draws the same bits
 eagerly and under anything capturing the step. Locally each parameter's salt
-is its position among the optimizer's parameters. In distributed execution
-each bucket has its own; in sharded execution each rank's shard also has its
-own, and replicas updating a whole bucket draw the same bits, so they stay
-replicas. The salt is a constant of each update, so under stochastic rounding
+is its position among the optimizer's parameters. An external engine that
+partitions these updates owns the mapping of elements to shards; changing that
+mapping can change stochastic rounding draws while preserving their unbiased
+rounding distribution. The salt is a constant of each update, so under stochastic rounding
 no two parameters' updates are the same to anything capturing the step;
 rounded to nearest, every update is given the same salt.
 

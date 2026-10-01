@@ -36,7 +36,7 @@ implementation ID, and constraint.
 | Distinct-master destination | `from mlops.optim import master_adamw` | Write a distinct-master version to caller-owned outputs |
 | Distinct-master mutation | `from mlops.optim import master_adamw_` | Update model/master/moment/step storage in place |
 
-[OPTIMIZERS.md](OPTIMIZERS.md) is the authoritative local/distributed
+[OPTIMIZERS.md](OPTIMIZERS.md) is the authoritative local
 optimizer, dtype, state, and tensor-entrypoint reference.
 
 ## Operation categories

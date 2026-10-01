@@ -38,8 +38,7 @@ each update to the same stateless tensor entrypoints available independently:
 
 ```text
 AdamW.step()
-    -> local: adamw_
-    -> distributed: pack -> collective -> local update -> optional all-gather
+    -> adamw_
     -> registered mutation boundary
     -> allocation-free Triton kernel
 
@@ -56,30 +55,12 @@ There is deliberately no `in_place` constructor flag: PyTorch optimizers are
 logically mutating. Functional and distinct-destination behavior belongs to
 the lower tensor API, where ownership is explicit.
 
-`replica_group=None` keeps this path local. A supplied replica ProcessGroup activates
-private deterministic bucket machinery beneath the same optimizer class:
-
-```text
-replicated:
-    pack/cast gradient -> asynchronous all-reduce -> fused full-state update
-
-sharded:
-    pack/cast gradient -> asynchronous reduce-scatter
-    -> fused local-shard update -> asynchronous parameter all-gather
-```
-
-The default distributed optimizer-state strategy is `sharded`. Compute and communication
-use separate streams, with event dependencies and
-`Work.block_current_stream()` rather than host waits. Construction validates a
-byte-identical cross-rank layout manifest once. Frozen parameters are absent
-from buckets and state. Rank-local checkpoints are same-rank/same-topology in
-V1.
-
-The eager runtime rebinds Parameter data to deterministic flat views at first
-`step()`, preserving Parameter identity while avoiding another full model
-copy. A compiler inspects the optimizer before eager stepping and recreates
-the same logical state using runtime-owned objects; ProcessGroup, Work, Stream,
-and Event objects are never durable artifact fields.
+Optimizer updates use ordinary local tensors. Gradient communication, state
+sharding, and master-weight ownership belong to the caller or training engine.
+The optimizer advertises `supports_parameter_sharding=True` because AdamW updates
+are coordinate-wise; an engine can pass owned slices through the same local
+update operation. MLOps creates no process groups, communication buffers, or
+optimizer-specific streams.
 
 ## Execution architecture
 
