@@ -1,9 +1,9 @@
-"""One PyTorch AdamW façade for local and distributed execution."""
+"""Local mixed-dtype AdamW with explicit tensor state."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, Literal
+from typing import Any
 
 import torch
 
@@ -18,9 +18,11 @@ from ._adamw_common import (
 
 
 class AdamW(torch.optim.Optimizer):
-    """Mixed-dtype AdamW with optional replica-group synchronization."""
+    """Coordinate-wise AdamW; communication and sharding belong to the caller."""
 
     implementation_id = "builtin.adamw.triton"
+    supports_flat_parameter_shards = True
+    zero_lr_preserves_state = True
 
     def __init__(
         self,
@@ -41,14 +43,9 @@ class AdamW(torch.optim.Optimizer):
         differentiable: bool = False,
         fused: bool | None = None,
         gradient_dtype: DTypePolicy = torch.bfloat16,
-        reduction_dtype: DTypePolicy = torch.bfloat16,
         opt_state_dtype: DTypePolicy = torch.bfloat16,
         parameter_rounding: Rounding = "nearest",
         opt_state_rounding: Rounding = "nearest",
-        replica_group: Any | None = None,
-        opt_state_strategy: Literal["replicated", "sharded"] = "sharded",
-        gradient_reduction: Literal["sum", "mean"] = "mean",
-        bucket_bytes: int = 64 << 20,
     ) -> None:
         defaults = {
             "lr": lr,
@@ -64,9 +61,6 @@ class AdamW(torch.optim.Optimizer):
             "gradient_dtype": normalize_dtype_policy(
                 gradient_dtype, name="gradient_dtype"
             ),
-            "reduction_dtype": normalize_dtype_policy(
-                reduction_dtype, name="reduction_dtype"
-            ),
             "opt_state_dtype": normalize_dtype_policy(
                 opt_state_dtype, name="opt_state_dtype"
             ),
@@ -74,32 +68,10 @@ class AdamW(torch.optim.Optimizer):
             "opt_state_rounding": opt_state_rounding,
         }
         validate_adamw_options(defaults)
-        if opt_state_strategy not in {"replicated", "sharded"}:
-            raise ValueError(
-                "opt_state_strategy must be 'replicated' or 'sharded'"
-            )
-        if gradient_reduction not in {"sum", "mean"}:
-            raise ValueError("gradient_reduction must be 'sum' or 'mean'")
-        if type(bucket_bytes) is not int or bucket_bytes <= 0:
-            raise ValueError("bucket_bytes must be one positive integer")
         super().__init__(params, defaults)
         for group in self.param_groups:
             hold_settings_on_host(group)
             validate_adamw_options(group)
-
-        self.replica_group = replica_group
-        self.opt_state_strategy = (
-            None if replica_group is None else opt_state_strategy
-        )
-        self.gradient_reduction = gradient_reduction
-        self.bucket_bytes = bucket_bytes
-        self._distributed = None
-        if replica_group is not None:
-            # Imported lazily so the local optimizer has no distributed setup
-            # or ProcessGroup dependency.
-            from .distributed_adamw import DistributedAdamWRuntime
-
-            self._distributed = DistributedAdamWRuntime(self)
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)
@@ -118,11 +90,6 @@ class AdamW(torch.optim.Optimizer):
             group.setdefault("parameter_rounding", "nearest")
             group.setdefault("opt_state_rounding", "nearest")
 
-    @property
-    def distributed_spec(self):
-        """Return immutable distributed semantics, or ``None`` for local use."""
-        return None if self._distributed is None else self._distributed.spec
-
     @staticmethod
     def _initialize_parameter_state(
         parameter: torch.nn.Parameter,
@@ -135,7 +102,17 @@ class AdamW(torch.optim.Optimizer):
         state["exp_avg_sq"] = torch.zeros_like(parameter, dtype=opt_state_dtype)
 
     @torch.no_grad()
-    def _local_step(self) -> None:
+    def step(self, closure=None):
+        """Execute local AdamW, leaving tensor state unchanged when ``lr=0``.
+
+        Zero LR still launches the update kernels. Missing state is initialized
+        to zeros on first use; initialized moments and counters never advance.
+        The closure, if supplied, retains its ordinary caller-defined effects.
+        """
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
         # Options are validated where they are set, not on every step. A
         # setting held in a tensor is a value the step reads, so comparing it
         # here would be a data-dependent branch inside the update -- which
@@ -189,38 +166,10 @@ class AdamW(torch.optim.Optimizer):
                     **common,
                 )
 
-    @torch.no_grad()
-    def step(self, closure=None):
-        """Perform one local or distributed update."""
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-        if self._distributed is None:
-            self._local_step()
-        else:
-            self._distributed.step()
         return loss
 
-    def synchronize(self) -> None:
-        """Retire outstanding distributed work; local execution is a no-op."""
-        if self._distributed is not None:
-            self._distributed.synchronize()
-
-    def state_dict(self):
-        """Return standard local state or a rank-local distributed state."""
-        if self._distributed is None:
-            return super().state_dict()
-        return self._distributed.state_dict()
-
     def load_state_dict(self, state_dict):
-        """Restore standard local state or matching distributed state."""
-        if self._distributed is None:
-            return self._load_local_state_dict(state_dict)
-        self._distributed.load_state_dict(state_dict)
-        return None
-
-    def _load_local_state_dict(self, state_dict):
+        """Restore state using the independently configured moment dtype."""
         # Optimizer.load_state_dict normally casts every floating state tensor
         # to the parameter dtype. Keep our separately typed state out of that
         # cast, and restore it before callers' post-hooks inspect the result.
@@ -264,12 +213,6 @@ class AdamW(torch.optim.Optimizer):
         finally:
             pre.remove()
             post.remove()
-
-    def execution_manifest(self):
-        """Return distributed lowering hints, or ``None`` locally."""
-        if self._distributed is None:
-            return None
-        return self._distributed.execution_manifest()
 
 
 __all__ = ["AdamW"]

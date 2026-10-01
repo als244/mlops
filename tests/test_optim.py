@@ -496,12 +496,16 @@ def test_adamw_constructor_matches_torch_option_names_defaults_and_kinds():
         assert actual[name].kind == expected[name].kind
         assert actual[name].default == expected[name].default
     assert actual["gradient_dtype"].default == torch.bfloat16
-    assert actual["reduction_dtype"].default == torch.bfloat16
     assert actual["opt_state_dtype"].default == torch.bfloat16
     assert actual["parameter_rounding"].default == "nearest"
     assert actual["opt_state_rounding"].default == "nearest"
-    assert actual["replica_group"].default is None
-    assert actual["opt_state_strategy"].default == "sharded"
+    assert AdamW.supports_parameter_sharding
+    assert set(actual) == set(expected) | {
+        "gradient_dtype",
+        "opt_state_dtype",
+        "parameter_rounding",
+        "opt_state_rounding",
+    }
 
 
 def test_adamw_accepts_implementation_hint_options_without_changing_identity():
