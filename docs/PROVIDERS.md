@@ -168,16 +168,14 @@ The builtin mixed-dtype AdamW layout is the concrete example:
 
 ```text
 optim/adamw_optimizer.py       -> standard mlops.optim.AdamW
-optim/distributed_adamw.py     -> private bucket/collective/state runtime
 providers/builtin/adamw.py     -> registry + custom-op/fake boundaries
 kernels/adamw.py               -> allocation-free Triton mechanics
 ```
 
-The provider layer owns only stateless local tensor transitions. Distributed
-replication/sharding composes those transitions below the optimizer façade; it
-is not a second operation-registry implementation. This keeps provider custom
-ops free of ProcessGroup and stream handles while allowing a compiler to link
-the same local mutation target inside a larger atomic distributed task.
+The provider layer owns stateless local tensor transitions. A training engine
+can place the same transition inside a larger task containing its own gradient
+communication and shard ownership. Process groups and communication streams do
+not appear in the optimizer or its custom-op interface.
 
 ## Explicit forward and backward
 

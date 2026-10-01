@@ -45,6 +45,7 @@ if triton is not None:
 
     @triton.jit
     def _adamw_torch_kernel(
+        parameter,
         master_parameter,
         gradient,
         exp_avg,
@@ -72,19 +73,20 @@ if triton is not None:
     ):
         offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         mask = offsets < size
-        gradient_f32 = tl.load(gradient + offsets, mask=mask, other=0).to(
-            tl.float32
-        )
+        gradient_f32 = tl.load(gradient + offsets, mask=mask, other=0).to(tl.float32)
         gradient_f32 *= gradient_scale
         if MAXIMIZE:
             gradient_f32 = -gradient_f32
-        mean = tl.load(exp_avg + offsets, mask=mask, other=0).to(tl.float32)
-        variance = tl.load(exp_avg_sq + offsets, mask=mask, other=0).to(
-            tl.float32
-        )
-        master_f32 = tl.load(
-            master_parameter + offsets, mask=mask, other=0
-        ).to(tl.float32)
+        old_mean = tl.load(exp_avg + offsets, mask=mask, other=0)
+        old_variance = tl.load(exp_avg_sq + offsets, mask=mask, other=0)
+        old_master = tl.load(master_parameter + offsets, mask=mask, other=0)
+        # Keep compute weights independently: their stored rounding need not
+        # equal a fresh cast of the master. Load before any aliased stores.
+        old_parameter = tl.load(parameter + offsets, mask=mask, other=0)
+        mean = old_mean.to(tl.float32)
+        variance = old_variance.to(tl.float32)
+        master_f32 = old_master.to(tl.float32)
+        commit = lr != 0.0
         if PARAMETER_STOCHASTIC or STATE_STOCHASTIC:
             # Counter-based bits, a function of the step, the tensor and the
             # element alone: every implementation of the update draws the same.
@@ -119,23 +121,36 @@ if triton is not None:
         rounded_variance = _rounded(
             variance, out_exp_avg_sq.dtype.element_ty, STATE_STOCHASTIC, variance_bits
         )
-        tl.store(out_exp_avg + offsets, rounded_mean, mask=mask)
-        tl.store(out_exp_avg_sq + offsets, rounded_variance, mask=mask)
+        # A zero learning rate executes the update arithmetic but stores the
+        # original values. This is a runtime predicate, not a JIT specialization
+        # or an early return; functional and in-place surfaces share this path.
+        tl.store(
+            out_exp_avg + offsets, tl.where(commit, rounded_mean, old_mean), mask=mask
+        )
+        tl.store(
+            out_exp_avg_sq + offsets,
+            tl.where(commit, rounded_variance, old_variance),
+            mask=mask,
+        )
 
         next_step = tl.load(step).to(tl.float32) + 1.0
         correction1 = 1.0 - libdevice.pow(beta1, next_step)
         correction2 = 1.0 - libdevice.pow(beta2, next_step)
         step_size = lr / correction1
         correction2_sqrt = tl.sqrt(correction2)
-        denominator = tl.sqrt(rounded_variance.to(tl.float32)).to(
-            out_exp_avg_sq.dtype.element_ty
-        ).to(tl.float32)
-        denominator = (denominator / correction2_sqrt).to(
-            out_exp_avg_sq.dtype.element_ty
-        ).to(tl.float32)
-        denominator = (denominator + eps).to(
-            out_exp_avg_sq.dtype.element_ty
-        ).to(tl.float32)
+        denominator = (
+            tl.sqrt(rounded_variance.to(tl.float32))
+            .to(out_exp_avg_sq.dtype.element_ty)
+            .to(tl.float32)
+        )
+        denominator = (
+            (denominator / correction2_sqrt)
+            .to(out_exp_avg_sq.dtype.element_ty)
+            .to(tl.float32)
+        )
+        denominator = (
+            (denominator + eps).to(out_exp_avg_sq.dtype.element_ty).to(tl.float32)
+        )
         master_f32 = libdevice.fma(
             -step_size,
             rounded_mean.to(tl.float32) / denominator,
@@ -147,15 +162,22 @@ if triton is not None:
             PARAMETER_STOCHASTIC,
             master_bits,
         )
-        tl.store(out_master_parameter + offsets, rounded_master, mask=mask)
+        tl.store(
+            out_master_parameter + offsets,
+            tl.where(commit, rounded_master, old_master),
+            mask=mask,
+        )
         tl.store(
             out_parameter + offsets,
-            rounded_master.to(out_parameter.dtype.element_ty),
+            tl.where(
+                commit, rounded_master.to(out_parameter.dtype.element_ty), old_parameter
+            ),
             mask=mask,
         )
 
     @triton.jit
     def _adamw_internal_fp32_kernel(
+        parameter,
         master_parameter,
         gradient,
         exp_avg,
@@ -183,19 +205,20 @@ if triton is not None:
     ):
         offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         mask = offsets < size
-        gradient_f32 = tl.load(gradient + offsets, mask=mask, other=0).to(
-            tl.float32
-        )
+        gradient_f32 = tl.load(gradient + offsets, mask=mask, other=0).to(tl.float32)
         gradient_f32 *= gradient_scale
         if MAXIMIZE:
             gradient_f32 = -gradient_f32
-        mean = tl.load(exp_avg + offsets, mask=mask, other=0).to(tl.float32)
-        variance = tl.load(exp_avg_sq + offsets, mask=mask, other=0).to(
-            tl.float32
-        )
-        master_f32 = tl.load(
-            master_parameter + offsets, mask=mask, other=0
-        ).to(tl.float32)
+        old_mean = tl.load(exp_avg + offsets, mask=mask, other=0)
+        old_variance = tl.load(exp_avg_sq + offsets, mask=mask, other=0)
+        old_master = tl.load(master_parameter + offsets, mask=mask, other=0)
+        # Keep compute weights independently: their stored rounding need not
+        # equal a fresh cast of the master. Load before any aliased stores.
+        old_parameter = tl.load(parameter + offsets, mask=mask, other=0)
+        mean = old_mean.to(tl.float32)
+        variance = old_variance.to(tl.float32)
+        master_f32 = old_master.to(tl.float32)
+        commit = lr != 0.0
         if PARAMETER_STOCHASTIC or STATE_STOCHASTIC:
             # Counter-based bits, a function of the step, the tensor and the
             # element alone: every implementation of the update draws the same.
@@ -214,8 +237,17 @@ if triton is not None:
         rounded_variance = _rounded(
             variance, out_exp_avg_sq.dtype.element_ty, STATE_STOCHASTIC, variance_bits
         )
-        tl.store(out_exp_avg + offsets, rounded_mean, mask=mask)
-        tl.store(out_exp_avg_sq + offsets, rounded_variance, mask=mask)
+        # A zero learning rate executes the update arithmetic but stores the
+        # original values. This is a runtime predicate, not a JIT specialization
+        # or an early return; functional and in-place surfaces share this path.
+        tl.store(
+            out_exp_avg + offsets, tl.where(commit, rounded_mean, old_mean), mask=mask
+        )
+        tl.store(
+            out_exp_avg_sq + offsets,
+            tl.where(commit, rounded_variance, old_variance),
+            mask=mask,
+        )
 
         next_step = tl.load(step).to(tl.float32) + 1.0
         correction1 = tl.where(
@@ -240,16 +272,22 @@ if triton is not None:
             PARAMETER_STOCHASTIC,
             master_bits,
         )
-        tl.store(out_master_parameter + offsets, rounded_master, mask=mask)
+        tl.store(
+            out_master_parameter + offsets,
+            tl.where(commit, rounded_master, old_master),
+            mask=mask,
+        )
         tl.store(
             out_parameter + offsets,
-            rounded_master.to(out_parameter.dtype.element_ty),
+            tl.where(
+                commit, rounded_master.to(out_parameter.dtype.element_ty), old_parameter
+            ),
             mask=mask,
         )
 
     @triton.jit
-    def _increment_scalar_kernel(source, destination):
-        tl.store(destination, tl.load(source) + 1)
+    def _increment_scalar_kernel(source, destination, lr):
+        tl.store(destination, tl.load(source) + (lr != 0.0).to(source.dtype.element_ty))
 
 
 def _validate_state(
@@ -266,7 +304,9 @@ def _validate_state(
     if any(value.device.type != "cuda" for value in (*tensors, step)):
         raise ValueError("mlops AdamW requires CUDA tensors")
     if any(value.dtype not in _FLOAT_DTYPES for value in tensors):
-        raise ValueError("AdamW parameter, gradient, master, and moments must be floating")
+        raise ValueError(
+            "AdamW parameter, gradient, master, and moments must be floating"
+        )
     if step.dtype not in {torch.int64, torch.float32} or step.numel() != 1:
         raise ValueError("AdamW requires one int64 or FP32 step scalar")
     if not all(value.numel() == parameter.numel() for value in tensors):
@@ -326,6 +366,7 @@ def _adamw_master_out_raw(
     beta1, beta2 = betas
     block = 1024
     kernel[(triton.cdiv(parameter.numel(), block),)](
+        parameter,
         master_parameter,
         gradient,
         exp_avg,
@@ -352,7 +393,7 @@ def _adamw_master_out_raw(
         BLOCK=block,
     )
     # Every main-grid block must read the old scalar before it is overwritten.
-    _increment_scalar_kernel[(1,)](step, out_step)
+    _increment_scalar_kernel[(1,)](step, out_step, float(lr))
     return out
 
 

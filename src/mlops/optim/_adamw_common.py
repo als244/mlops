@@ -52,7 +52,6 @@ def validate_adamw_options(group: dict[str, Any]) -> None:
         raise ValueError("AdamW betas must be in [0, 1)")
     for name in (
         "gradient_dtype",
-        "reduction_dtype",
         "opt_state_dtype",
     ):
         group[name] = normalize_dtype_policy(group[name], name=name)

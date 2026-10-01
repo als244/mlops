@@ -12,10 +12,10 @@ from .adamw_optimizer import AdamW
 
 __all__ = [
     "AdamW",
+    "adamw",
+    "adamw_",
     "functional_adamw",
     "functional_master_adamw",
     "master_adamw",
     "master_adamw_",
-    "adamw",
-    "adamw_",
 ]
