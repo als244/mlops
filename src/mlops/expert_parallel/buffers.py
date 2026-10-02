@@ -4,7 +4,9 @@ from contextlib import contextmanager
 
 
 def create_buffer(config, tokens, ep_group=None):
-    from ._compat import moonep_rank1  # noqa: F401
+    from ._compat import initialize_moonep
+
+    initialize_moonep()
 
     if tokens % getattr(config, "num_chunks", 1):
         raise ValueError("Equal-size chunks require divisible token count")

@@ -6,6 +6,13 @@ from _gate import run, worker_command
 pytestmark = [pytest.mark.gpu, pytest.mark.expert_parallel]
 
 
+def test_moonep_planner_large_token_counts(ep_environment):
+    root, world_size, timeout = ep_environment
+    output = root / "moonep-planner-32k-64k"
+    command = worker_command("moonep", world_size, output)
+    run(command + ["--outdir", str(output)], output, timeout)
+
+
 def test_reference_correctness(ep_environment, ep_case):
     root, world_size, timeout = ep_environment
     output = root / ep_case.name

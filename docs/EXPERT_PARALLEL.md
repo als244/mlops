@@ -65,9 +65,17 @@ reports this known metadata mismatch. The `ep-quack` and `ep-te` extras install
 the backend libraries; MoonEP must also be installed by the script above.
 
 Small, source-checked compatibility patches are isolated in this package:
-MoonEP singleton support, Quack's one-stage SM90 pipeline correction, and its
+MoonEP singleton support, its planner compiler compatibility fix, Quack's
+one-stage SM90 pipeline correction, and its
 extended autotuning candidates. They apply in memory and never edit dependency
 files. Unsupported dependency revisions produce explicit errors.
+
+For DSL 4.7.1, the MoonEP planner alone uses PTXAS optimization level 2.
+The default level produces an illegal address in stock MoonEP for configurations
+including EP2, E192, top-k 4 and 65,536 tokens/rank. Communication kernels and
+Quack/TE computation retain their usual compiler settings. The fix applies
+automatically when constructing a buffer or loading either implementation;
+applications do not need environment variables or modified MoonEP installations.
 
 ## Basic use
 

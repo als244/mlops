@@ -13,7 +13,9 @@ def _initialize():
     global _initialized
     if _initialized:
         return
-    from .._compat import moonep_rank1  # noqa: F401
+    from .._compat import initialize_moonep
+
+    initialize_moonep()
     from .parameters import components  # noqa: F401
 
     _initialized = True
