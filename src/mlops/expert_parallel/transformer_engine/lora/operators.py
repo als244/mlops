@@ -3,13 +3,13 @@
 import torch
 from torch import Tensor
 
+from ...lora import parse_signature, signature
+from ...parameters import BF16ComputeWeight
 from ..config import _config_from_signature as _configuration
 from ..config import config_signature
 from ..operators import _fake_state as _base_fake_state
-from ..parameters.bf16 import BF16ComputeWeight
 from ..parameters.components import COMPUTE_WEIGHT_TYPES
 from ..registry import _runtime
-from .config import parse_signature, signature
 
 
 def _checked(handle, spec):

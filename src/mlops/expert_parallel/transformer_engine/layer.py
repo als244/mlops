@@ -7,15 +7,15 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 
+from ..parameters import BF16ComputeWeight
 from .buffers import bind_buffer
 from .config import MoEConfig, config_signature
 from .operators import _EFFECT_ERROR, _forward_op
-from .parameters.bf16 import BF16ComputeWeight
 from .registry import _REGISTRY_LOCK, _RUNTIMES, _register_runtime, _runtime
 from .runtime import _MoonRuntime
 
 
-class MoELayer(nn.Module):
+class TEMoE(nn.Module):
     """Full first-order MoE module; strict group-wide GPU phase boundaries.
 
     x: BF16 [...,D] with S flattened tokens. Optional external routing is [S,K].

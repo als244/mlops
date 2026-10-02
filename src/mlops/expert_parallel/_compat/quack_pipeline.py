@@ -17,7 +17,7 @@ def _checked_source(function, expected):
         raise RuntimeError(
             "Unsupported Quack source for runtime patch: "
             + function.__qualname__
-            + ". Install the unmodified Quack revision pinned by quack-moe."
+            + ". Install the unmodified Quack revision pinned by mlops[ep-quack]."
         )
     return source
 
@@ -25,7 +25,7 @@ def _checked_source(function, expected):
 def _initialize_compile_worker(quack_arch, cute_dsl_arch):
     # Public imports are lazy. A spawned compiler process must explicitly
     # install the same patches before accepting compile work.
-    from . import _initialize
+    from ..quack import _initialize
 
     _initialize()
     _original_pool_initializer(quack_arch, cute_dsl_arch)
@@ -74,7 +74,7 @@ def apply():
     )
     # CuTe parses inspected source. Keep the replacement available to inspect,
     # including in compile workers, without writing the dependency checkout.
-    filename = "<mlops.expert_parallel.quack.patch_quack_runtime.GemmSm90.mma>"
+    filename = "<mlops.expert_parallel._compat.quack_pipeline.GemmSm90.mma>"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
     namespace = dict(vars(importlib.import_module(GemmSm90.__module__)))
     exec(compile(source, filename, "exec"), namespace)  # noqa: S102 -- source hash checked above
@@ -83,7 +83,8 @@ def apply():
     inspect.unwrap(replacement).__qualname__ = replacement.__qualname__
 
     GemmSm90.mma = replacement
-    cache.EXTRA_SOURCE_DIRS.append(Path(__file__).resolve().parent)
+    # Include kernels and shared helpers after moving patches into _compat.
+    cache.EXTRA_SOURCE_DIRS.append(Path(__file__).resolve().parents[1])
     _original_pool_initializer = async_compile._pool_initializer
     async_compile._pool_initializer = _initialize_compile_worker
     _applied = True

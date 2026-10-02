@@ -7,7 +7,7 @@ parameter wraps the bank's existing BF16/FP8 storage; no master weights remain.
 import torch
 from torch import nn
 
-from .bf16 import BF16ComputeWeight
+from ...parameters import BF16ComputeWeight
 from .fp8 import QuackFP8Weight
 
 

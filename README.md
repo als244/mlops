@@ -72,6 +72,7 @@ only their implementations unavailable.
 - [Explicit entry points](docs/EXPLICIT_OPS.md)
 - [Raw kernel boundary](docs/KERNELS.md)
 - [Optimizer API reference](docs/OPTIMIZERS.md)
+- [Expert-parallel layers and GPU validation](docs/EXPERT_PARALLEL.md)
 
 ## Repository layout
 
@@ -82,6 +83,7 @@ mlops/
 ├── src/mlops/              importable package
 │   ├── dispatch/           registry, resolution, overrides, cost/gradcheck APIs
 │   ├── explicit/           public stateless forward/VJP entrypoints
+│   ├── expert_parallel/    optional Quack/TE MoE and LoRA layers
 │   ├── kernels/            private raw Torch/Triton mechanics
 │   ├── optim/              PyTorch optimizers and functional/out=/in-place updates
 │   └── providers/          exact implementation adapters

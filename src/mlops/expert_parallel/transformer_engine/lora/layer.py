@@ -3,17 +3,17 @@
 import torch
 from torch import nn
 
+from ...lora import LoRAConfig, signature
+from ...parameters import BF16ComputeWeight
 from ..config import config_signature
-from ..layer import MoELayer
-from ..parameters.bf16 import BF16ComputeWeight
+from ..layer import TEMoE
 from ..registry import _runtime
-from .config import LoRAConfig, signature
 from .operators import forward
 from .runtime import LoRARuntime
 from .shared import forward as shared_forward
 
 
-class TEMoELoRA(MoELayer):
+class TEMoELoRA(TEMoE):
     def __init__(self, config, ep_group=None, *, buffer, lora=None, device=None):
         self.lora_config = lora or LoRAConfig()
         super().__init__(config, ep_group, buffer=buffer, device=device)

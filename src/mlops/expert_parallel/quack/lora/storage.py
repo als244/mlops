@@ -6,8 +6,8 @@ Factor gradients are small owned outputs; frozen base gradients never exist.
 
 import torch
 
+from ...kernels.grad_reduce import launch_grad_reduce
 from ...lora import packed_pitch
-from ..kernels.grad_reduce import launch_grad_reduce
 
 
 class FactorBank:

@@ -202,41 +202,69 @@ multiple of 16. BF16 factor computation and BF16/FP32 gradients are supported;
 base expert precision is configured independently. The default rank and alpha
 are both 32; scaling is alpha/rank.
 
-## Testing and current validation
+## Package organization
 
-CPU reference/configuration checks:
+All implementation code lives in `src/mlops/expert_parallel/`:
+
+| Directory / file | Responsibility |
+| --- | --- |
+| `__init__.py`, `buffers.py` | Public exports and caller-owned communication buffer construction |
+| `quack/` | Quack layer, operators, routing, expert math and compute-weight representations |
+| `quack/pipeline/` | Chunk scheduling, buffer resources, transport and BF16/FP8 execution |
+| `transformer_engine/` | TE layer, operators, communication and grouped expert math |
+| Each backend's `lora/` | LoRA layer, factor storage and forward/backward integration |
+| `lora.py`, `parameters.py`, `kernels/` | Shared LoRA configuration, BF16 compute weights and gradient reduction |
+| `_compat/` | Isolated, source-checked MoonEP and Quack runtime patches |
+| `reference/` | Independent PyTorch routing/expert math, without optional backend imports |
+
+Backend code owns computation; application code owns optimizers, training,
+benchmarking and planning. Both implementations use the same BF16 weight
+representation and gradient-reduction helper. GPU packages load lazily when a
+layer class is requested. The reference and configuration APIs remain CPU-safe.
+
+## Testing
+
+The default run needs no optional EP libraries or GPU and skips the GPU gate:
 
 ```bash
-python -m pytest tests/expert_parallel -q
+python -m pytest -q tests/expert_parallel
 ```
 
-GPU tests use one process per rank and an independent PyTorch reference. They
-check the router separately, then hold routes fixed for expert output and gradient
-comparisons. Run these after installing the corresponding optional backend:
+After installation, explicitly enable the H100/SM90 gate:
 
 ```bash
-# Full training: --recompute checkpoints the forward; omit it to save activations.
-torchrun --standalone --nproc-per-node=2 tests/expert_parallel/gpu_quack.py \
-  --precision bf16 --compiled --outdir /path/to/results/quack-save
-torchrun --standalone --nproc-per-node=2 tests/expert_parallel/gpu_te.py \
-  --precision fp8_current --compiled --recompute --output /path/to/results/te.json
-
-# LoRA: check eager and torch.compile, zero/nonzero B, and frozen base weights.
-torchrun --standalone --nproc-per-node=2 tests/expert_parallel/gpu_quack_lora.py \
-  --precision fp8_current --execution both --outdir /path/to/results/quack-lora
-torchrun --standalone --nproc-per-node=2 tests/expert_parallel/gpu_te_lora.py \
-  --precision bf16 --execution both --recompute --outdir /path/to/results/te-lora
+python -m pytest -q -s tests/expert_parallel --run-expert-parallel \
+  --ep-backend both --ep-world-size 2 --ep-output /path/to/new-results
 ```
 
-Create the parent directory for `gpu_te.py --output` first. TE tests also accept
-`fp8_block`; both LoRA tests accept `--recompute`. Quack tests can exercise
-`--num-chunks 4 --num-buffers 2` and, with FP8 compute,
-`--activation-transport fp8`. Use `--nproc-per-node=1` to test singleton EP.
-The scripts report per-case output/gradient relative RMS error and fail on
-nonfinite values or mismatches. FP8 tolerances account for comparison with a BF16
-reference; passing them does not mean bitwise equality.
+The gate runs 28 configurations plus one public-API coexistence check. It covers
+full training and LoRA, save/recompute, BF16 and FP8-current, TE FP8-block, and
+Quack's four-chunk/two-buffer path (including FP8 dispatch). LoRA checks both
+eager and compiled execution. Full-training checks use compiled entrypoints.
+The independent PyTorch reference uses identical expert assignments and checks
+routing separately. Tests also cover skewed/empty expert groups, repeated calls,
+nonzero LoRA factors, frozen weights, and configured gradients.
 
-The default MLOps installation and CPU tests work without these GPU dependencies.
-The CPU import check explicitly blocks optional backend imports. Wheel validation
-also blocks legacy standalone module imports, so tests cannot silently fall back
-to an experimental checkout.
+Use `--ep-backend quack` or `te` for a single installed backend,
+`--ep-world-size 1` for singleton EP, and pytest `-k` to select cases. Collection
+alone never starts CUDA or distributed workers:
+
+```bash
+python -m pytest --collect-only -q tests/expert_parallel
+python -m pytest -q -s tests/expert_parallel --run-expert-parallel \
+  --ep-backend quack -k 'fp8_current and save and chunks4' \
+  --ep-output /path/to/fp8-chunks
+```
+
+Each case starts fresh torchrun workers, prints and flushes start and completion
+records, and saves `status.json`, `console.log`, per-rank worker logs and numerical
+results in its own subdirectory. Existing case directories are never overwritten.
+`--ep-timeout` bounds each worker group (600 seconds by default); failure or timeout
+preserves its logs. An explicitly enabled gate fails clearly when dependencies,
+GPU architecture or the requested device count are unavailable.
+
+See the [test map and worker commands](../tests/expert_parallel/README.md) for
+individual checks. FP8 tolerances compare against BF16 reference math; a passing
+check does not imply bitwise equality. CPU isolation checks block optional
+backend and legacy standalone imports so validation cannot silently use an
+experimental checkout.

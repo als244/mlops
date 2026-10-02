@@ -7,10 +7,10 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 
+from ..parameters import BF16ComputeWeight
 from .buffers import bind_buffer
 from .config import config_signature
 from .operators import _forward
-from .parameters.bf16 import BF16ComputeWeight
 from .parameters.initialization import compute_parameter, initialize_expert_parameter
 from .registry import _REGISTRY_LOCK, _RUNTIMES, _register_runtime, _runtime
 from .router import route_op
@@ -18,7 +18,7 @@ from .runtime import _Runtime
 from .shared_operators import _forward as _shared_forward
 
 
-class MoELayer(nn.Module):
+class QuackMoE(nn.Module):
     def __init__(self, config, ep_group=None, *, buffer, device=None):
         nn.Module.__init__(self)
         device = torch.device(device or f"cuda:{torch.cuda.current_device()}")

@@ -9,7 +9,7 @@ histogram. The full upstream metadata pipeline is retained for initial compariso
 import torch
 from torch import Tensor
 
-from .patch_quack_autotune import router_kernels
+from .._compat.quack_autotune import router_kernels
 
 
 @torch.library.custom_op("mlops_ep_quack_router::forward", mutates_args=())

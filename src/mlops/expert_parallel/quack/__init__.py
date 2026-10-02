@@ -13,11 +13,11 @@ def _initialize():
     global _initialized
     if _initialized:
         return
-    from . import patch_quack_autotune, patch_quack_runtime
+    from .._compat import quack_autotune, quack_pipeline
 
-    patch_quack_runtime.apply()
-    patch_quack_autotune.apply()
-    from .. import _patch_moonep_rank1  # noqa: F401
+    quack_pipeline.apply()
+    quack_autotune.apply()
+    from .._compat import moonep_rank1  # noqa: F401
     from .parameters import components  # noqa: F401
 
     _initialized = True
@@ -26,12 +26,12 @@ def _initialize():
 def __getattr__(name):
     if name in ("MoELayer", "QuackMoE"):
         _initialize()
-        return import_module(f"{__name__}.layer").MoELayer
+        return import_module(f"{__name__}.layer").QuackMoE
     if name == "QuackMoELoRA":
         _initialize()
         return import_module(f"{__name__}.lora").QuackMoELoRA
     if name == "ChunkBufferPool":
-        return import_module(f"{__name__}.chunk_buffers").ChunkBufferPool
+        return import_module(f"{__name__}.pipeline.buffers").ChunkBufferPool
     raise AttributeError(name)
 
 

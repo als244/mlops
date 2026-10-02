@@ -2,7 +2,7 @@
 
 from quack.gemm_interface import gemm_add_inplace, gemm_tuned
 
-from .experts.bf16 import QuackExperts, _gemm
+from ..experts.bf16 import QuackExperts, _gemm
 
 
 class ChunkExperts(QuackExperts):

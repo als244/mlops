@@ -14,9 +14,9 @@ from moonep.dispatch import launch_dispatch
 from moonep.planning import allocate_planning_outputs, launch_planning
 
 from .activation_transport import mask_rows_tail, restore_rows, save_rows
-from .chunk_base import Chunk, ChunkResources
-from .chunk_transport import ChunkTransport
 from .communication import _PLAN_FIELDS
+from .pipeline.resources import Chunk, ChunkResources
+from .pipeline.transport import ChunkTransport
 from .runtime_resources import local_group_counts
 from .streams import Streams
 
@@ -57,7 +57,7 @@ class _Runtime(ChunkResources):
         self.state_stride = 11 + int(config.activation_transport == "fp8")
 
     def _slots(self, plan):
-        from .chunk_group_quantize import group_slots
+        from .pipeline.quantize import group_slots
 
         return group_slots(plan.experts_to_copy[self.rank], self.cfg.local_experts)
 

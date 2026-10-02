@@ -13,8 +13,8 @@ import triton
 from moonep.dispatch_epilogue import launch_dispatch_epilogue
 from moonep.inter_rank_sync import launch_inter_rank_sync
 
-from .activation_transport import FP8DispatchView, FP8Rows, _scatter_scale
-from .kernels.quantize_rows import quantize_rows_fp8
+from ..activation_transport import FP8DispatchView, FP8Rows, _scatter_scale
+from ..kernels.quantize_rows import quantize_rows_fp8
 
 
 class ChunkTransport:

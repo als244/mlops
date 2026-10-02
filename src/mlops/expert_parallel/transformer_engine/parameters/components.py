@@ -6,7 +6,7 @@ from transformer_engine.pytorch.tensor.float8_blockwise_tensor import (
 )
 from transformer_engine.pytorch.tensor.float8_tensor import Float8Tensor
 
-from mlops.expert_parallel.transformer_engine.parameters.bf16 import BF16ComputeWeight
+from ...parameters import BF16ComputeWeight
 
 FP8_TYPES = (Float8Tensor, Float8BlockwiseQTensor)
 COMPUTE_WEIGHT_TYPES = (*FP8_TYPES, BF16ComputeWeight)

@@ -17,11 +17,13 @@ DOCS = (
     DOCS_ROOT / "API_REFERENCE.md",
     DOCS_ROOT / "ARCHITECTURE.md",
     DOCS_ROOT / "EXPLICIT_OPS.md",
+    DOCS_ROOT / "EXPERT_PARALLEL.md",
     DOCS_ROOT / "EXTENDING.md",
     DOCS_ROOT / "KERNELS.md",
     DOCS_ROOT / "OPTIMIZERS.md",
     DOCS_ROOT / "OPS.md",
     DOCS_ROOT / "PROVIDERS.md",
+    PROJECT_ROOT / "tests/expert_parallel/README.md",
 )
 
 

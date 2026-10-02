@@ -1,4 +1,4 @@
-"""FP8 chunk experiment using the existing Quack quantizers and GEMM epilogues.
+"""FP8 chunk execution using the existing Quack quantizers and GEMM epilogues.
 
 Row scales for forward/dgrad keep their reduction dimension. Weight-gradient
 feature scales reduce over each chunk's expert rows. This is a different FP8
@@ -9,9 +9,9 @@ import itertools
 
 import torch
 
-from .activation_transport import gradient_rows
-from .experts.fp8 import QuackFP8Experts
-from .experts.wgrad import scaled_fp8
+from ..activation_transport import gradient_rows
+from ..experts.fp8 import QuackFP8Experts
+from ..experts.wgrad import scaled_fp8
 
 
 class ChunkFP8Experts(QuackFP8Experts):
@@ -22,7 +22,7 @@ class ChunkFP8Experts(QuackFP8Experts):
         if offsets is None:
             with torch.cuda.nvtx.range("moon_quack/fp8_wgrad/offsets_to_host"):
                 offsets = cu.cpu().tolist()
-        from .chunk_group_quantize import quantize_groups
+        from .quantize import quantize_groups
 
         with torch.cuda.nvtx.range("moon_quack/fp8_wgrad/group_quantize"):
             qx_all, sx_all = quantize_groups(x, cu, offsets, row_scales=x_scales)

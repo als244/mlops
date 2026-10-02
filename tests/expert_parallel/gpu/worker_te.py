@@ -4,25 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
-_local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-os.environ["CUDA_VISIBLE_DEVICES"] = (
-    _visible.split(",")[_local_rank] if _visible else str(_local_rank)
-)
+from _bootstrap import initialize_group, select_rank_device
+
+select_rank_device()
 
 import torch
 import torch.distributed as dist
-from reference_inputs_te import check_router
+from reference_te import check_router
 
+from mlops.expert_parallel import TEMoEConfig
 from mlops.expert_parallel.reference import (
     expert_computation,
     router_logits,
     routing_probabilities,
 )
-from mlops.expert_parallel.transformer_engine import MoEConfig
 
 
 def error_metrics(actual, expected):
@@ -232,12 +229,9 @@ def main():
         "--router-weight-grad-dtype", choices=["fp32", "bf16"], default="fp32"
     )
     args = parser.parse_args()
-    torch.cuda.set_device(0)
-    dist.init_process_group(
-        "nccl", device_id=torch.device("cuda", torch.cuda.current_device())
-    )
+    initialize_group()
     torch.manual_seed(801 + dist.get_rank())
-    config = MoEConfig(
+    config = TEMoEConfig(
         ep_size=dist.get_world_size(),
         num_experts=8,
         top_k=2,
@@ -260,7 +254,7 @@ def main():
         num_comm_sms=16,
         gemm_sm_margin=16,
     )
-    from demo_weights_te import close_demo_layer, make_demo_layer
+    from weights_te import close_demo_layer, make_demo_layer
 
     layer, masters = make_demo_layer(config)
     from mlops.expert_parallel.transformer_engine.communication import _PLAN_FIELDS
