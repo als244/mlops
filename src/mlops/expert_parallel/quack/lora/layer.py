@@ -20,6 +20,8 @@ class QuackMoELoRA(QuackMoE):
         for prefix, bank in zip(("gate_up", "down"), _runtime(self._handle).banks):
             bank.factors.initialize()
             for suffix, value in zip(("a", "b"), bank.factors.parameter_data):
+                if config.share_expert_banks:
+                    value = value.clone(memory_format=torch.contiguous_format)
                 self.register_parameter(
                     f"lora_{prefix}_{suffix}",
                     compute_parameter(value, self.lora_config.gradient_dtype),
