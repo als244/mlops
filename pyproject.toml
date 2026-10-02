@@ -22,6 +22,19 @@ scattermoe = [
 tilelang = ["tilelang"]
 providers = ["mlops[fla,liger,scattermoe,tilelang]"]
 dev = ["pytest", "ruff"]
+# MoonEP is installed separately by scripts/setup_expert_parallel.sh: its
+# upstream metadata pins an older Cutlass DSL than the supported Quack stack.
+ep-quack = [
+  "triton==3.7.1",
+  "quack-kernels @ git+https://github.com/Dao-AILab/quack.git@35266c3298f0e9bf6d5f46c30aace2eaeae517e3",
+  "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@7396f3e604827d8186c2e16e64b28ee33d3defd0",
+  "nvidia-cutlass-dsl==4.7.1",
+]
+ep-te = [
+  "triton==3.7.1",
+  "nvidia-cutlass-dsl==4.7.1",
+  "transformer_engine[pytorch] @ git+https://github.com/NVIDIA/TransformerEngine.git@110791f2dfa006335187943414c4fc9e1b03ef0f",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

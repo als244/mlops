@@ -248,3 +248,9 @@ implementation/provider, a new semantic operation, implementation variants,
 explicit entrypoints, cost estimators, optional dependencies, and raw kernels.
 The lower-level adapter invariants and acceptance checklist are in
 [PROVIDERS.md](PROVIDERS.md).
+
+## Expert-parallel modules
+
+`mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
+TEMoELoRA modules with caller-owned groups and communication buffers.
+See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.md).

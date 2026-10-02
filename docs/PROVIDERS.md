@@ -306,3 +306,9 @@ boundaries. The complete two-operation workflow is documented in
 - [ ] Export/AOT retains the exact custom-op target.
 - [ ] Runtime, invocation-local workspace, and allocator peak are measured.
 - [ ] A many-step real-data canary records loss and throughput.
+
+## Expert-parallel modules
+
+`mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
+TEMoELoRA modules with caller-owned groups and communication buffers.
+See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.md).

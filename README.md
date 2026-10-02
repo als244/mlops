@@ -96,3 +96,16 @@ mlops/
 python -m pytest -q tests
 ruff check src/mlops tests
 ```
+
+## Expert-parallel modules
+
+`mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
+TEMoELoRA modules with caller-owned groups and communication buffers.
+The optional installer selects/downloads the matching CUDA build tools and sets
+up runtime libraries in the selected environment:
+
+```bash
+./scripts/setup_expert_parallel.sh --python /path/to/python --backend both
+```
+
+See [expert-parallel configuration, installation and examples](docs/EXPERT_PARALLEL.md).
