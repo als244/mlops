@@ -17,7 +17,9 @@ PyTorch backend.  --python installs into an existing virtual or Conda
 environment instead.  Every optional implementation provider is installed:
 flash-linear-attention, liger-kernel, scattermoe, and tilelang, plus the
 FlashAttention-3 wheel from the PyTorch index, which mlops activates
-automatically on Hopper GPUs.
+automatically on Hopper GPUs. The separate, optional expert-parallel modules
+can be added afterwards with scripts/setup_expert_parallel.sh; see
+docs/EXPERT_PARALLEL.md for their Hopper dependencies.
 EOF
 }
 

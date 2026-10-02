@@ -170,3 +170,9 @@ the owning preparation module and require no VJP.
 - [Explicit entrypoint contract](EXPLICIT_OPS.md)
 - [Raw-kernel boundary](KERNELS.md)
 - [Optimizer API](OPTIMIZERS.md)
+
+## Expert-parallel modules
+
+`mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
+TEMoELoRA modules with caller-owned groups and communication buffers.
+See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.md).
