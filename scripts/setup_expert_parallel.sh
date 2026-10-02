@@ -74,9 +74,11 @@ install_packages --no-build-isolation -e "$project_root[$extras]"
 install_packages --no-deps --no-build-isolation \
  'moonep @ git+https://github.com/moonshotAI/moonep.git@2bd860b4dd083df62b79d5e916fca71ec5742228'
 # MoonEP's declared DSL==4.4.2 conflicts with the tested DSL==4.7.1 stack.
-# Only dependency resolution is overridden; installed MoonEP source is untouched.
+# MLOps applies an isolated planner-only PTXAS level-2 compatibility fix at
+# runtime. Installed MoonEP source stays untouched; Quack keeps normal settings.
 echo "Installed $backend expert-parallel dependencies with Cutlass DSL 4.7.1."
 echo 'MoonEP metadata still declares DSL 4.4.2; pip check reports that known mismatch.'
+echo 'MLOps applies the MoonEP planner compiler compatibility fix for DSL 4.7.1.'
 if [[ "$backend" == te || "$backend" == both ]]; then
  # Resolve Torch's ordinary dependencies first, then install the newer cuBLAS
  # needed by TE. Do not change Torch or the system CUDA/driver installation.
