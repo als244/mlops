@@ -2,7 +2,7 @@
 
 import torch
 
-from .bf16 import BF16ComputeWeight
+from ...parameters import BF16ComputeWeight
 from .fp8 import COMPONENTS, QuackFP8Weight
 
 FP8_TYPES = (QuackFP8Weight,)

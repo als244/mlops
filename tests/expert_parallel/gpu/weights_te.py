@@ -78,13 +78,13 @@ class ExpertMasterWeights:
 
 
 def make_demo_layer(cfg, **kwargs):
-    from mlops.expert_parallel.transformer_engine.layer import MoELayer
+    from mlops.expert_parallel import TEMoE
 
     masters = ExpertMasterWeights(cfg)
     from mlops.expert_parallel.buffers import create_buffer
 
     buffer = create_buffer(cfg, cfg.tokens_per_rank, kwargs.get("ep_group"))
-    layer = MoELayer(cfg, buffer=buffer, **kwargs)
+    layer = TEMoE(cfg, buffer=buffer, **kwargs)
     _DEMO_BUFFERS[id(layer)] = buffer
     masters.load_into(layer)
     return layer, masters

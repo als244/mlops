@@ -6,12 +6,12 @@ import torch
 import torch.distributed as dist
 import transformer_engine_torch as tex
 
+from ...lora import signature
 from ..communication import _PLAN_FIELDS
 from ..config import config_signature
 from ..experts import _TEBackend
 from ..runtime import _MoonRuntime, moon_to_te_counts
 from ..weights import _ExpertBank
-from .config import signature
 from .storage import FactorBank
 
 

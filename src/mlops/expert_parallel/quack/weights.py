@@ -159,7 +159,7 @@ class _Bank:
     ):
         from moonep.buffer import create_nvl_dist_tensor, get_vmm_granularity
 
-        from mlops.expert_parallel.quack.kernels.grad_reduce import launch_grad_reduce
+        from ..kernels.grad_reduce import launch_grad_reduce
 
         self.cfg, self.rank, self.device = c, rank, device
         self.out_features, self.in_features = out_features, in_features

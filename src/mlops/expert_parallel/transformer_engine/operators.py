@@ -206,11 +206,12 @@ def _autograd_backward(ctx, dy, _aux):
 
 
 _forward_op.register_autograd(_autograd_backward, setup_context=_setup)
-from mlops.expert_parallel.transformer_engine.parameters.bf16 import BF16ComputeWeight
 from mlops.expert_parallel.transformer_engine.parameters.components import (
     FP8_TYPES,
     explicit_weight_components,
 )
+
+from ..parameters import BF16ComputeWeight
 
 
 def _fp8_dispatch(cls, func, types, args, kwargs):

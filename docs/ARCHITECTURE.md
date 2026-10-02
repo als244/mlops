@@ -253,4 +253,13 @@ The lower-level adapter invariants and acceptance checklist are in
 
 `mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
 TEMoELoRA modules with caller-owned groups and communication buffers.
-See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.md).
+The `quack/` and `transformer_engine/` directories each contain the layer,
+operators, execution code and LoRA extension. Shared representations and
+reductions live alongside them; `_compat/` contains isolated upstream patches.
+`quack/pipeline/` owns chunk scheduling and transport. The public namespace loads
+GPU implementations lazily, so normal MLOps usage needs no EP dependencies.
+
+CPU contracts and reference math are tested in `tests/expert_parallel/`. The
+opt-in `expert_parallel` pytest gate launches bounded, isolated GPU workers from
+its `gpu/` directory and preserves per-case logs/results. The default suite skips
+these checks. See [configuration, installation and validation](EXPERT_PARALLEL.md).

@@ -8,10 +8,10 @@ from dataclasses import dataclass, replace
 
 import torch
 
-from .chunk_buffers import ChunkBufferPool
-from .chunk_experts import ChunkExperts
-from .communication import _PLAN_FIELDS
-from .runtime_resources import RuntimeResources
+from ..communication import _PLAN_FIELDS
+from ..runtime_resources import RuntimeResources
+from .bf16 import ChunkExperts
+from .buffers import ChunkBufferPool
 
 
 @dataclass
@@ -49,14 +49,14 @@ class ChunkResources(RuntimeResources):
         self.chunk_cfg = replace(
             config, tokens_per_rank=config.tokens_per_rank // config.num_chunks
         )
-        from .chunk_fp8_experts import ChunkFP8Experts
+        from .fp8 import ChunkFP8Experts
 
         math_type = (
             ChunkExperts if config.compute_precision == "bf16" else ChunkFP8Experts
         )
         self.math = math_type(tuned=config.gemm_tuned, model_config=self.chunk_cfg)
         self.buffers = buffer.buffers
-        from .chunk_headroom import configure
+        from .headroom import configure
 
         configure(self)
         self.external_storage_extents += tuple(
@@ -69,7 +69,7 @@ class ChunkResources(RuntimeResources):
 
     @contextmanager
     def execution(self):
-        from .chunk_headroom import gemm_budget
+        from .headroom import gemm_budget
 
         with super().execution(), gemm_budget(self.cfg.experimental_gemm_sms):
             yield

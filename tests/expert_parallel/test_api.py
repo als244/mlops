@@ -45,12 +45,15 @@ import importlib.abc
 import sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'quack', 'sonicmoe', 'moonep', 'transformer_engine', 'quack_moe', 'te_moe'}:
+        if fullname.split('.')[0] in {'quack', 'sonicmoe', 'moonep', 'transformer_engine', 'quack_moe', 'te_moe', 'moe_lab', 'shadowspill'}:
             raise AssertionError('Unexpected dependency import: ' + fullname)
 sys.meta_path.insert(0, Block())
 import torch
 import mlops
 from mlops.expert_parallel import QuackMoEConfig, TEMoEConfig, LoRAConfig, create_buffer
+from mlops.expert_parallel.parameters import BF16ComputeWeight
+from mlops.expert_parallel.reference import expert_computation, route
+from mlops.expert_parallel.reference.lora import expert_computation_lora
 assert not torch.cuda.is_initialized()
 """
     subprocess.run(

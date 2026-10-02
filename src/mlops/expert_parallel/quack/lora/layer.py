@@ -2,16 +2,16 @@
 
 import torch
 
+from ...lora import LoRAConfig, signature
 from ..config import config_signature
-from ..layer import MoELayer
+from ..layer import QuackMoE
 from ..parameters.initialization import compute_parameter
 from ..registry import _runtime
-from .config import LoRAConfig, signature
 from .operators import forward
 from .runtime import LoRARuntime
 
 
-class QuackMoELoRA(MoELayer):
+class QuackMoELoRA(QuackMoE):
     def __init__(self, config, ep_group=None, *, buffer, lora=None, device=None):
         self.lora_config = lora or LoRAConfig()
         super().__init__(config, ep_group, buffer=buffer, device=device)
