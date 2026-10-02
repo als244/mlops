@@ -1,7 +1,8 @@
 """Initialize only this rank's expert shards and publish their compute storage.
 
 Temporary FP32 initialization and FP8 quantization run on CPU. The returned
-parameter wraps the bank's existing BF16/FP8 storage; no master weights remain.
+parameter wraps the bank's storage unless banks are shared between layers. Shared
+banks require independent parameter storage; no master weights remain here.
 """
 
 import torch
@@ -28,7 +29,10 @@ def initialize_expert_parameter(config, bank):
     ).bfloat16()
     if config.compute_precision == "bf16":
         data = bank.weight_state.parameter_data
-        data.copy_(initial)
+        if config.share_expert_banks:
+            data = initial.to(data.device)
+        else:
+            data.copy_(initial)
         return compute_parameter(data, config.weight_grad_dtype)
 
     from quack.gemm_w4 import quantize_act_per_token_fp8
@@ -44,6 +48,12 @@ def initialize_expert_parameter(config, bank):
         column_scales.reshape(shape[0], shape[2]),
     )
     components = bank.weight_state.parameter_components
-    for destination, value in zip(components, values):
-        destination.copy_(value)
+    if config.share_expert_banks:
+        components = tuple(
+            value.to(destination.device)
+            for destination, value in zip(components, values)
+        )
+    else:
+        for destination, value in zip(components, values):
+            destination.copy_(value)
     return nn.Parameter(QuackFP8Weight(*components, dtype=config.weight_grad_dtype))

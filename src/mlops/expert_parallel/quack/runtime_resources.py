@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
+from .bank_pool import projection_banks
 from .communication import _walk_tensors
 from .config import config_signature
 from .kernels.pointwise import _Pointwise
@@ -49,10 +50,7 @@ class RuntimeResources:
         self.pw = _Pointwise()
         self.buffer = buffer
         self.ctx = self.buffer._require_ctx()
-        self.banks = [
-            self._make_bank(2 * c.expert_hidden_dim, c.feature_dim),
-            self._make_bank(c.feature_dim, c.expert_hidden_dim),
-        ]
+        self.banks = projection_banks(self, self._make_bank)
         tensors = [self.buffer.hidden_nvsh_buffer_view]
         tensors.extend(t for b in self.banks for t in b.external_tensors())
         self.external_storage_extents = tuple(

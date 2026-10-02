@@ -149,6 +149,7 @@ class QuackMoE(nn.Module):
             "experimental_local_comm_sms": self.config.experimental_local_comm_sms,
             "token_chunks": self.config.num_chunks,
             "communication_buffers": self.config.num_buffers,
+            "share_expert_banks": self.config.share_expert_banks,
             "chunk_fp8_training": "experimental: feature scales reduce per chunk and expert; not equivalent to unchunked FP8 rounding",
             "precision": self.config.compute_precision,
             "activation_transport": self.config.activation_transport,

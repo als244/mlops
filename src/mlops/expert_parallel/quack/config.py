@@ -40,6 +40,9 @@ class MoEConfig:
     compute_precision: str = "bf16"  # bf16 | fp8_current
     activation_transport: str = "bf16"  # FP8 transport is an explicit opt-in.
     reuse_communication_buffers: bool = True
+    # Layers using the same caller-owned token buffer can also reuse expert
+    # publication/reduction storage. Their parameters remain independently owned.
+    share_expert_banks: bool = False
     gradient_output_mode: str = (
         "owned"  # owned | copy; identical policy for every precision
     )
@@ -115,6 +118,7 @@ class MoEConfig:
             "profile_ranges",
             "retain_intermediates",
             "reuse_communication_buffers",
+            "share_expert_banks",
             "fuse_probability_backward",
             "fuse_input_grad_accumulation",
         ):

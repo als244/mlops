@@ -107,6 +107,14 @@ capacity; input shape must match that capacity. Quack supports `num_chunks` and
 `num_buffers` in its configuration. A multi-buffer configuration returns a
 `ChunkBufferPool`. The caller destroys it once all borrowing layers are closed.
 
+For a stack of Quack layers sharing a token buffer, set
+`share_expert_banks=True`. Matching layers then share one set of weight
+publication and replica-gradient banks too. Each layer keeps its own parameters
+and publishes them before both forward and backward. Saved activations and
+returned gradients remain independently owned. The same option supports
+QuackMoELoRA; closing one layer leaves resources used by other layers alive.
+The default single-layer path keeps parameter storage in its private bank.
+
 Use `TEMoEConfig` and `TEMoE` for Transformer Engine. TE currently uses one chunk,
 one buffer and BF16 activation transport. Quack supports BF16 or opt-in FP8
 activation transport (`activation_transport="fp8"`). Both support BF16 and
@@ -135,11 +143,15 @@ hidden widths must be multiples of 128; top-k is at most 32.
 | `profile_ranges` | `True` | Emit layer/phase NVTX ranges |
 | Quack `num_chunks`, `num_buffers` | `1`, `1` | Equal token chunks and reusable caller-owned buffers |
 | Quack `activation_transport` | `"bf16"` | Optional `"fp8"` transport with FP8 expert computation |
+| Quack `share_expert_banks` | `False` | Reuse publication/reduction scratch across matching layers on the same token buffer |
 | Quack `gemm_tuned` | `False` | Opt into autotuning instead of the fixed shape-dependent GEMM policy |
 | TE `gemm_sm_margin` | `32` | SM headroom requested from Transformer Engine GEMMs |
 
 BF16/FP32 are supported gradient/router dtypes. An FP32 router requires FP32
 gradients. There is no layer-owned master-parameter or optimizer-state dtype.
+Quack's expert GEMM and cross-rank reduction scratch is FP32 even when returned
+gradients are BF16. Bank alignment applies to each rank's complete allocation,
+with 128-row expert tiles; individual experts need not occupy full VMM pages.
 `LoRAConfig` independently describes factor initialization, compute and gradient
 precision. Full configuration definitions, including diagnostic/experimental
 options, are in [Quack configuration](../src/mlops/expert_parallel/quack/config.py)
