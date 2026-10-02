@@ -35,3 +35,29 @@ def test_prefetch_slot_mapping_preserves_owner_and_expert_for_arbitrary_ep_sizes
         assert torch.equal(mapped[1:] // (2 * q), ids[1:] // q)
         assert torch.equal(mapped[1:] % (2 * q), ids[1:] % q)
         assert bool((mapped[1:] % (2 * q) < q).all())
+
+
+def test_expert_banks_align_the_rank_allocation_without_wasting_per_expert_pages():
+    from mlops.expert_parallel.quack.weights import _aligned_rows
+
+    granularity = 2**21
+    # 96 experts/rank, D=1024, H=1280: each complete rank bank already aligns.
+    for slots, rows, columns, itemsize in (
+        (192, 2560, 1024, 2),
+        (192, 1024, 1280, 2),
+        (96, 2560, 1024, 4),
+        (96, 1024, 1280, 4),
+    ):
+        assert _aligned_rows(slots, rows, columns, itemsize, granularity) == rows
+    # Small and odd expert counts can still need padding. Preserve both the
+    # virtual-memory allocation requirement and MoonEP's per-expert tile shape.
+    for slots in (1, 3, 4, 32, 96, 192):
+        for rows, columns in ((128, 128), (1024, 1280), (2560, 1024)):
+            for itemsize in (2, 4):
+                aligned = _aligned_rows(slots, rows, columns, itemsize, granularity)
+                assert aligned >= rows and aligned % 128 == 0
+                assert slots * aligned * columns * itemsize % granularity == 0
+                if aligned > rows:
+                    assert (
+                        slots * (aligned - 128) * columns * itemsize % granularity != 0
+                    )

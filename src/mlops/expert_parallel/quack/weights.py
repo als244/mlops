@@ -7,6 +7,17 @@ import math
 import torch
 
 
+def _aligned_rows(experts, rows, columns, itemsize, granularity):
+    """Align each rank's allocation and retain 128-row prefetch tiles.
+
+    VMM maps the complete rank chunk, not individual expert matrices. Requiring
+    every expert to occupy a whole VMM page can multiply bank memory usage.
+    """
+    row_bytes = experts * columns * itemsize
+    alignment = math.lcm(128, granularity // math.gcd(granularity, row_bytes))
+    return math.ceil(rows / alignment) * alignment
+
+
 class _WeightState:
     """One local [home, replica] compute bank without a weight concat/copy.
 
@@ -22,9 +33,8 @@ class _WeightState:
         self.cfg, self.rank, self.out_features = c, rank, out_features
         self.prefetch_kernel = launch_prefetch
         gran = int(get_vmm_granularity())
-        alignment = math.lcm(128, gran // math.gcd(gran, 2 * in_features))
-        rows = math.ceil(out_features / alignment) * alignment
         q = c.local_experts
+        rows = _aligned_rows(2 * q, out_features, in_features, 2, gran)
         self.weights = create_nvl_dist_tensor(
             [2 * q, rows, in_features], torch.bfloat16, rank, c.ep_size, group=group
         )
@@ -175,9 +185,8 @@ class _Bank:
         if not trainable:
             return
         gran = int(get_vmm_granularity())
-        alignment = math.lcm(128, gran // math.gcd(gran, 4 * in_features))
-        rows = math.ceil(out_features / alignment) * alignment
         q, G = c.local_experts, c.ep_size
+        rows = _aligned_rows(q, out_features, in_features, 4, gran)
         self.shape = (q, rows, in_features)
         self._replica_grad_owner = create_nvl_dist_tensor(
             list(self.shape), torch.float32, rank, G, group=group
