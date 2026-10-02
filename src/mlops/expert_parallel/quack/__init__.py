@@ -17,7 +17,9 @@ def _initialize():
 
     quack_pipeline.apply()
     quack_autotune.apply()
-    from .._compat import moonep_rank1  # noqa: F401
+    from .._compat import initialize_moonep
+
+    initialize_moonep()
     from .parameters import components  # noqa: F401
 
     _initialized = True
