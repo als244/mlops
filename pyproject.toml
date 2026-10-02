@@ -46,6 +46,7 @@ include = ["mlops*"]
 [tool.pytest.ini_options]
 markers = [
   "gpu: requires a CUDA device",
+  "expert_parallel: opt-in Hopper/NCCL checks; enable with --run-expert-parallel",
 ]
 
 [tool.ruff]

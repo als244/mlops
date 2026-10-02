@@ -6,26 +6,22 @@ library. The same routes are passed to the tested layer and reference.
 
 import argparse
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-_local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-os.environ["CUDA_VISIBLE_DEVICES"] = (
-    _visible.split(",")[_local_rank] if _visible else str(_local_rank)
-)
+from _bootstrap import initialize_group, select_rank_device
+
+select_rank_device()
 
 import torch
 import torch.distributed as dist
 
+from mlops.expert_parallel import LoRAConfig
 from mlops.expert_parallel.buffers import create_buffer
 from mlops.expert_parallel.reference import router_logits, routing_probabilities
 from mlops.expert_parallel.reference.lora import expert_computation_lora
-from mlops.expert_parallel.transformer_engine import LoRAConfig, MoEConfig
-from mlops.expert_parallel.transformer_engine import TEMoELoRA as Layer
 
-BACKEND = "te"
+BACKEND = None
 
 
 def plain(value):
@@ -102,10 +98,12 @@ def error(actual, expected):
 
 
 def main():
+    global BACKEND
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--backend", choices=["quack", "te"], required=True)
     p.add_argument(
         "--precision",
-        choices=["bf16", "fp8_current"] + (["fp8_block"] if BACKEND == "te" else []),
+        choices=["bf16", "fp8_current", "fp8_block"],
         default="bf16",
     )
     p.add_argument("--activation-transport", choices=["bf16", "fp8"], default="bf16")
@@ -124,8 +122,18 @@ def main():
     p.add_argument("--recompute", action="store_true")
     p.add_argument("--outdir", type=Path, required=True)
     args = p.parse_args()
-    torch.cuda.set_device(0)
-    dist.init_process_group("nccl", device_id=torch.device("cuda", 0))
+    BACKEND = args.backend
+    if BACKEND == "quack" and args.precision == "fp8_block":
+        p.error("Quack supports bf16 and fp8_current")
+    initialize_group()
+    if BACKEND == "quack":
+        from mlops.expert_parallel import QuackMoEConfig as MoEConfig
+        from mlops.expert_parallel import QuackMoELoRA as Layer
+        from mlops.expert_parallel.quack.registry import _runtime
+    else:
+        from mlops.expert_parallel import TEMoEConfig as MoEConfig
+        from mlops.expert_parallel import TEMoELoRA as Layer
+        from mlops.expert_parallel.transformer_engine.registry import _runtime
     rank, world = dist.get_rank(), dist.get_world_size()
     torch.manual_seed(721 + rank)
     extra = (
@@ -167,8 +175,6 @@ def main():
             else torch.bfloat16,
         ),
     )
-    from mlops.expert_parallel.transformer_engine.registry import _runtime
-
     assert all(
         not hasattr(bank, "_replica_grad_owner")
         for bank in _runtime(layer._handle).banks

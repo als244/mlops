@@ -5,11 +5,11 @@ from functools import lru_cache
 import torch
 import torch.distributed as dist
 
+from ...lora import signature
 from ..config import config_signature
 from ..runtime import _Runtime
 from ..shared_expert import shared_forward
 from ..weights import _Bank
-from .config import signature
 from .math import LoRAExperts
 from .storage import FactorBank
 

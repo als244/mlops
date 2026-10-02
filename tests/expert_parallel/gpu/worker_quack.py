@@ -2,22 +2,16 @@
 
 import argparse
 import json
-import os
 from pathlib import Path
 
-_local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-os.environ["CUDA_VISIBLE_DEVICES"] = (
-    _visible.split(",")[_local_rank] if _visible else str(_local_rank)
-)
+from _bootstrap import initialize_group, select_rank_device
+
+select_rank_device()
 
 import torch
-from reference_inputs_quack import check_router
+from reference_quack import check_router
 from torch import distributed as dist
 
-from mlops.expert_parallel.quack import MoEConfig, MoELayer
-from mlops.expert_parallel.quack.parameters.components import rowwise_payload
-from mlops.expert_parallel.quack.registry import _runtime
 from mlops.expert_parallel.reference import expert_computation
 
 
@@ -58,14 +52,16 @@ def main():
         "--router-weight-grad-dtype", choices=["fp32", "bf16"], default="fp32"
     )
     args = parser.parse_args()
-    rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(0)
+    initialize_group()
+    from mlops.expert_parallel import QuackMoE, QuackMoEConfig
+    from mlops.expert_parallel.quack.parameters.components import rowwise_payload
+    from mlops.expert_parallel.quack.registry import _runtime
+
     device = torch.device("cuda", 0)
-    dist.init_process_group("nccl", device_id=device)
     world = dist.get_world_size()
     rank = dist.get_rank()
     torch.manual_seed(910 + rank)
-    cfg = MoEConfig(
+    cfg = QuackMoEConfig(
         ep_size=world,
         num_experts=args.experts,
         top_k=args.top_k,
@@ -89,7 +85,7 @@ def main():
     from mlops.expert_parallel.buffers import create_buffer
 
     buffer = create_buffer(cfg, args.tokens, dist.group.WORLD)
-    layer = MoELayer(cfg, dist.group.WORLD, device=device, buffer=buffer)
+    layer = QuackMoE(cfg, dist.group.WORLD, device=device, buffer=buffer)
     router_input = torch.randn(
         args.tokens, args.dim, device=device, dtype=torch.bfloat16, requires_grad=True
     )

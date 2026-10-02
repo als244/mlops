@@ -2,8 +2,8 @@
 
 Three launches cover every group: partial maxima, scales, transpose/cast.
 Each feature scale is reduced once, and inactive token tiles exit immediately.
-Group lengths must have a 16-byte FP8 pitch; the current experiment uses 128-row
-MoonEP padding. The caller retains exact group lengths for its per-expert GEMMs.
+Group lengths must have a 16-byte FP8 pitch, with 128-row MoonEP padding by
+default. The caller retains exact group lengths for its per-expert GEMMs.
 """
 
 import itertools

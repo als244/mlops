@@ -5,9 +5,9 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from ..parameters import BF16ComputeWeight
 from .config import _configuration
 from .operators import _checked, _fake_state
-from .parameters.bf16 import BF16ComputeWeight
 from .parameters.fp8 import QuackFP8Weight
 
 

@@ -13,7 +13,7 @@ def _initialize():
     global _initialized
     if _initialized:
         return
-    from .. import _patch_moonep_rank1  # noqa: F401
+    from .._compat import moonep_rank1  # noqa: F401
     from .parameters import components  # noqa: F401
 
     _initialized = True
@@ -22,7 +22,7 @@ def _initialize():
 def __getattr__(name):
     if name in ("MoELayer", "TEMoE"):
         _initialize()
-        return import_module(f"{__name__}.layer").MoELayer
+        return import_module(f"{__name__}.layer").TEMoE
     if name == "TEMoELoRA":
         _initialize()
         return import_module(f"{__name__}.lora").TEMoELoRA

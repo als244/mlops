@@ -7,8 +7,8 @@ import math
 import torch
 from torch import Tensor
 
+from ..parameters import BF16ComputeWeight
 from .config import _configuration, config_signature
-from .parameters.bf16 import BF16ComputeWeight
 from .parameters.fp8 import QuackFP8Weight
 from .registry import _runtime
 
