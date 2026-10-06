@@ -12,6 +12,9 @@ COMPONENTS = ("_data", "_transposed", "_scale", "_transposed_scale")
 
 
 class QuackFP8Weight(torch.Tensor):
+    def __repr__(self):
+        return f"QuackFP8Weight(shape={tuple(self.shape)}, logical_dtype={self.dtype}, device={self.device})"
+
     @staticmethod
     def __new__(cls, data, transposed, scale, transposed_scale, *, dtype=torch.float32):
         value = torch.Tensor._make_wrapper_subclass(
@@ -49,6 +52,33 @@ class QuackFP8Weight(torch.Tensor):
         if func is aten.clone.default:
             return cls(
                 *(v.clone(**kwargs) for v in first.components()), dtype=first.dtype
+            )
+        if func is aten.copy_.default:
+            destination, source = args[:2]
+            if isinstance(destination, cls):
+                if isinstance(source, cls):
+                    for target, value in zip(
+                        destination.components(), source.components()
+                    ):
+                        target.copy_(value)
+                else:
+                    # Optimizer publication owns conversion into compute weights.
+                    # Keep both orientations independently quantized, as at init.
+                    def quantize(value):
+                        value = value.float()
+                        scale = (value.abs().amax(dim=-1) / 448.0).clamp_min(1e-12)
+                        data = (value / scale[..., None]).clamp(-448.0, 448.0)
+                        return data.to(torch.float8_e4m3fn), scale
+
+                    rows, scales = quantize(source)
+                    columns, column_scales = quantize(source.transpose(-1, -2))
+                    for target, value in zip(
+                        destination.components(), (rows, columns, scales, column_scales)
+                    ):
+                        target.copy_(value)
+                return destination
+            return destination.copy_(
+                source.dequantize(dtype=destination.dtype), **kwargs
             )
         if func is aten._to_copy.default:
             if kwargs.get("dtype", first.dtype) != first.dtype:

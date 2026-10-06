@@ -45,8 +45,13 @@ def main():
                 compute_precision=precision,
                 num_comm_sms=16,
             )
-            buffer = create_buffer(config, 128, dist.group.WORLD)
-            layer = layer_type(config, dist.group.WORLD, buffer=buffer, device="cuda:0")
+            # Model builders commonly select a default GPU around construction.
+            # MoonEP IPC handle exchange must still allocate its handles on CPU.
+            with torch.device("cuda:0"):
+                buffer = create_buffer(config, 128, dist.group.WORLD)
+                layer = layer_type(
+                    config, dist.group.WORLD, buffer=buffer, device="cuda:0"
+                )
             try:
                 x = torch.randn(
                     128, 128, device="cuda", dtype=torch.bfloat16, requires_grad=True

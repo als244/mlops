@@ -6,7 +6,7 @@ import math
 
 import torch
 
-from .experts import _make_quantizer
+from .parameters.publication import weight_quantizer
 
 
 class _BF16WeightState:
@@ -115,7 +115,7 @@ class _FP8WeightState:
     def __init__(self, c, rank, group, out_features, in_features, device):
         self.cfg, self.rank = c, rank
         self.out_features, self.in_features = out_features, in_features
-        self.quantizer = _make_quantizer(c.compute_precision)
+        self.quantizer = weight_quantizer(c.compute_precision)
         specs = self.quantizer.inner_tensor_specs((out_features, in_features))
         self.components = {
             name: _ByteComponentBank(c, rank, group, shape, dtype, device)

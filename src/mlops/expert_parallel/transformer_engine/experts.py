@@ -86,7 +86,7 @@ def make_te_recipe(name: str):
 
 
 class _TEBackend:
-    def __init__(self, cfg: MoEConfig):
+    def __init__(self, cfg: MoEConfig, device: torch.device):
         self.hw = validate_te_hardware_precision(cfg)
         if cfg.compute_precision == "fp8_block" and 2 * cfg.local_experts > 64:
             raise NotImplementedError(
@@ -119,6 +119,33 @@ class _TEBackend:
             if cfg.compute_precision == "bf16"
             else _make_quantizer(cfg.compute_precision)
         )
+        self._initialize_workspaces(device)
+
+    def _initialize_workspaces(self, device: torch.device) -> None:
+        """Allocate TE's shared persistent resources during layer setup.
+
+        TE caches these tensors globally by device, group count and GEMM layout.
+        Creating them on the first forward would give long-lived cache entries
+        the allocation lifetime of that invocation. Layers share the same cache;
+        this does not allocate one cuBLAS workspace per layer.
+        """
+        from transformer_engine.pytorch.cpp_extensions.gemm import (
+            _get_fp32_ones_tensor,
+            _get_fp32_zeros_tensor,
+            _get_grouped_cublas_workspace,
+            _get_grouped_gemm_setup_workspace,
+        )
+
+        groups = 2 * self.cfg.local_experts
+        for count in sorted(
+            {min(64, groups - start) for start in range(0, groups, 64)}
+        ):
+            scalars = count if self.hw["compute_capability"] >= (10, 0) else 1
+            _get_fp32_ones_tensor(scalars, device)
+            _get_fp32_zeros_tensor(scalars, device)
+            _get_grouped_gemm_setup_workspace(device.index, count)
+        for layout in ("TN", "NT", "NN"):
+            _get_grouped_cublas_workspace(device.index, layout)
 
     def storage(self, x, counts, offsets=None):
         return self.storage_type(

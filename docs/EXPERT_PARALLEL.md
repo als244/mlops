@@ -84,6 +84,14 @@ the selected layer after selecting its compute device. A caller that installs a
 custom device allocator must install it before loading the GPU implementation.
 Importing the namespace and configuration classes alone loads no GPU backend.
 
+TE layers initialize their shared GEMM workspaces during construction, before
+the first forward. Transformer Engine caches these by device, group count and
+GEMM layout; layers reuse them rather than each owning a workspace. This keeps
+persistent resources outside any individual invocation's allocation lifetime.
+Include these setup allocations when budgeting device memory (approximately
+96 MiB for the three cuBLAS workspaces on the tested Hopper configuration, plus
+small group metadata).
+
 ```python
 import torch
 import torch.distributed as dist
@@ -212,6 +220,22 @@ BF16 parameter tensors, choose `weight_grad_dtype=torch.bfloat16` (or
 `LoRAConfig(gradient_dtype=torch.bfloat16)` for the trainable factors). The GPU
 checks below validate computation and returned gradients, not arbitrary
 optimizer implementations.
+
+### Optimizer publication
+
+FP8 parameters also support optimizer publication through
+`compute_weight.copy_(dense_master)`. Dense masters are owned by the caller's
+optimizer, and `dense_master.copy_(compute_weight)` initializes them from the
+compute representation. Quack publishes both independently scaled orientations
+with traceable PyTorch operations. TE weight quantizers expose a mutating custom
+operation over their payloads and scales and call TE's GPU quantization;
+the CPU path supports checkpoint restoration. Publication happens in the
+optimizer update, outside the MoE forward/backward definition.
+
+The implementation exposes ordinary component tensors through PyTorch's tensor
+flatten/unflatten protocol. Integrations must account for all components and
+preserve the logical parameter gradient, rather than differentiating integer
+payloads as separate parameters. These contracts require no ShadowSpill imports.
 
 ## LoRA
 
