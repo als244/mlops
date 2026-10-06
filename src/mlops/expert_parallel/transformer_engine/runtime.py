@@ -336,7 +336,7 @@ class _MoonRuntime(_ScheduledMath):
         self.closed = False
         self.retained_intermediates = None
         self._caller_stream = None
-        self.te, self.pw = _TEBackend(c), _Pointwise()
+        self.te, self.pw = _TEBackend(c, device), _Pointwise()
         self.buffer = buffer
         self.ctx = self.buffer._require_ctx()
         if tuple(self.buffer.hidden_nvsh_buffer_view.shape) != (

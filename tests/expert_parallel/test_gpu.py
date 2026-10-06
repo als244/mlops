@@ -6,6 +6,23 @@ from _gate import run, worker_command
 pytestmark = [pytest.mark.gpu, pytest.mark.expert_parallel]
 
 
+def test_fp8_parameter_publication(ep_environment, request):
+    root, world_size, timeout = ep_environment
+    output = root / "fp8-parameter-publication"
+    command = worker_command("publication", world_size, output)
+    run(
+        command
+        + [
+            "--outdir",
+            str(output),
+            "--backend",
+            request.config.getoption("--ep-backend"),
+        ],
+        output,
+        timeout,
+    )
+
+
 def test_fp8_quantizer_large_offsets(ep_environment, request):
     if request.config.getoption("--ep-backend") == "te":
         pytest.skip("Quack row quantizer")
@@ -14,6 +31,14 @@ def test_fp8_quantizer_large_offsets(ep_environment, request):
     command = worker_command("quantize", world_size, output)
     run(command + ["--outdir", str(output)], output, timeout)
 
+
+def test_fp8_group_quantizer_distributions(ep_environment, request):
+    if request.config.getoption("--ep-backend") == "te":
+        pytest.skip("Quack group quantizer")
+    root, world_size, timeout = ep_environment
+    output = root / "fp8-group-quantizer-distributions"
+    command = worker_command("group_quantize", world_size, output)
+    run(command + ["--outdir", str(output)], output, timeout)
 
 
 def test_moonep_planner_large_token_counts(ep_environment):

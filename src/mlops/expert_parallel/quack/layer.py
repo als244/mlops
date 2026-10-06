@@ -50,9 +50,12 @@ class QuackMoE(nn.Module):
                 )
             else:
                 self.register_parameter(name, None)
-        self._handle = _register_runtime(
-            self._create_runtime(c, ep_group, device, buffer)
-        )
+        # MoonEP exchanges CPU handle tensors. A surrounding model may set a
+        # CUDA default device; resource factories select GPU devices explicitly.
+        with torch.device("cpu"):
+            self._handle = _register_runtime(
+                self._create_runtime(c, ep_group, device, buffer)
+            )
         for name, bank in zip(
             ("gate_up_weight", "down_weight"), _runtime(self._handle).banks
         ):
