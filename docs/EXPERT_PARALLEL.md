@@ -155,6 +155,17 @@ hidden widths must be multiples of 128; top-k is at most 32.
 | Quack `gemm_tuned` | `False` | Opt into autotuning instead of the fixed shape-dependent GEMM policy |
 | TE `gemm_sm_margin` | `32` | SM headroom requested from Transformer Engine GEMMs |
 
+Quack's fixed GEMM choices live in
+[the expert policy](../src/mlops/expert_parallel/quack/experts/policy.py).
+The BF16 fallback uses a 256x128 cooperative, 1x2-cluster weight-gradient tile
+when expected tokens per expert exceed 1024; shorter reductions keep the
+128x192 ping-pong setting. Expected load is
+`tokens_per_chunk * top_k / (num_experts / ep_size)`, using the supplied buffer's
+capacity. This is a performance heuristic, not a routing constraint: skewed and
+empty groups still work. Existing measured-shape overrides take precedence.
+Selection happens at initialization without inspecting GPU routing counts;
+`gemm_tuned=True` bypasses these fixed choices.
+
 BF16/FP32 are supported gradient/router dtypes. An FP32 router requires FP32
 gradients. There is no layer-owned master-parameter or optimizer-state dtype.
 Quack's expert GEMM and cross-rank reduction scratch is FP32 even when returned
@@ -257,13 +268,16 @@ python -m pytest -q -s tests/expert_parallel --run-expert-parallel \
   --ep-backend both --ep-world-size 2 --ep-output /path/to/new-results
 ```
 
-The gate runs 28 configurations plus one public-API coexistence check. It covers
+The gate runs 28 model configurations plus public-API coexistence, MoonEP
+planning, shared expert-bank reuse and large-offset FP8 quantizer checks. It covers
 full training and LoRA, save/recompute, BF16 and FP8-current, TE FP8-block, and
 Quack's four-chunk/two-buffer path (including FP8 dispatch). LoRA checks both
 eager and compiled execution. Full-training checks use compiled entrypoints.
 The independent PyTorch reference uses identical expert assignments and checks
 routing separately. Tests also cover skewed/empty expert groups, repeated calls,
 nonzero LoRA factors, frozen weights, and configured gradients.
+The large-offset quantizer check uses about 12 GiB per GPU and verifies that
+matrices exceeding `2**31` elements use valid 64-bit read/write addresses.
 
 Use `--ep-backend quack` or `te` for a single installed backend,
 `--ep-world-size 1` for singleton EP, and pytest `-k` to select cases. Collection

@@ -6,6 +6,16 @@ from _gate import run, worker_command
 pytestmark = [pytest.mark.gpu, pytest.mark.expert_parallel]
 
 
+def test_fp8_quantizer_large_offsets(ep_environment, request):
+    if request.config.getoption("--ep-backend") == "te":
+        pytest.skip("Quack row quantizer")
+    root, world_size, timeout = ep_environment
+    output = root / "fp8-quantizer-large-offsets"
+    command = worker_command("quantize", world_size, output)
+    run(command + ["--outdir", str(output)], output, timeout)
+
+
+
 def test_moonep_planner_large_token_counts(ep_environment):
     root, world_size, timeout = ep_environment
     output = root / "moonep-planner-32k-64k"
