@@ -76,9 +76,12 @@ class TEMoE(nn.Module):
             self.register_parameter(
                 name, bf16_parameter(shape) if c.shared_width else None
             )
-        self._handle = _register_runtime(
-            self._create_runtime(c, ep_group, device, buffer)
-        )
+        # MoonEP's exchanged handle tensors belong on CPU even when a caller
+        # constructs its model under a CUDA default-device context.
+        with torch.device("cpu"):
+            self._handle = _register_runtime(
+                self._create_runtime(c, ep_group, device, buffer)
+            )
         self._closed = False
         self.synchronize_replicated_parameters()
         runtime = _runtime(self._handle)

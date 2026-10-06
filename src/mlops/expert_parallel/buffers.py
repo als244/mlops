@@ -30,21 +30,24 @@ def create_buffer(config, tokens, ep_group=None):
 
 
 def _single_buffer(config, tokens, ep_group=None):
+    import torch
     from moonep import Buffer
 
-    return Buffer(
-        S=tokens,
-        H=config.feature_dim,
-        K=config.top_k,
-        E=config.num_experts,
-        num_ep_ranks=config.ep_size,
-        B=config.local_experts,
-        num_sms=config.num_comm_sms,
-        token_padding=config.token_padding,
-        group=ep_group,
-        enable_pdl=False,
-        explicitly_destroy=True,
-    )
+    # MoonEP creates CPU IPC-handle tensors alongside explicit CUDA allocations.
+    with torch.device("cpu"):
+        return Buffer(
+            S=tokens,
+            H=config.feature_dim,
+            K=config.top_k,
+            E=config.num_experts,
+            num_ep_ranks=config.ep_size,
+            B=config.local_experts,
+            num_sms=config.num_comm_sms,
+            token_padding=config.token_padding,
+            group=ep_group,
+            enable_pdl=False,
+            explicitly_destroy=True,
+        )
 
 
 @contextmanager

@@ -21,14 +21,13 @@ def _group_amax(
     ROW_S,
     F: tl.constexpr,
     XS: tl.constexpr,
-    PARTS: tl.constexpr,
     BT: tl.constexpr,
     BF: tl.constexpr,
     FROM_FP8: tl.constexpr,
 ):
     group = tl.program_id(2)
     begin, end = tl.load(CU + group).to(tl.int64), tl.load(CU + group + 1).to(tl.int64)
-    if begin < end:
+    if begin + tl.program_id(0) * BT < end:
         token = tl.program_id(0) * BT + tl.arange(0, BT)
         feature = tl.program_id(1) * BF + tl.arange(0, BF)
         value = tl.load(
@@ -40,23 +39,26 @@ def _group_amax(
             descale = tl.load(ROW_S + begin + token, token < end - begin, 0)
             value = (value * descale[:, None]).to(tl.bfloat16).to(tl.float32)
         maximum = tl.max(tl.abs(value), axis=0)
+        partial_base = begin // BT + group
         tl.store(
-            P + (group * PARTS + tl.program_id(0)) * F + feature, maximum, feature < F
+            P + (partial_base + tl.program_id(0)) * F + feature, maximum, feature < F
         )
 
 
 @triton.jit
 def _group_scales(
-    CU, P, S, F: tl.constexpr, PARTS: tl.constexpr, BP: tl.constexpr, BF: tl.constexpr
+    CU, P, S, F: tl.constexpr, BT: tl.constexpr, BP: tl.constexpr, BF: tl.constexpr
 ):
     group = tl.program_id(1)
     begin, end = tl.load(CU + group), tl.load(CU + group + 1)
     if begin < end:
         feature = tl.program_id(0) * BF + tl.arange(0, BF)
         part = tl.arange(0, BP)
+        partial_base = begin // BT + group
+        parts = tl.cdiv(end - begin, BT)
         partial = tl.load(
-            P + (group * PARTS + part[:, None]) * F + feature[None, :],
-            (part[:, None] < PARTS) & (feature[None, :] < F),
+            P + (partial_base + part[:, None]) * F + feature[None, :],
+            (part[:, None] < parts) & (feature[None, :] < F),
             0,
         )
         scale = tl.maximum(tl.max(partial, axis=0) * (1.0 / 448.0), 1e-12)
@@ -160,12 +162,17 @@ def quantize_groups(value, cu, offsets, *, row_scales=None):
     scales = torch.empty(
         (len(lengths), features), device=value.device, dtype=torch.float32
     )
+    # Each group's tile range begins at floor(begin / 256) + group. One
+    # additional slot per group covers its partial tile without overlap.
+    # Capacity depends only on input geometry, never the routing distribution.
+    partial = torch.empty(
+        (triton.cdiv(value.shape[0], 256) + len(lengths), features),
+        device=value.device,
+        dtype=torch.float32,
+    )
     maximum = max(lengths)
     if maximum:
         parts = triton.cdiv(maximum, 256)
-        partial = torch.empty(
-            (len(lengths), parts, features), device=value.device, dtype=torch.float32
-        )
         _group_amax[(parts, triton.cdiv(features, 64), len(lengths))](
             value,
             cu,
@@ -173,7 +180,6 @@ def quantize_groups(value, cu, offsets, *, row_scales=None):
             scale_input,
             features,
             value.stride(0),
-            parts,
             256,
             64,
             from_fp8,
@@ -184,7 +190,7 @@ def quantize_groups(value, cu, offsets, *, row_scales=None):
             partial,
             scales,
             features,
-            parts,
+            256,
             triton.next_power_of_2(parts),
             128,
             num_warps=4,

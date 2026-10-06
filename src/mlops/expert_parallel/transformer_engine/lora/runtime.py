@@ -26,7 +26,7 @@ class LoRARuntime(_MoonRuntime):
             raise ValueError("Every EP rank must use the same LoRA configuration")
         super().__init__(config, group, device, buffer)
         self.low = _TEBackend(
-            replace(config, compute_precision="bf16", weight_transport="bf16")
+            replace(config, compute_precision="bf16", weight_transport="bf16"), device
         )
         self.factors = [
             FactorBank(

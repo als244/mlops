@@ -70,7 +70,8 @@ class BF16ComputeWeight(torch.Tensor):
             return first._data.to(**kwargs)
         if func is aten.copy_.default:
             source = args[1]._data if isinstance(args[1], cls) else args[1]
-            first._data.copy_(source, **kwargs)
+            destination = first._data if isinstance(first, cls) else first
+            destination.copy_(source, **kwargs)
             return first
         view_ops = (
             aten.view.default,
