@@ -1,8 +1,8 @@
 """Deterministic SM90 expert GEMM settings, selected once at layer construction.
 
-The exported table records measured choices for D=7168, H=2048, E=64,
-K=8, EP=2 and padding=128. Other shapes retain the original fixed settings.
-Autotuning is an explicit alternative and does not consume this table.
+The fallback uses a cooperative weight-gradient kernel for longer expected
+expert reductions. The table records measured choices for D=7168, H=2048,
+E=64, K=8, EP=2 and padding=128. Autotuning bypasses both fixed choices.
 """
 
 from dataclasses import asdict, dataclass
@@ -22,6 +22,15 @@ BF16_SM90_CONFIG = GemmConfig(
     tile_n=192,
     pingpong=True,
     cluster_m=2,
+    is_dynamic_persistent=False,
+    device_capacity=9,
+)
+BF16_WEIGHT_GRAD_SM90_CONFIG = GemmConfig(
+    tile_m=256,
+    tile_n=128,
+    pingpong=False,
+    cluster_m=1,
+    cluster_n=2,
     is_dynamic_persistent=False,
     device_capacity=9,
 )
@@ -191,6 +200,20 @@ def select_policy(model_config=None, *, precision, tuned=False):
         "feature_dim": c.feature_dim,
         "expert_hidden_dim": c.expert_hidden_dim,
     }
+    tokens = c.tokens_per_rank
+    # The runtime supplies per-chunk token capacity. Expected rows per expert
+    # estimate the varlen-K reduction length without reading GPU routing counts.
+    # The wider cooperative tile helps long reductions but can slow short ones.
+    if (
+        not tuned
+        and precision == "bf16"
+        and tokens is not None
+        and tokens * c.top_k > 1024 * c.local_experts
+    ):
+        fields.update(
+            up_weight_gradient=BF16_WEIGHT_GRAD_SM90_CONFIG,
+            down_weight_gradient=BF16_WEIGHT_GRAD_SM90_CONFIG,
+        )
     measured_shape = (
         c.feature_dim,
         c.expert_hidden_dim,
@@ -199,7 +222,6 @@ def select_policy(model_config=None, *, precision, tuned=False):
         c.ep_size,
         c.token_padding,
     ) == (7168, 2048, 64, 8, 2, 128)
-    tokens = c.tokens_per_rank
     if tuned or not measured_shape or tokens is None or tokens > 32768:
         return ExpertGemmPolicy(**fields, **dimensions)
     table = _MEASURED.get(precision, {})
