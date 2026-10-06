@@ -33,6 +33,11 @@ The 28-configuration matrix covers full/LoRA, save/recompute, all supported
 precisions and Quack chunking; an additional check loads all four public classes
 in one process. Configuration IDs show the selected backend, precision and mode.
 
+A Quack FP8 quantizer regression checks read/write addresses beyond `2**31`
+elements using guarded allocations (about 12 GiB per GPU). It is included only
+when these GPU checks are explicitly enabled and Quack is selected. Run it alone
+with `-k fp8_quantizer_large_offsets`.
+
 Each case gets `status.json`, `console.log`, `workers/` rank logs and numerical
 reports. An existing case directory is an error. If `--ep-output` is omitted,
 results go into an ignored, timestamped `tests/expert_parallel/results/` directory.

@@ -9,7 +9,9 @@ import triton.language as tl
 def _quantize_rows(
     X, Q, S, N: tl.constexpr, XS: tl.constexpr, QS: tl.constexpr, BLOCK: tl.constexpr
 ):
-    row = tl.program_id(0)
+    # Large routed matrices can exceed 2**31 elements. Widen before multiplying
+    # by either stride so reads and writes cannot wrap to negative addresses.
+    row = tl.program_id(0).to(tl.int64)
     col = tl.arange(0, BLOCK)
     value = tl.load(X + row * XS + col, col < N, other=0).to(tl.float32)
     amax = tl.max(tl.abs(value), axis=0)
