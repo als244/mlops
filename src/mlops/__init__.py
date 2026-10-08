@@ -18,6 +18,7 @@ from .flash_attention import flash_attention
 from .gelu import gelu
 from .gated_rms_norm import gated_rms_norm
 from .head import head_loss
+from .lora_head import lora_head_loss
 from .l2_norm import l2_norm
 from .layer_norm import layer_norm
 from .linear_attention import linear_attention
@@ -45,6 +46,7 @@ __all__ = [
     "gelu",
     "gated_rms_norm",
     "head_loss",
+    "lora_head_loss",
     "l2_norm",
     "layer_norm",
     "linear_attention",
