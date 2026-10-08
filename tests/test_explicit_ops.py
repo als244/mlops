@@ -486,3 +486,39 @@ def test_trace_visible_moe_composition_matches_opaque_builtin():
         composed_gradients, opaque_gradients, strict=True
     ):
         assert torch.equal(actual, expected)
+
+
+@pytest.mark.parametrize("default_dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("sequence_aux", [False, True])
+def test_router_aux_gradient_ignores_default_dtype(default_dtype, sequence_aux):
+    from mlops.kernels.moe_router import (
+        add_aux_gradient_,
+        add_sequence_aux_gradient_,
+    )
+
+    torch.manual_seed(71)
+    logits = torch.randn(7, 8, dtype=torch.float32, requires_grad=True)
+    ids = logits.detach().topk(2, dim=-1).indices
+    scale = torch.tensor(0.03, dtype=torch.float32)
+    lengths = [3, 4] if sequence_aux else [7]
+    scores = torch.sigmoid(logits) if sequence_aux else torch.softmax(logits, -1)
+    probability = scores / scores.sum(-1, keepdim=True)
+    loss = logits.new_zeros(())
+    start = 0
+    for length in lengths:
+        stop = start + length
+        frequency = torch.nn.functional.one_hot(ids[start:stop], 8).float().mean((0, 1))
+        loss = loss + 8 * scale * (frequency * probability[start:stop].mean(0)).sum()
+        start = stop
+    (expected,) = torch.autograd.grad(loss, logits)
+    actual = torch.zeros_like(logits)
+    old_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(default_dtype)
+        if sequence_aux:
+            add_sequence_aux_gradient_(actual, logits.detach(), ids, scale, lengths)
+        else:
+            add_aux_gradient_(actual, logits.detach(), ids, scale)
+    finally:
+        torch.set_default_dtype(old_dtype)
+    torch.testing.assert_close(actual, expected)
