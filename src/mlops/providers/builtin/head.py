@@ -94,7 +94,16 @@ def forward(
     return _run(hidden, head_weight, targets, chunk, normalizer, weight_grad_dtype)
 
 
-def _run(hidden, head_weight, targets, chunk, normalizer, weight_grad_dtype):
+def _run(
+    hidden,
+    head_weight,
+    targets,
+    chunk,
+    normalizer,
+    weight_grad_dtype,
+    need_hidden_grad=True,
+    need_head_grad=True,
+):
     """The chunked pass itself: the summed cross entropy over ``normalizer``
     and both seed-one gradients, ``chunk`` rows of logits at a time."""
     rows = hidden.numel() // hidden.shape[-1]
@@ -102,8 +111,12 @@ def _run(hidden, head_weight, targets, chunk, normalizer, weight_grad_dtype):
         hidden_2d = hidden.reshape(rows, hidden.shape[-1])
         targets_1d = targets.reshape(rows)
         loss = torch.zeros((), dtype=torch.float32, device=hidden.device)
-        grad_hidden = torch.empty_like(hidden_2d)
-        grad_head = torch.zeros_like(head_weight, dtype=weight_grad_dtype)
+        grad_hidden = torch.empty_like(hidden_2d) if need_hidden_grad else None
+        grad_head = (
+            torch.zeros_like(head_weight, dtype=weight_grad_dtype)
+            if need_head_grad
+            else None
+        )
         for start in range(0, rows, chunk):
             stop = min(start + chunk, rows)
             hidden_chunk = hidden_2d[start:stop]
@@ -114,26 +127,37 @@ def _run(hidden, head_weight, targets, chunk, normalizer, weight_grad_dtype):
                 total_rows=normalizer,
             )
             loss += partial
-            if weight_grad_dtype is None:
-                grad_head.add_((grad_logits.T @ hidden_chunk).to(grad_head.dtype))
-            else:
-                add_product_(grad_head, grad_logits.T, hidden_chunk)
-            grad_hidden[start:stop].copy_(grad_logits @ head_weight)
-    return loss, grad_hidden.reshape_as(hidden), grad_head
+            if grad_head is not None:
+                if weight_grad_dtype is None:
+                    grad_head.add_((grad_logits.T @ hidden_chunk).to(grad_head.dtype))
+                else:
+                    add_product_(grad_head, grad_logits.T, hidden_chunk)
+            if grad_hidden is not None:
+                grad_hidden[start:stop].copy_(grad_logits @ head_weight)
+    return (
+        loss,
+        None if grad_hidden is None else grad_hidden.reshape_as(hidden),
+        grad_head,
+    )
 
 
 def backward(grad_loss, grad_hidden_seed, grad_head_seed):
     """Scale immutable seed-one VJPs by an arbitrary scalar cotangent."""
     with torch.no_grad():
         return (
-            grad_hidden_seed * grad_loss.to(grad_hidden_seed.dtype),
-            grad_head_seed * grad_loss.to(grad_head_seed.dtype),
+            None
+            if grad_hidden_seed is None
+            else grad_hidden_seed * grad_loss.to(grad_hidden_seed.dtype),
+            None
+            if grad_head_seed is None
+            else grad_head_seed * grad_loss.to(grad_head_seed.dtype),
         )
 
 
 @torch.library.custom_op(
     "mlops::head_loss_builtin_chunked_fwd",
     mutates_args=(),
+    schema="(Tensor hidden, Tensor head_weight, Tensor targets, SymInt chunk_size, SymInt normalizer, ScalarType? weight_grad_dtype, bool need_hidden_grad=True, bool need_head_grad=True) -> (Tensor, Tensor?, Tensor?)",
 )
 def _forward_op(
     hidden: torch.Tensor,
@@ -142,7 +166,9 @@ def _forward_op(
     chunk_size: int,
     normalizer: int,
     weight_grad_dtype: torch.dtype | None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    need_hidden_grad: bool = True,
+    need_head_grad: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     loss, grad_hidden, grad_head = _run(
         hidden,
         head_weight,
@@ -150,28 +176,46 @@ def _forward_op(
         chunk_size,
         normalizer,
         weight_grad_dtype,
+        need_hidden_grad,
+        need_head_grad,
     )
-    return loss, grad_hidden.reshape(-1, hidden.shape[-1]), grad_head
+    return (
+        loss,
+        None if grad_hidden is None else grad_hidden.reshape(-1, hidden.shape[-1]),
+        grad_head,
+    )
 
 
 @_forward_op.register_fake
 def _forward_fake(
-    hidden, head_weight, targets, chunk_size, normalizer, weight_grad_dtype
+    hidden,
+    head_weight,
+    targets,
+    chunk_size,
+    normalizer,
+    weight_grad_dtype,
+    need_hidden_grad=True,
+    need_head_grad=True,
 ):
     del targets, chunk_size, normalizer
     rows = hidden.numel() // hidden.shape[-1]
     return (
         hidden.new_empty((), dtype=torch.float32),
-        hidden.new_empty((rows, hidden.shape[-1])),
-        torch.empty_like(head_weight, dtype=weight_grad_dtype),
+        hidden.new_empty((rows, hidden.shape[-1])) if need_hidden_grad else None,
+        torch.empty_like(head_weight, dtype=weight_grad_dtype)
+        if need_head_grad
+        else None,
     )
 
 
 @flop_formula(_forward_op)
-def _forward_flops(hidden, head_weight, targets, *_rest, out_val=None, **_kwargs):
+def _forward_flops(hidden, head_weight, targets, chunk_size, normalizer,
+                   weight_grad_dtype, need_hidden_grad=True, need_head_grad=True,
+                   out_val=None, **_kwargs):
     del out_val
     return logical.head_loss(
-        hidden, head_weight, targets, entrypoint="forward"
+        hidden, head_weight, targets, entrypoint="forward",
+        need_hidden_grad=need_hidden_grad, need_head_grad=need_head_grad
     ).logical_flops
 
 
@@ -180,13 +224,24 @@ def _setup_context(ctx, inputs, output):
     _loss, grad_hidden, grad_head = output
     ctx.save_for_backward(grad_hidden, grad_head)
     ctx.hidden_shape = hidden.shape
-    ctx.mark_non_differentiable(grad_hidden, grad_head)
+    ctx.mark_non_differentiable(
+        *(value for value in (grad_hidden, grad_head) if value is not None)
+    )
 
 
 def _autograd_backward(ctx, grad_loss, _grad_hidden_output, _grad_head_output):
     grad_hidden, grad_head = ctx.saved_tensors
     grad_hidden, grad_head = backward(grad_loss, grad_hidden, grad_head)
-    return grad_hidden.reshape(ctx.hidden_shape), grad_head, None, None, None, None
+    return (
+        (None if grad_hidden is None else grad_hidden.reshape(ctx.hidden_shape)),
+        grad_head,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 _forward_op.register_autograd(
@@ -213,6 +268,8 @@ def apply(
         chunk,
         normalizer,
         weight_gradient_dtype(),
+        torch.is_grad_enabled() and hidden.requires_grad,
+        torch.is_grad_enabled() and head_weight.requires_grad,
     )
     return loss
 

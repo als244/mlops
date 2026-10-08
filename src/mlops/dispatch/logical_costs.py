@@ -507,6 +507,8 @@ def head_loss(
     *,
     chunk_size=None,
     valid_rows=None,
+    need_hidden_grad=True,
+    need_head_grad=True,
     entrypoint="forward",
     **_kwargs,
 ) -> CostHints:
@@ -518,22 +520,84 @@ def head_loss(
     rows = _rows(hidden)
     width = hidden.shape[-1]
     vocabulary = head_weight.shape[0]
-    gradients = _bytes(hidden) + _bytes(head_weight)
+    gradients = int(need_hidden_grad) * _bytes(hidden) + int(need_head_grad) * _bytes(head_weight)
     if _entrypoint(entrypoint):
         return CostHints(
-            logical_flops=6 * rows * width * vocabulary + 6 * rows * vocabulary,
+            logical_flops=2 * rows * width * vocabulary * (1 + int(need_hidden_grad) + int(need_head_grad)) + 6 * rows * vocabulary,
             logical_bytes_accessed=(
                 _bytes(hidden, head_weight, targets) + gradients + 4
             ),
             notes=(
-                "three matrix products: logits, the hidden gradient, the head gradient",
+                "logits and only requested hidden/head gradient products",
                 "the logits are never written whole; the chunking is the implementation's",
             ),
         )
     return CostHints(
-        logical_flops=2 * (rows * width + vocabulary * width),
+        logical_flops=2 * (int(need_hidden_grad) * rows * width + int(need_head_grad) * vocabulary * width),
         logical_bytes_accessed=2 * gradients + 4,
         notes=("backward scales the two seed-one gradients by the loss cotangent",),
+    )
+
+
+def lora_head_loss(
+    hidden,
+    head_weight,
+    lora_a,
+    lora_b,
+    targets,
+    *,
+    need_hidden_grad=True,
+    need_head_grad=False,
+    need_lora_a_grad=True,
+    need_lora_b_grad=True,
+    weight_grad_dtype=None,
+    entrypoint="forward",
+    **_kwargs,
+) -> CostHints:
+    """Chunked base/low-rank projection and requested first-order seeds."""
+    rows, width, vocab, rank = (
+        _rows(hidden),
+        hidden.shape[-1],
+        head_weight.shape[0],
+        lora_a.shape[0],
+    )
+    needs = (need_hidden_grad, need_head_grad, need_lora_a_grad, need_lora_b_grad)
+    tensors = (hidden, head_weight, lora_a, lora_b)
+    seed_elements = sum(
+        t.numel() for t, needed in zip(tensors, needs, strict=True) if needed
+    )
+    seed_bytes = sum(
+        t.numel()
+        * (
+            t.element_size()
+            if i == 0 or weight_grad_dtype is None
+            else torch.empty((), dtype=weight_grad_dtype).element_size()
+        )
+        for i, (t, needed) in enumerate(zip(tensors, needs, strict=True))
+        if needed
+    )
+    if not _entrypoint(entrypoint):
+        return CostHints(
+            logical_flops=seed_elements,
+            logical_bytes_accessed=2 * seed_bytes + 4,
+            notes=("scale only requested seed-one VJPs by the scalar cotangent",),
+        )
+    base = 2 * rows * width * vocab
+    input_factor = 2 * rows * width * rank
+    output_factor = 2 * rows * vocab * rank
+    flops = base + input_factor + output_factor + 8 * rows * vocab
+    flops += int(need_hidden_grad) * (base + input_factor + rows * width)
+    flops += int(need_head_grad) * base
+    flops += int(need_lora_a_grad) * input_factor
+    flops += int(need_lora_b_grad) * (output_factor + vocab * rank)
+    flops += int(need_hidden_grad or need_lora_a_grad) * (output_factor + rows * rank)
+    return CostHints(
+        logical_flops=flops,
+        logical_bytes_accessed=_bytes(*tensors, targets) + seed_bytes + 4,
+        notes=(
+            "base projection plus two low-rank products; logits consumed in chunks",
+            "frozen base weights have no dense gradient product or seed storage",
+        ),
     )
 
 
@@ -589,6 +653,7 @@ for _name, _estimator in (
     ("moe", moe),
     ("cross_entropy", cross_entropy),
     ("head_loss", head_loss),
+    ("lora_head_loss", lora_head_loss),
     ("embedding", embedding),
     ("adamw", adamw),
 ):
@@ -609,6 +674,7 @@ __all__ = [
     "l2_norm",
     "layer_norm",
     "linear_attention",
+    "lora_head_loss",
     "moe",
     "moe_finish",
     "moe_prepare",

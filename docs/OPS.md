@@ -40,6 +40,7 @@ from mlops import (
     gated_rms_norm,
     gelu,
     head_loss,
+    lora_head_loss,
     index_scores,
     l2_norm,
     layer_norm,
@@ -166,6 +167,7 @@ replay is correct.
 | `moe` | routed experts | output + diagnostics | `builtin.moe.grouped_gemm_composed` |
 | `cross_entropy` | training loss | FP32 `[R]` or scalar | `builtin.cross_entropy.triton` |
 | `head_loss` | bounded-logits training epilogue | FP32 scalar | `builtin.head_loss.chunked` |
+| `lora_head_loss` | bounded-logits low-rank head | FP32 scalar | `builtin.lora_head_loss.chunked` |
 
 ## Embedding
 
@@ -1713,6 +1715,90 @@ Compared with the former combined contract, ordinary autograd retains the norm
 input/statistics and executes its VJP separately. Save-versus-recompute policy
 belongs to graph lowering rather than to separate RMS/Layer head APIs.
 
+
+### `lora_head_loss`
+
+**Status:** Public
+
+**Signature**
+
+```python
+lora_head_loss(
+    hidden: Tensor, head_weight: Tensor, lora_a: Tensor, lora_b: Tensor,
+    targets: Tensor, *, scale: float = 1.0,
+    chunk_size: int | None = None, valid_rows: int | None = None,
+    reduction: Literal["mean", "sum"] = "mean",
+) -> Tensor
+```
+
+**Purpose**
+
+Cross entropy of `X @ W.T + scale * (X @ A.T) @ B.T`, evaluated in row
+chunks. This is a separate operation alongside ordinary `head_loss`.
+It never builds a dense `B @ A` weight update or retains full-batch logits.
+
+**Parameters**
+
+| Name | Shape / meaning |
+|---|---|
+| `hidden` | `[..., D]` normalized hidden states |
+| `head_weight` | `[V, D]` base weight, frozen by setting `requires_grad=False` |
+| `lora_a` | `[rank, D]` input factor |
+| `lora_b` | `[V, rank]` output factor; usually initialized to zero |
+| `targets` | One integer label per hidden row; negative labels are ignored |
+| `scale` | Finite multiplier, conventionally `alpha / rank` |
+| `chunk_size` | Positive maximum rows per logits chunk; same default as `head_loss` |
+| `valid_rows` | Mean denominator in `[1, rows]`; omitted uses every row |
+| `reduction` | `"mean"` or `"sum"`; a sum cannot specify `valid_rows` |
+
+**Returns**
+
+An FP32 scalar. Mean/sum and ignored-label normalization match `head_loss`.
+
+**Autograd and effects**
+
+The base and hidden use the same compute dtype. Factors are cast to that dtype
+before the opaque call; ordinary autograd handles the casts back to their
+storage dtype. The chunked pass produces only requested unit-cotangent
+gradients for hidden, base, A and B. A frozen base has no `[V, D]` gradient
+allocation or matrix product. Fully training the base alongside factors is
+also supported, including when it is tied to a trainable embedding.
+
+For `H = X @ A.T` and logits cotangent `dZ`, the LoRA VJPs are
+`dH = scale * dZ @ B`, `dA = dH.T @ X`,
+`dB = scale * dZ.T @ H`, and the input VJP is
+`dX = dZ @ W + dH @ A`. Parameter seeds accumulate at
+`weight_gradient_dtype` when configured, otherwise at compute dtype.
+Backward scales seeds out of place; repeated first-order VJPs are supported.
+No `.item()`, host read of tensor values, or explicit device synchronization
+is needed. The operation neither changes parameters nor owns optimizer state.
+
+**Constraints and exceptions**
+
+Factors must be two-dimensional with positive matching rank, and all inputs
+share a device. Hidden/base/factors are floating point; the base and hidden
+dtypes match. Label IDs must be below the vocabulary size. Invalid shapes/dtypes
+are rejected by dispatch; invalid scalar policy raises `ValueError`.
+Dropout and higher-order derivatives are not part of this operation.
+
+**Implementations**
+
+`builtin.lora_head_loss.chunked` is the default.
+`native_torch.lora_head_loss` is the independent full-logits PyTorch reference.
+
+**Example**
+
+```python
+head_weight.requires_grad_(False)
+loss = lora_head_loss(
+    normalized, head_weight, lora_a, lora_b, targets,
+    scale=alpha / rank, reduction="sum",
+)
+```
+
+Call this operation from the head module selected for LoRA. Merely replacing
+a Linear's forward does not change callers that read its weight directly.
+
 ## Implementation-control API
 
 Contributor control lives in `mlops.dispatch`. Overrides are exact,
@@ -1872,6 +1958,7 @@ order.
 | `flash_attention` | `builtin.flash_attention.aten` | `native_torch.flash_attention` |
 | `mla_attention` | `builtin.mla_attention.flash` | `native_torch.mla_attention` |
 | `head_loss` | `builtin.head_loss.chunked` | `native_torch.head_loss` |
+| `lora_head_loss` | `builtin.lora_head_loss.chunked` | `native_torch.lora_head_loss` |
 | `causal_conv_silu` | `fla.causal_conv_silu` | `native_torch.causal_conv_silu` |
 | `l2_norm` | `fla.l2_norm` | `native_torch.l2_norm` |
 | `gated_rms_norm` | `fla.gated_rms_norm` | `native_torch.gated_rms_norm` |
@@ -2037,6 +2124,7 @@ positions, routing indices, and sequence metadata are non-differentiable.
 | `linear_attention` | recurrent output | FLA gate/matrix and sequence metadata | seven continuous inputs |
 | `moe` | routed output and diagnostics | complete route/dispatch state | hidden, residual, router, expert weights |
 | `head_loss` | scalar loss | seed-one hidden/head VJPs | scaled hidden/head VJPs |
+| `lora_head_loss` | scalar loss | requested hidden/base/A/B seeds | scaled requested VJPs |
 
 ### Embedding
 
@@ -2421,6 +2509,30 @@ backward(
 `loss` is an FP32 scalar. `grad_hidden_seed` has the original hidden shape;
 the head seed matches its parameter. Seeds must remain immutable so the
 same forward result can support repeated VJPs.
+
+
+#### `explicit.lora_head_loss`
+
+```python
+forward(
+    hidden, head_weight, lora_a, lora_b, targets,
+    *, scale=1.0, chunk_size=None, valid_rows=None, reduction="mean",
+    weight_grad_dtype=None, need_hidden_grad=True, need_head_grad=False,
+    need_lora_a_grad=True, need_lora_b_grad=True,
+) -> tuple[loss, grad_hidden_seed, grad_head_seed, grad_lora_a_seed, grad_lora_b_seed]
+
+backward(
+    grad_loss, grad_hidden_seed, grad_head_seed, grad_lora_a_seed, grad_lora_b_seed,
+) -> tuple[grad_hidden, grad_head, grad_lora_a, grad_lora_b]
+```
+
+Gradient requests are explicit and independent of input `requires_grad`.
+An omitted seed and its backward result are `None`. The default requests
+hidden/A/B gradients and omits the frozen base gradient. Hidden gradients have
+the hidden dtype; parameter seeds use `weight_grad_dtype` or compute dtype.
+Seeds are immutable, and calls neither build an autograd graph nor write
+input `.grad`. Factor storage dtype can differ from the compute/seed dtype;
+the explicit caller handles any final cast or accumulation.
 
 ### Operations without explicit VJPs
 

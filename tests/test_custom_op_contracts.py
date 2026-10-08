@@ -6,6 +6,7 @@ from functools import partial
 from pathlib import Path
 
 import mlops
+from mlops.lora import grouped as lora_grouped, routing as lora_routing
 import pytest
 import torch
 from mlops.preparation.packed_sequence import _prepare_op
@@ -44,6 +45,7 @@ gelu = importlib.import_module(
 head = importlib.import_module(
     "mlops.providers.builtin.head"
 )
+lora_head = importlib.import_module("mlops.providers.builtin.lora_head")
 layer_norm = importlib.import_module(
     "mlops.providers.builtin.layer_norm"
 )
@@ -84,6 +86,10 @@ PACKAGE_ROOT = Path(mlops.__file__).resolve().parent
 
 
 FORWARD_OPERATORS = {
+    "lora_grouped_linear_fwd": lora_grouped._forward,
+    "lora_route": lora_routing._route,
+    "lora_dispatch": lora_routing._dispatch,
+    "lora_combine": lora_routing._combine,
     "causal_conv_silu_fla_fwd": fla_hybrid._causal_forward_op,
     "cross_entropy_builtin_triton_fwd": cross_entropy._forward_op,
     "dsa_attention_builtin_sparse_fwd": dsa._attention_forward_op,
@@ -92,6 +98,7 @@ FORWARD_OPERATORS = {
     "gated_rms_norm_fla_fwd": fla_hybrid._gated_forward_op,
     "gelu_builtin_aten_explicit_backward_fwd": gelu._forward_op,
     "head_loss_builtin_chunked_fwd": head._forward_op,
+    "lora_head_loss_builtin_chunked_fwd": lora_head._forward_op,
     "l2_norm_fla_fwd": fla_hybrid._l2_forward_op,
     "layer_norm_builtin_triton_fwd": layer_norm._forward_op,
     "linear_attention_fla_gated_delta_rule_fwd": fla_hybrid._linear_forward_op,
@@ -111,6 +118,7 @@ FORWARD_OPERATORS = {
 }
 
 BACKWARD_OPERATORS = {
+    "lora_grouped_linear_bwd", "lora_route_bwd", "lora_dispatch_bwd", "lora_combine_bwd",
     "causal_conv_silu_fla_bwd",
     "cross_entropy_builtin_triton_bwd",
     "dsa_attention_builtin_sparse_bwd",
@@ -137,6 +145,7 @@ BACKWARD_OPERATORS = {
 }
 
 AUXILIARY_OPERATORS = {
+    "lora_assignment_layout": lora_routing.layout,
     "prepare_packed_sequence_metadata": _prepare_op,
     "adamw": _functional_op,
     "adamw_out": _out_op,
@@ -234,6 +243,14 @@ def _cross_entropy_args():
         torch.randint(0, 31, (7,), device="cuda"),
         -100,
     )
+
+
+def _lora_head_args(weight_grad_dtype=None):
+    hidden = _parameter(7, 16)
+    head_weight = _parameter(31, 16).requires_grad_(False)
+    a, b = _parameter(3, 16), _parameter(31, 3)
+    targets = torch.randint(0, 31, (7,), device="cuda")
+    return hidden, head_weight, a, b, targets, 0.7, 4, 7, weight_grad_dtype, True, False, True, True
 
 
 def _head_args(weight_grad_dtype=None):
@@ -368,6 +385,7 @@ OPCHECK_CASES = (
     ),
     ("gelu", gelu._forward_op, _gelu_args),
     ("head", head._forward_op, _head_args),
+    ("lora_head", lora_head._forward_op, _lora_head_args),
     ("flash_attention", flash_attention._forward_op, _flash_attention_args),
     ("dsa_attention", dsa._attention_forward_op, _dsa_args),
     ("causal_conv", fla_hybrid._causal_forward_op, _causal_conv_args),
@@ -386,6 +404,7 @@ OPCHECK_CASES = (
             ("rms_norm_builtin", rms_norm_builtin._forward_op, _builtin_rms_norm_args),
             ("layer_norm", layer_norm._forward_op, _layer_norm_args),
             ("head", head._forward_op, _head_args),
+            ("lora_head", lora_head._forward_op, _lora_head_args),
             ("moe", moe._forward_op, _moe_args),
             ("moe_prepare", moe_composed._prepare_op, _moe_prepare_args),
             ("moe_finish", moe_composed._finish_op, _moe_finish_args),

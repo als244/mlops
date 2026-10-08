@@ -34,6 +34,8 @@ _CATALOG = (
     "mlops.providers.native_torch.mla_attention",
     "mlops.providers.builtin.head",
     "mlops.providers.native_torch.head",
+    "mlops.providers.builtin.lora_head",
+    "mlops.providers.native_torch.lora_head",
     "mlops.providers.fla.hybrid",
     "mlops.providers.native_torch.hybrid",
     "mlops.providers.builtin.linear_mixer",
