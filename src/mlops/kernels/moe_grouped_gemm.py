@@ -7,12 +7,39 @@ import torch
 try:
     import triton
     import triton.language as tl
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     triton = None
     tl = None
 
 
-_BM, _BN, _BK = 128, 256, 64
+def _tiles(rows, columns, reduction, dtype, device):
+    """Bound tiles by matrix dimensions and the device's shared-memory limit.
+
+    Low-rank projections must not pay for a 256-column tile. The same policy
+    also keeps FP32 and smaller shared-memory devices within their launch limit.
+    No token counts are copied from the device.
+    """
+    bm = min(128, max(16, triton.next_power_of_2(max(1, rows))))
+    bn = min(256, max(16, triton.next_power_of_2(max(1, columns))))
+    bk = min(64, max(16, triton.next_power_of_2(max(1, reduction))))
+    element_size = torch.finfo(dtype).bits // 8
+    budget = (
+        torch.cuda.get_device_properties(device).shared_memory_per_block_optin - 8192
+    )
+    stages = 3
+    # Reserve space for pipeline operands and compiler scratch. Two stages
+    # suffice when three would exceed the per-block resource budget.
+    if stages * (bm + bn) * bk * element_size > budget:
+        stages = 2
+    while stages * (bm + bn) * bk * element_size > budget:
+        if bn > bm:
+            bn //= 2
+        elif bm > 16:
+            bm //= 2
+        else:
+            bk //= 2
+    warps = 4 if bm * bn <= 8192 else 8
+    return bm, bn, bk, warps, stages
 
 
 if triton is not None:
@@ -37,6 +64,7 @@ if triton is not None:
         BM: tl.constexpr,
         BN: tl.constexpr,
         BK: tl.constexpr,
+        FP32_PRECISION: tl.constexpr,
     ):
         program_m = tl.program_id(0)
         program_n = tl.program_id(1)
@@ -76,7 +104,7 @@ if triton is not None:
                 mask=reduction_mask[:, None] & column_mask[None, :],
                 other=0.0,
             )
-            accumulator = tl.dot(a, b, accumulator)
+            accumulator = tl.dot(a, b, accumulator, input_precision=FP32_PRECISION)
         tl.store(
             c_ptr + rows[:, None] * stride_cm + columns[None, :] * stride_cn,
             accumulator.to(c_ptr.dtype.element_ty),
@@ -101,6 +129,7 @@ if triton is not None:
         BI: tl.constexpr,
         BJ: tl.constexpr,
         BK: tl.constexpr,
+        FP32_PRECISION: tl.constexpr,
     ):
         expert = tl.program_id(0).to(tl.int64)
         rows_start = tl.load(offsets_ptr + expert).to(tl.int64)
@@ -123,7 +152,7 @@ if triton is not None:
                 mask=reduction_mask[:, None] & outer_mask[None, :],
                 other=0.0,
             )
-            accumulator = tl.dot(x, grad, accumulator)
+            accumulator = tl.dot(x, grad, accumulator, input_precision=FP32_PRECISION)
         pointer = (
             output_ptr
             + expert * stride_oe
@@ -137,9 +166,9 @@ if triton is not None:
         )
 
 
-def _tile_prefix(offsets):
+def _tile_prefix(offsets, block_rows):
     counts = offsets[1:] - offsets[:-1]
-    tiles = (counts + (_BM - 1)) // _BM
+    tiles = (counts + (block_rows - 1)) // block_rows
     prefix = torch.zeros_like(offsets)
     prefix[1:].copy_(torch.cumsum(tiles, 0).to(offsets.dtype))
     return prefix
@@ -163,9 +192,16 @@ def grouped_mm_forward(x, weight, offsets):
     if triton is None or not x.is_cuda:
         return _native_torch(x, weight, offsets)
     output = torch.empty((x.shape[0], weight.shape[2]), dtype=x.dtype, device=x.device)
-    prefix = _tile_prefix(offsets)
-    grid_0 = (x.shape[0] + _BM - 1) // _BM + weight.shape[0]
-    _grouped_mm_kernel[(grid_0, triton.cdiv(weight.shape[2], _BN))](
+    bm, bn, bk, warps, stages = _tiles(
+        max(1, x.shape[0] // weight.shape[0]),
+        weight.shape[2],
+        weight.shape[1],
+        x.dtype,
+        x.device,
+    )
+    prefix = _tile_prefix(offsets, bm)
+    grid_0 = triton.cdiv(x.shape[0], bm) + weight.shape[0]
+    _grouped_mm_kernel[(grid_0, triton.cdiv(weight.shape[2], bn))](
         x,
         weight,
         output,
@@ -181,11 +217,14 @@ def grouped_mm_forward(x, weight, offsets):
         weight.stride(2),
         output.stride(0),
         output.stride(1),
-        BM=_BM,
-        BN=_BN,
-        BK=_BK,
-        num_warps=8,
-        num_stages=3,
+        BM=bm,
+        BN=bn,
+        BK=bk,
+        num_warps=warps,
+        num_stages=stages,
+        FP32_PRECISION=(
+            "ieee" if torch.get_float32_matmul_precision() == "highest" else "tf32"
+        ),
     )
     return output
 
@@ -196,9 +235,16 @@ def grouped_mm_dgrad(grad, weight, offsets):
     output = torch.empty(
         (grad.shape[0], weight.shape[1]), dtype=grad.dtype, device=grad.device
     )
-    prefix = _tile_prefix(offsets)
-    grid_0 = (grad.shape[0] + _BM - 1) // _BM + weight.shape[0]
-    _grouped_mm_kernel[(grid_0, triton.cdiv(weight.shape[1], _BN))](
+    bm, bn, bk, warps, stages = _tiles(
+        max(1, grad.shape[0] // weight.shape[0]),
+        weight.shape[1],
+        weight.shape[2],
+        grad.dtype,
+        grad.device,
+    )
+    prefix = _tile_prefix(offsets, bm)
+    grid_0 = triton.cdiv(grad.shape[0], bm) + weight.shape[0]
+    _grouped_mm_kernel[(grid_0, triton.cdiv(weight.shape[1], bn))](
         grad,
         weight,
         output,
@@ -214,11 +260,14 @@ def grouped_mm_dgrad(grad, weight, offsets):
         weight.stride(1),
         output.stride(0),
         output.stride(1),
-        BM=_BM,
-        BN=_BN,
-        BK=_BK,
-        num_warps=8,
-        num_stages=3,
+        BM=bm,
+        BN=bn,
+        BK=bk,
+        num_warps=warps,
+        num_stages=stages,
+        FP32_PRECISION=(
+            "ieee" if torch.get_float32_matmul_precision() == "highest" else "tf32"
+        ),
     )
     return output
 
@@ -230,11 +279,18 @@ def grouped_mm_wgrad(x, grad, offsets, weight_shape, dtype=None):
         weight_shape, dtype=x.dtype if dtype is None else dtype, device=x.device
     )
     if triton is not None and x.is_cuda:
+        bi, bj, bk, warps, stages = _tiles(
+            weight_shape[1],
+            weight_shape[2],
+            max(1, x.shape[0] // weight_shape[0]),
+            x.dtype,
+            x.device,
+        )
         _grouped_wgrad_kernel[
             (
                 weight_shape[0],
-                triton.cdiv(weight_shape[1], _BM),
-                triton.cdiv(weight_shape[2], _BN),
+                triton.cdiv(weight_shape[1], bi),
+                triton.cdiv(weight_shape[2], bj),
             )
         ](
             x,
@@ -250,11 +306,14 @@ def grouped_mm_wgrad(x, grad, offsets, weight_shape, dtype=None):
             output.stride(0),
             output.stride(1),
             output.stride(2),
-            BI=_BM,
-            BJ=_BN,
-            BK=_BK,
-            num_warps=8,
-            num_stages=3,
+            BI=bi,
+            BJ=bj,
+            BK=bk,
+            num_warps=warps,
+            num_stages=stages,
+            FP32_PRECISION=(
+                "ieee" if torch.get_float32_matmul_precision() == "highest" else "tf32"
+            ),
         )
         return output
     row_experts = torch.searchsorted(
