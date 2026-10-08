@@ -42,20 +42,26 @@ def product_at(
 
 
 def add_product_(
-    accumulator: torch.Tensor, left: torch.Tensor, right: torch.Tensor
+    accumulator: torch.Tensor,
+    left: torch.Tensor,
+    right: torch.Tensor,
+    *,
+    alpha: float = 1.0,
 ) -> torch.Tensor:
-    """Add ``left @ right`` into ``accumulator`` in place, at its dtype.
+    """Add ``alpha * left @ right`` into ``accumulator`` in place, at its dtype.
 
     Where the multiply can write that dtype it adds as it writes -- cuBLAS's
-    ``C = A @ B + C`` -- so the product is never stored on its own; otherwise
+    ``C = alpha * A @ B + C`` -- so the product is never stored on its own; otherwise
     the operands are taken to the accumulator's dtype and the product added.
     """
     if _in_multiply(left, right, accumulator.dtype):
         torch.ops.aten.addmm.dtype_out(
-            accumulator, left, right, accumulator.dtype, out=accumulator
+            accumulator, left, right, accumulator.dtype, alpha=alpha, out=accumulator
         )
     else:
-        accumulator.add_(left.to(accumulator.dtype) @ right.to(accumulator.dtype))
+        accumulator.add_(
+            left.to(accumulator.dtype) @ right.to(accumulator.dtype), alpha=alpha
+        )
     return accumulator
 
 

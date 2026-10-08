@@ -24,6 +24,12 @@ package requires PyTorch 2.13 or newer.
 explicit signature, tensor shape, dtype, return, residual, mutation rule,
 implementation ID, and constraint.
 
+## LoRA modules
+
+`mlops.lora` provides `LoRAConfig`, `LoRALinear`, `LoRAHead`, `apply_lora`, and
+`parameter_report`. [LoRA configuration and examples](LORA.md) describe target
+selection, frozen defaults, head loss, expert factors and memory accounting.
+
 ## Optimizer APIs
 
 | Surface | Import | Use |
@@ -56,6 +62,10 @@ The [semantic quick index](OPS.md#quick-index) lists every public operation,
 its category, output shape, and default implementation. The
 [explicit quick index](OPS.md#quick-index-1) lists every operation with a
 public autograd-independent entrypoint and its returned residual state.
+
+The language-model epilogues include [ordinary head loss](OPS.md#head_loss)
+and [LoRA head loss](OPS.md#lora_head_loss). The latter keeps frozen base weights
+free of dense weight gradients and exposes explicit factor-gradient seeds.
 
 ## Dispatch and development APIs
 
