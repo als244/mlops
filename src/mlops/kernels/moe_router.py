@@ -11,7 +11,7 @@ import torch
 try:
     import triton
     import triton.language as tl
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     triton = None
     tl = None
 
@@ -454,7 +454,9 @@ def add_aux_gradient_(grad_logits, logits, ids, scale):
     tokens, experts = logits.shape
     counts = torch.zeros(experts, dtype=torch.float32, device=logits.device)
     counts.scatter_add_(
-        0, ids.reshape(-1).long(), torch.ones(ids.numel(), device=ids.device)
+        0,
+        ids.reshape(-1).long(),
+        torch.ones(ids.numel(), dtype=counts.dtype, device=ids.device),
     )
     frequency = counts / ids.numel()
     probability = torch.softmax(logits.float(), -1)
@@ -480,7 +482,9 @@ def add_sequence_aux_gradient_(grad_logits, logits, ids, scale, lengths):
         counts = torch.zeros(experts, dtype=torch.float32, device=logits.device)
         segment_ids = ids[start:stop].reshape(-1).long()
         counts.scatter_add_(
-            0, segment_ids, torch.ones(segment_ids.numel(), device=logits.device)
+            0,
+            segment_ids,
+            torch.ones(segment_ids.numel(), dtype=counts.dtype, device=logits.device),
         )
         frequency = counts * experts / (ids.shape[1] * int(length))
         coefficient = scale.float() / (int(length) * row_sum[start:stop])
@@ -499,8 +503,8 @@ __all__ = [
     "add_sequence_aux_gradient_",
     "current_route_weight_precision",
     "route",
-    "route_torch",
     "route_backward",
+    "route_torch",
     "route_weight_precision",
     "routing_override",
 ]
