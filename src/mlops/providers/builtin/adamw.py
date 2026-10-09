@@ -63,7 +63,7 @@ def _functional_op(
     maximize: bool,
     parameter_stochastic: bool,
     opt_state_stochastic: bool,
-    rounding_salt: int,
+    rounding_salt: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     outputs = tuple(
         torch.empty_like(value) for value in (parameter, exp_avg, exp_avg_sq, step)
@@ -140,7 +140,7 @@ def _out_op(
     maximize: bool,
     parameter_stochastic: bool,
     opt_state_stochastic: bool,
-    rounding_salt: int,
+    rounding_salt: torch.Tensor,
     out_parameter: torch.Tensor,
     out_exp_avg: torch.Tensor,
     out_exp_avg_sq: torch.Tensor,
@@ -192,7 +192,7 @@ def _in_place_op(
     maximize: bool,
     parameter_stochastic: bool,
     opt_state_stochastic: bool,
-    rounding_salt: int,
+    rounding_salt: torch.Tensor,
 ) -> None:
     adamw_out_raw(
         parameter,
@@ -238,7 +238,7 @@ def _master_functional_op(
     maximize: bool,
     parameter_stochastic: bool,
     opt_state_stochastic: bool,
-    rounding_salt: int,
+    rounding_salt: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     outputs = tuple(
         torch.empty_like(value)
@@ -325,7 +325,7 @@ def _master_out_op(
     maximize: bool,
     parameter_stochastic: bool,
     opt_state_stochastic: bool,
-    rounding_salt: int,
+    rounding_salt: torch.Tensor,
     out_parameter: torch.Tensor,
     out_master_parameter: torch.Tensor,
     out_exp_avg: torch.Tensor,
@@ -392,7 +392,7 @@ def _master_in_place_op(
     maximize: bool,
     parameter_stochastic: bool,
     opt_state_stochastic: bool,
-    rounding_salt: int,
+    rounding_salt: torch.Tensor,
 ) -> None:
     adamw_master_out_raw(
         parameter,
@@ -462,12 +462,24 @@ def _scalar_arguments(
     maximize: bool,
     parameter_rounding: Rounding = "nearest",
     opt_state_rounding: Rounding = "nearest",
-    rounding_salt: int = 0,
-) -> tuple[float, float, float, float, float, float, bool, bool, bool, int]:
+    rounding_salt: int | torch.Tensor = 0,
+) -> tuple[
+    float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+    bool, bool, bool, torch.Tensor,
+]:
     def held(value: float | torch.Tensor) -> torch.Tensor:
         if isinstance(value, torch.Tensor):
             return value
         return torch.tensor(float(value), dtype=torch.float64)
+
+    if not isinstance(rounding_salt, torch.Tensor):
+        rounding_salt = torch.tensor(rounding_salt, dtype=torch.int64, device="cpu")
+    if (
+        rounding_salt.device.type != "cpu"
+        or rounding_salt.ndim != 0
+        or rounding_salt.dtype != torch.int64
+    ):
+        raise ValueError("rounding_salt must be an integer or a scalar CPU int64 tensor")
 
     for name, rounding in (
         ("parameter_rounding", parameter_rounding),
@@ -485,7 +497,7 @@ def _scalar_arguments(
         bool(maximize),
         parameter_rounding == "stochastic",
         opt_state_rounding == "stochastic",
-        int(rounding_salt),
+        rounding_salt,
     )
 
 
@@ -504,7 +516,7 @@ def functional_adamw(
     maximize: bool = False,
     parameter_rounding: Rounding = "nearest",
     opt_state_rounding: Rounding = "nearest",
-    rounding_salt: int = 0,
+    rounding_salt: int | torch.Tensor = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a new mixed-dtype AdamW state version."""
     return _functional_op(
@@ -542,7 +554,7 @@ def adamw(
     maximize: bool = False,
     parameter_rounding: Rounding = "nearest",
     opt_state_rounding: Rounding = "nearest",
-    rounding_salt: int = 0,
+    rounding_salt: int | torch.Tensor = 0,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Write one update to caller-owned storage-disjoint outputs."""
@@ -587,7 +599,7 @@ def adamw_(
     maximize: bool = False,
     parameter_rounding: Rounding = "nearest",
     opt_state_rounding: Rounding = "nearest",
-    rounding_salt: int = 0,
+    rounding_salt: int | torch.Tensor = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update a parameter-as-master and its optimizer state in place."""
     _in_place_op(
@@ -627,7 +639,7 @@ def functional_master_adamw(
     maximize: bool = False,
     parameter_rounding: Rounding = "nearest",
     opt_state_rounding: Rounding = "nearest",
-    rounding_salt: int = 0,
+    rounding_salt: int | torch.Tensor = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a new model/master/moment/step state version."""
     return _master_functional_op(
@@ -667,7 +679,7 @@ def master_adamw(
     maximize: bool = False,
     parameter_rounding: Rounding = "nearest",
     opt_state_rounding: Rounding = "nearest",
-    rounding_salt: int = 0,
+    rounding_salt: int | torch.Tensor = 0,
     out: tuple[
         torch.Tensor,
         torch.Tensor,
@@ -726,7 +738,7 @@ def master_adamw_(
     maximize: bool = False,
     parameter_rounding: Rounding = "nearest",
     opt_state_rounding: Rounding = "nearest",
-    rounding_salt: int = 0,
+    rounding_salt: int | torch.Tensor = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update distinct model/master state in place."""
     _master_in_place_op(

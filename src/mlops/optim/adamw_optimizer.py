@@ -69,9 +69,27 @@ class AdamW(torch.optim.Optimizer):
         }
         validate_adamw_options(defaults)
         super().__init__(params, defaults)
-        for group in self.param_groups:
-            hold_settings_on_host(group)
-            validate_adamw_options(group)
+
+    def add_param_group(self, param_group: dict[str, Any]) -> None:
+        offset = sum(len(group["params"]) for group in self.param_groups)
+        super().add_param_group(param_group)
+        group = self.param_groups[-1]
+        hold_settings_on_host(group)
+        validate_adamw_options(group)
+        # Independent host scalars are ordinary captured inputs. Constructing
+        # them in step() would specialize each graph to a literal parameter
+        # index; views into one vector would introduce shared storage instead.
+        group["rounding_salts"] = tuple(
+            torch.tensor(offset + index, dtype=torch.int64, device="cpu")
+            for index in range(len(group["params"]))
+        )
+
+    def state_dict(self) -> dict[str, Any]:
+        """Save update state; deterministic parameter salts are reconstructed."""
+        state = super().state_dict()
+        for group in state["param_groups"]:
+            group.pop("rounding_salts", None)
+        return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)
@@ -80,7 +98,14 @@ class AdamW(torch.optim.Optimizer):
         # state_dtype and state_rounding keeps its values under the current
         # names: defaulting them instead would quietly turn a stochastic
         # rounding of the moments into rounding to nearest.
+        offset = 0
         for group in self.param_groups:
+            if "rounding_salts" not in group:
+                group["rounding_salts"] = tuple(
+                    torch.tensor(offset + index, dtype=torch.int64, device="cpu")
+                    for index in range(len(group["params"]))
+                )
+            offset += len(group["params"])
             for saved, name in (
                 ("state_dtype", "opt_state_dtype"),
                 ("state_rounding", "opt_state_rounding"),
@@ -120,10 +145,10 @@ class AdamW(torch.optim.Optimizer):
         # it could have partitioned into one opaque task.
         # Each parameter's position is its stochastic rounding salt: the same
         # in every run over the same parameters, and its own stream of bits.
-        salt = -1
         for group in self.param_groups:
-            for parameter in group["params"]:
-                salt += 1
+            for parameter, salt in zip(
+                group["params"], group["rounding_salts"], strict=True
+            ):
                 if not parameter.requires_grad:
                     continue
                 gradient = parameter.grad
@@ -142,7 +167,6 @@ class AdamW(torch.optim.Optimizer):
                 state = self.state[parameter]
                 if not state:
                     self._initialize_parameter_state(parameter, group, state)
-                roundings = (group["parameter_rounding"], group["opt_state_rounding"])
                 common = {
                     "lr": group["lr"],
                     "betas": tuple(group["betas"]),
@@ -151,11 +175,7 @@ class AdamW(torch.optim.Optimizer):
                     "maximize": bool(group["maximize"]),
                     "parameter_rounding": group["parameter_rounding"],
                     "opt_state_rounding": group["opt_state_rounding"],
-                    # Only stochastic rounding reads the salt. It is a constant
-                    # of the update, so passing it otherwise would make every
-                    # parameter's update differ from every other's to anything
-                    # capturing the step.
-                    "rounding_salt": salt if "stochastic" in roundings else 0,
+                    "rounding_salt": salt,
                 }
                 adamw_(
                     parameter,

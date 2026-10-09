@@ -66,7 +66,7 @@ def _scalars(*, stochastic: bool = False):
         False,
         stochastic,
         stochastic,
-        7,
+        torch.tensor(7, dtype=torch.int64),
     )
 
 
@@ -499,7 +499,7 @@ def test_adamw_constructor_matches_torch_option_names_defaults_and_kinds():
     assert actual["opt_state_dtype"].default == torch.bfloat16
     assert actual["parameter_rounding"].default == "nearest"
     assert actual["opt_state_rounding"].default == "nearest"
-    assert AdamW.supports_parameter_sharding
+    assert AdamW.supports_flat_parameter_shards
     assert set(actual) == set(expected) | {
         "gradient_dtype",
         "opt_state_dtype",
@@ -958,10 +958,8 @@ def test_a_state_dict_saved_under_the_earlier_names_keeps_its_settings():
     assert restored.state[parameter]["exp_avg"].dtype == torch.float32
 
 
-def test_only_stochastic_rounding_gives_each_update_a_salt_of_its_own(monkeypatch):
-    """The salt is a constant of an update, and a capture tells updates apart
-    by their constants: rounded to nearest, which never reads it, every update
-    is given the same."""
+def test_each_update_uses_its_own_host_tensor_salt(monkeypatch):
+    """Salt values vary without specializing the captured task's structure."""
 
     import mlops.optim.adamw_optimizer as module
 
@@ -977,10 +975,55 @@ def test_only_stochastic_rounding_gives_each_update_a_salt_of_its_own(monkeypatc
         torch.nn.Parameter(torch.randn(64, device="cuda", dtype=torch.bfloat16))
         for _ in range(3)
     ]
-    for rounding, expected in (("nearest", [0, 0, 0]), ("stochastic", [0, 1, 2])):
+    for rounding in ("nearest", "stochastic"):
         salts.clear()
         optimizer = AdamW(parameters, opt_state_rounding=rounding)
         for parameter in parameters:
             parameter.grad = torch.randn_like(parameter)
         optimizer.step()
-        assert salts == expected
+        assert [int(salt) for salt in salts] == [0, 1, 2]
+        assert all(
+            salt.ndim == 0 and salt.device.type == "cpu" and salt.dtype == torch.int64
+            for salt in salts
+        )
+        assert len({salt.untyped_storage().data_ptr() for salt in salts}) == 3
+        assert all(
+            salt is held
+            for salt, held in zip(salts, optimizer.param_groups[0]["rounding_salts"])
+        )
+
+
+def test_salts_survive_group_addition_checkpoint_and_missing_gradients():
+    parameters = [
+        torch.nn.Parameter(torch.randn(257, device="cuda", dtype=torch.bfloat16))
+        for _ in range(3)
+    ]
+    optimizer = AdamW(
+        parameters[:2], parameter_rounding="stochastic", opt_state_rounding="stochastic"
+    )
+    held = optimizer.param_groups[0]["rounding_salts"]
+    optimizer.add_param_group({"params": parameters[2:]})
+    assert optimizer.param_groups[0]["rounding_salts"] is held
+    assert [int(v) for g in optimizer.param_groups for v in g["rounding_salts"]] == [0, 1, 2]
+    parameters[1].grad = torch.randn_like(parameters[1])
+    optimizer.step()
+    assert parameters[0] not in optimizer.state
+    assert parameters[2] not in optimizer.state
+    saved = optimizer.state_dict()
+    assert all("rounding_salts" not in group for group in saved["param_groups"])
+    assert optimizer.param_groups[0]["rounding_salts"] is held
+    restored_parameters = [torch.nn.Parameter(p.detach().clone()) for p in parameters]
+    restored = AdamW(
+        [{"params": restored_parameters[:2]}, {"params": restored_parameters[2:]}]
+    )
+    restored.load_state_dict(saved)
+    assert [int(v) for g in restored.param_groups for v in g["rounding_salts"]] == [0, 1, 2]
+    for original, replay in zip(parameters, restored_parameters, strict=True):
+        original.grad = torch.randn_like(original)
+        replay.grad = original.grad.clone()
+    optimizer.step()
+    restored.step()
+    for original, replay in zip(parameters, restored_parameters, strict=True):
+        torch.testing.assert_close(original, replay, rtol=0, atol=0)
+        for name, value in optimizer.state[original].items():
+            torch.testing.assert_close(value, restored.state[replay][name], rtol=0, atol=0)
