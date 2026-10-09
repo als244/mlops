@@ -126,6 +126,9 @@ another precision belongs to whatever holds the training state, which hands the
 optimizer the masters as its parameters -- with `gradient_dtype="parameter"`
 for masters whose gradients arrive at their dtype.
 
+Parameter-order rounding salts are derived metadata: checkpoints omit them, and
+loading reconstructs them without changing the next stochastic update.
+
 Each parameter's standard optimizer state contains scalar `step`, `exp_avg`,
 and `exp_avg_sq`. Frozen parameters and parameters without gradients are skipped.
 `step()` returns the optional closure result. Updates are enqueued on the current
@@ -175,9 +178,12 @@ eagerly and under anything capturing the step. Locally each parameter's salt
 is its position among the optimizer's parameters. An external engine that
 partitions these updates owns the mapping of elements to shards; changing that
 mapping can change stochastic rounding draws while preserving their unbiased
-rounding distribution. The salt is a constant of each update, so under stochastic rounding
-no two parameters' updates are the same to anything capturing the step;
-rounded to nearest, every update is given the same salt.
+rounding distribution. Salts are independent scalar CPU int64 tensors, created
+with the parameter groups and read only when the kernel launches. Their values
+are runtime inputs, so structurally identical updates can share compiled code
+and profiling even when their salts differ. Rounding to nearest ignores the salt.
+No global PyTorch RNG state is consumed; zero-LR diagnostic calls leave the step
+counter unchanged, so they also leave the next real rounding draw unchanged.
 
 Rounded stochastically, a stored value is rounded once. The
 [PyTorch-compatible kernel](#arithmetic-semantics) otherwise rounds the
@@ -214,7 +220,8 @@ scalar tensor, as described under
 [Settings a step can change](#settings-a-step-can-change); the registered
 operators take them as tensors, so a captured update reads them rather than
 folding them in. `parameter_rounding` and `opt_state_rounding` are as described
-under [Rounding](#rounding); `rounding_salt` picks the stream of random bits
+under [Rounding](#rounding); `rounding_salt` (an integer or scalar CPU int64
+tensor) picks the stream of random bits
 stochastic rounding draws from, and each tensor updated at a step needs its
 own.
 
