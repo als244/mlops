@@ -73,6 +73,7 @@ only their implementations unavailable.
 - [Raw kernel boundary](docs/KERNELS.md)
 - [Optimizer API reference](docs/OPTIMIZERS.md)
 - [Expert-parallel layers and GPU validation](docs/EXPERT_PARALLEL.md)
+- [GLM operations: KDA, sparse MLA, mHC and routing](docs/GLM.md)
 
 ## Repository layout
 
@@ -84,6 +85,7 @@ mlops/
 │   ├── dispatch/           registry, resolution, overrides, cost/gradcheck APIs
 │   ├── explicit/           public stateless forward/VJP entrypoints
 │   ├── expert_parallel/    optional Quack/TE MoE and LoRA layers
+│   ├── glm/                GLM building blocks and optional KDA/sparse-MLA kernels
 │   ├── kernels/            private raw Torch/Triton mechanics
 │   ├── optim/              PyTorch optimizers and functional/out=/in-place updates
 │   └── providers/          exact implementation adapters

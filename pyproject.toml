@@ -22,6 +22,8 @@ scattermoe = [
 tilelang = ["tilelang"]
 providers = ["mlops[fla,liger,scattermoe,tilelang]"]
 dev = ["pytest", "ruff"]
+# GLM KDA uses private FLA kernel interfaces; retain the tested versions.
+glm = ["flash-linear-attention==0.5.2", "fla-core==0.5.2", "tilelang==0.1.14"]
 # MoonEP is installed separately by scripts/setup_expert_parallel.sh: its
 # upstream metadata pins an older Cutlass DSL than the supported Quack stack.
 ep-quack = [
@@ -43,6 +45,9 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["mlops*"]
 
+[tool.setuptools.package-data]
+"mlops.glm" = ["provenance.json", "kernels/*LICENSE"]
+
 [tool.pytest.ini_options]
 markers = [
   "gpu: requires a CUDA device",
@@ -50,5 +55,6 @@ markers = [
 ]
 
 [tool.ruff]
+extend-exclude = ["tests/glm/references"]
 line-length = 88
 target-version = "py312"
