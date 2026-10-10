@@ -27,8 +27,9 @@ The package has two operation surfaces.
    `explicit.<operation>.backward(...)` are stateless, autograd-independent
    entrypoints for callers that already manage residual tensors.
 
-Model and block packages consume only the semantic functions exported from
-`mlops`. They do not import dispatch, provider, or kernel internals.
+Model and block packages consume public semantic functions from `mlops` or
+documented optional namespaces such as `mlops.glm`. They do not import
+dispatch, provider, or kernel internals.
 
 ## Optimizer surface
 
@@ -92,6 +93,7 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 | `src/mlops/providers/<source>/` | exact implementation adapters; opaque custom-op/fake/autograd registration |
 | `src/mlops/kernels/` | raw Torch/Triton mechanics; no selection or fallback |
 | `src/mlops/optim/` | standard optimizers plus functional, `out=`, and in-place update entrypoints |
+| `src/mlops/glm/` | optional GLM operations, autograd boundaries and attributed accelerator kernels; no model classes |
 | `src/mlops/bootstrap.py` | registers custom-op targets before artifact loading |
 
 `provider` is source metadata (`builtin`, `native_torch`, `liger`,
@@ -263,3 +265,12 @@ CPU contracts and reference math are tested in `tests/expert_parallel/`. The
 opt-in `expert_parallel` pytest gate launches bounded, isolated GPU workers from
 its `gpu/` directory and preserves per-case logs/results. The default suite skips
 these checks. See [configuration, installation and validation](EXPERT_PARALLEL.md).
+
+## Optional operation groups
+
+The GLM building blocks in `mlops.glm` use a dedicated optional namespace, like
+the expert-parallel layer package. They expose tensor functions with ordinary
+autograd and one implementation per operation. They do not add entries to the
+top-level implementation registry or explicit surface. This keeps FLA/TileLang
+dependencies lazy. Import `mlops.glm.bootstrap` when loading an artifact that
+contains its custom operators. Full model composition remains caller-owned.

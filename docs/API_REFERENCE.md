@@ -30,6 +30,12 @@ implementation ID, and constraint.
 `parameter_report`. [LoRA configuration and examples](LORA.md) describe target
 selection, frozen defaults, head loss, expert factors and memory accounting.
 
+## GLM building blocks
+
+`mlops.glm` provides KDA, NoPE sparse MLA, pooled indexing, mHC, routing
+and clipped activation functions. [GLM.md](GLM.md) describes their precision,
+metadata, dependency and autograd contracts.
+
 ## Optimizer APIs
 
 | Surface | Import | Use |
