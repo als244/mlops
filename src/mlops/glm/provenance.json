@@ -1,0 +1,41 @@
+{
+  "transformers": {
+    "url": "https://raw.githubusercontent.com/huggingface/transformers/536ecc007387a50e77603bb5d92100e9b07514cc/src/transformers/models/glm5_next/modeling_glm5_next.py",
+    "sha256": "caa38805e6bb7f8772b7016f98897ca0408090fd00c314ea6c8e63c543b586cf",
+    "bytes": 103722
+  },
+  "tilelang": {
+    "tilelang/sparse_mla_fwd.py": {
+      "url": "https://raw.githubusercontent.com/tile-ai/tilelang/194c1b897aa5269e9a89d44c88efdf578a3df620/examples/deepseek_v32/sparse_mla_fwd.py",
+      "sha256": "3c79a33636ec3c9cc50014e2b61b365143eba5d4cc34eed4a1ef057cbe072c30",
+      "bytes": 11784
+    },
+    "tilelang/sparse_mla_bwd.py": {
+      "url": "https://raw.githubusercontent.com/tile-ai/tilelang/194c1b897aa5269e9a89d44c88efdf578a3df620/examples/deepseek_v32/sparse_mla_bwd.py",
+      "sha256": "2d4e02717d42be6f22bb5288d972cc4903b845b573aaac2ff731bb9fdcbf0cbf",
+      "bytes": 13925
+    },
+    "tilelang/LICENSE": {
+      "url": "https://raw.githubusercontent.com/tile-ai/tilelang/194c1b897aa5269e9a89d44c88efdf578a3df620/LICENSE",
+      "sha256": "f70e5cdc24c3797af741930440086f9a0ad36930b05a3dfc25b420936dc2cfa1",
+      "bytes": 1283
+    }
+  },
+  "fla": {
+    "chunk_intra.py": {
+      "package": "flash-linear-attention",
+      "version": "0.5.2",
+      "sha256": "b59a1f2987d4577b139c774da698c934a7f72720c266d5fe48d8b331fd5eb750"
+    },
+    "chunk_bwd.py": {
+      "package": "flash-linear-attention",
+      "version": "0.5.2",
+      "sha256": "069395c9232647f5a4b82fa2dfe7ca077423016d4b641f2696f9d6328dc2e9be"
+    },
+    "chunk_fwd.py": {
+      "package": "flash-linear-attention",
+      "version": "0.5.2",
+      "sha256": "74a888a0b51fd94a8c950f91befaa3a2af3decf898fc178440ac143f8ab555f6"
+    }
+  }
+}
