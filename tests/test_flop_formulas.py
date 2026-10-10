@@ -367,7 +367,8 @@ def test_optimizer_updates_count_per_element(fake):
     state = tuple(_f32(10) for _ in range(4))
     step = _f32(1)
     scalars = tuple(torch.tensor(0.5, dtype=torch.float64) for _ in range(5))
-    static = (1.0, *scalars, False, False, False, 0)
+    rounding_salt = torch.tensor(0, dtype=torch.int64)
+    static = (1.0, *scalars, False, False, False, rounding_salt)
     assert _count(ops.adamw, *state, step, *static) == 200
     assert _count(ops.master_adamw, state[0], *state, step, *static) == 200
 
