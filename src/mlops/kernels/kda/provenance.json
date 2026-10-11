@@ -1,0 +1,19 @@
+{
+  "fla": {
+    "chunk_intra.py": {
+      "package": "flash-linear-attention",
+      "version": "0.5.2",
+      "sha256": "b59a1f2987d4577b139c774da698c934a7f72720c266d5fe48d8b331fd5eb750"
+    },
+    "chunk_bwd.py": {
+      "package": "flash-linear-attention",
+      "version": "0.5.2",
+      "sha256": "069395c9232647f5a4b82fa2dfe7ca077423016d4b641f2696f9d6328dc2e9be"
+    },
+    "chunk_fwd.py": {
+      "package": "flash-linear-attention",
+      "version": "0.5.2",
+      "sha256": "74a888a0b51fd94a8c950f91befaa3a2af3decf898fc178440ac143f8ab555f6"
+    }
+  }
+}

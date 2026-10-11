@@ -5,9 +5,14 @@ from __future__ import annotations
 import torch
 
 
-def gated_rms_norm_forward(x, gate, weight, eps):
+def gated_rms_norm_forward(x, gate, weight, eps, *, activation="silu"):
     x_float = x.float()
     rstd = torch.rsqrt(x_float.square().mean(-1) + float(eps))
+    if activation == "sigmoid":
+        output = (
+            (x_float * rstd.unsqueeze(-1)) * weight.float() * gate.float().sigmoid()
+        ).to(x.dtype)
+        return output, rstd
     output = (
         torch.nn.functional.silu(gate.float())
         * (x_float * rstd.unsqueeze(-1))
@@ -16,7 +21,7 @@ def gated_rms_norm_forward(x, gate, weight, eps):
     return output, rstd
 
 
-def fla_gated_rms_norm_forward(x, gate, weight, eps):
+def fla_gated_rms_norm_forward(x, gate, weight, eps, *, activation="silu"):
     from fla.modules.fused_norm_gate import layer_norm_gated_fwd
 
     shape = x.shape
@@ -25,14 +30,16 @@ def fla_gated_rms_norm_forward(x, gate, weight, eps):
         gate.reshape(-1, shape[-1]).contiguous(),
         weight,
         bias=None,
-        activation="swish",
+        activation=activation,
         eps=float(eps),
         is_rms_norm=True,
     )
     return output.reshape(shape), rstd
 
 
-def fla_gated_rms_norm_backward(grad_output, x, gate, weight, rstd, eps):
+def fla_gated_rms_norm_backward(
+    grad_output, x, gate, weight, rstd, eps, *, activation="silu"
+):
     from fla.modules.fused_norm_gate import layer_norm_gated_bwd
 
     shape = x.shape
@@ -42,7 +49,7 @@ def fla_gated_rms_norm_backward(grad_output, x, gate, weight, rstd, eps):
         g=gate.reshape(-1, shape[-1]).contiguous(),
         weight=weight,
         bias=None,
-        activation="swish",
+        activation=activation,
         eps=float(eps),
         rstd=rstd,
         is_rms_norm=True,

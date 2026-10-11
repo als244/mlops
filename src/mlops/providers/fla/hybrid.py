@@ -60,14 +60,10 @@ def _causal_support(x, weight, cumulative, chunk_indices=None, *, surface, **_kw
 
 def causal_forward(x, weight, cumulative, chunk_indices=None):
     with torch.no_grad():
-        return fla_causal_conv_forward(
-            x, weight, cumulative, chunk_indices
-        )
+        return fla_causal_conv_forward(x, weight, cumulative, chunk_indices)
 
 
-def causal_backward(
-    grad_output, x, weight, cumulative, chunk_indices=None
-):
+def causal_backward(grad_output, x, weight, cumulative, chunk_indices=None):
     with torch.no_grad():
         return fla_causal_conv_backward(
             grad_output, x, weight, cumulative, chunk_indices
@@ -80,9 +76,7 @@ def causal_apply(x, weight, cumulative, chunk_indices=None):
     return output.reshape_as(x)
 
 
-@torch.library.custom_op(
-    "mlops::causal_conv_silu_fla_fwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::causal_conv_silu_fla_fwd", mutates_args=())
 def _causal_forward_op(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -98,9 +92,7 @@ def _causal_forward_fake(x, weight, cumulative, chunk_indices=None):
     return torch.empty_like(x)
 
 
-@torch.library.custom_op(
-    "mlops::causal_conv_silu_fla_bwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::causal_conv_silu_fla_bwd", mutates_args=())
 def _causal_backward_op(
     grad_output: torch.Tensor,
     x: torch.Tensor,
@@ -108,15 +100,11 @@ def _causal_backward_op(
     cumulative: torch.Tensor,
     chunk_indices: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return causal_backward(
-        grad_output, x, weight, cumulative, chunk_indices
-    )
+    return causal_backward(grad_output, x, weight, cumulative, chunk_indices)
 
 
 @_causal_backward_op.register_fake
-def _causal_backward_fake(
-    grad_output, x, weight, cumulative, chunk_indices=None
-):
+def _causal_backward_fake(grad_output, x, weight, cumulative, chunk_indices=None):
     del grad_output, cumulative, chunk_indices
     return torch.empty_like(x), torch.empty_like(weight)
 
@@ -186,12 +174,8 @@ def l2_apply(x, eps=1e-6):
     return output
 
 
-@torch.library.custom_op(
-    "mlops::l2_norm_fla_fwd", mutates_args=()
-)
-def _l2_forward_op(
-    x: torch.Tensor, eps: float
-) -> tuple[torch.Tensor, torch.Tensor]:
+@torch.library.custom_op("mlops::l2_norm_fla_fwd", mutates_args=())
+def _l2_forward_op(x: torch.Tensor, eps: float) -> tuple[torch.Tensor, torch.Tensor]:
     return l2_forward(x, float(eps))
 
 
@@ -204,9 +188,7 @@ def _l2_forward_fake(x, eps):
     )
 
 
-@torch.library.custom_op(
-    "mlops::l2_norm_fla_bwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::l2_norm_fla_bwd", mutates_args=())
 def _l2_backward_op(
     grad_output: torch.Tensor,
     output: torch.Tensor,
@@ -247,57 +229,54 @@ def _l2_autograd_backward(ctx, grad_output, _grad_rstd):
     return _l2_backward_op(grad_output, output, rstd, ctx.eps), None
 
 
-_l2_forward_op.register_autograd(
-    _l2_autograd_backward, setup_context=_setup_l2_context
-)
+_l2_forward_op.register_autograd(_l2_autograd_backward, setup_context=_setup_l2_context)
 
 
-def _gated_support(x, gate, weight, _eps=1e-5, *, surface, **_kwargs):
+def _gated_support(
+    x, gate, weight, _eps=1e-5, *, surface, activation="silu", **_kwargs
+):
     del surface
     return _cuda_support(x, gate, weight)
 
 
-def gated_forward(x, gate, weight, eps=1e-5):
+def gated_forward(x, gate, weight, eps=1e-5, *, activation="silu"):
     with torch.no_grad():
-        return fla_gated_rms_norm_forward(x, gate, weight, float(eps))
-
-
-def gated_backward(grad_output, x, gate, weight, rstd, eps=1e-5):
-    with torch.no_grad():
-        return fla_gated_rms_norm_backward(
-            grad_output, x, gate, weight, rstd, float(eps)
+        return fla_gated_rms_norm_forward(
+            x, gate, weight, float(eps), activation=activation
         )
 
 
-def gated_apply(x, gate, weight, eps=1e-5):
-    output, _rstd = _gated_forward_op(x, gate, weight, float(eps))
+def gated_backward(grad_output, x, gate, weight, rstd, eps=1e-5, *, activation="silu"):
+    with torch.no_grad():
+        return fla_gated_rms_norm_backward(
+            grad_output, x, gate, weight, rstd, float(eps), activation=activation
+        )
+
+
+def gated_apply(x, gate, weight, eps=1e-5, *, activation="silu"):
+    output, _rstd = _gated_forward_op(x, gate, weight, float(eps), activation)
     return output
 
 
-@torch.library.custom_op(
-    "mlops::gated_rms_norm_fla_fwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::gated_rms_norm_fla_fwd", mutates_args=())
 def _gated_forward_op(
     x: torch.Tensor,
     gate: torch.Tensor,
     weight: torch.Tensor,
     eps: float,
+    activation: str = "silu",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return gated_forward(x, gate, weight, float(eps))
+    return gated_forward(x, gate, weight, float(eps), activation=activation)
 
 
 @_gated_forward_op.register_fake
-def _gated_forward_fake(x, gate, weight, eps):
+def _gated_forward_fake(x, gate, weight, eps, activation="silu"):
     del gate, weight, eps
     rows = x.numel() // x.shape[-1]
-    return torch.empty_like(x), torch.empty(
-        rows, dtype=torch.float32, device=x.device
-    )
+    return torch.empty_like(x), torch.empty(rows, dtype=torch.float32, device=x.device)
 
 
-@torch.library.custom_op(
-    "mlops::gated_rms_norm_fla_bwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::gated_rms_norm_fla_bwd", mutates_args=())
 def _gated_backward_op(
     grad_output: torch.Tensor,
     x: torch.Tensor,
@@ -305,32 +284,50 @@ def _gated_backward_op(
     weight: torch.Tensor,
     rstd: torch.Tensor,
     eps: float,
+    activation: str = "silu",
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return gated_backward(grad_output, x, gate, weight, rstd, float(eps))
+    return gated_backward(
+        grad_output, x, gate, weight, rstd, float(eps), activation=activation
+    )
 
 
 @_gated_backward_op.register_fake
-def _gated_backward_fake(grad_output, x, gate, weight, rstd, eps):
+def _gated_backward_fake(grad_output, x, gate, weight, rstd, eps, activation="silu"):
     del grad_output, rstd, eps
     return torch.empty_like(x), torch.empty_like(gate), torch.empty_like(weight)
 
 
 @flop_formula(_gated_forward_op)
-def _gated_forward_flops(x, gate, weight, eps, *, out_val=None, **_kwargs):
+def _gated_forward_flops(
+    x, gate, weight, eps, activation="silu", *, out_val=None, **_kwargs
+):
     del out_val
-    return logical.gated_rms_norm(x, gate, weight, eps, entrypoint="forward").logical_flops
+    return logical.gated_rms_norm(
+        x, gate, weight, eps, activation=activation, entrypoint="forward"
+    ).logical_flops
 
 
 @flop_formula(_gated_backward_op)
 def _gated_backward_flops(
-    grad_output, x, gate, weight, rstd, eps, *, out_val=None, **_kwargs
+    grad_output,
+    x,
+    gate,
+    weight,
+    rstd,
+    eps,
+    activation="silu",
+    *,
+    out_val=None,
+    **_kwargs,
 ):
     del grad_output, rstd, out_val
-    return logical.gated_rms_norm(x, gate, weight, eps, entrypoint="backward").logical_flops
+    return logical.gated_rms_norm(
+        x, gate, weight, eps, activation=activation, entrypoint="backward"
+    ).logical_flops
 
 
 def _setup_gated_context(ctx, inputs, output):
-    x, gate, weight, eps = inputs
+    x, gate, weight, eps, ctx.activation = inputs
     _normalized, rstd = output
     ctx.save_for_backward(x, gate, weight, rstd)
     ctx.eps = eps
@@ -340,9 +337,9 @@ def _setup_gated_context(ctx, inputs, output):
 def _gated_autograd_backward(ctx, grad_output, _grad_rstd):
     x, gate, weight, rstd = ctx.saved_tensors
     gradients = _gated_backward_op(
-        grad_output, x, gate, weight, rstd, ctx.eps
+        grad_output, x, gate, weight, rstd, ctx.eps, ctx.activation
     )
-    return (*gradients, None)
+    return (*gradients, None, None)
 
 
 _gated_forward_op.register_autograd(
@@ -376,7 +373,9 @@ def _linear_support(
     if chunk_indices.dtype != torch.int64 or (
         chunk_indices.ndim != 2 or chunk_indices.shape[1] != 2
     ):
-        return SupportResult.no("chunk_indices must have shape [chunks, 2] and dtype INT64")
+        return SupportResult.no(
+            "chunk_indices must have shape [chunks, 2] and dtype INT64"
+        )
     if (cumulative.numel() == 0) != (chunk_indices.numel() == 0):
         return SupportResult.no("single-sequence metadata is empty in both tensors")
     return SupportResult.yes()
@@ -386,26 +385,36 @@ def linear_forward(
     q, k, v, beta, a, a_log, dt_bias, cumulative, chunk_indices, *, scale
 ):
     with torch.no_grad():
-        output, gate, matrix = (
-            fla_linear_attention_forward(
-                q,
-                k,
-                v,
-                beta,
-                a,
-                a_log,
-                dt_bias,
-                cumulative,
-                chunk_indices,
-                float(scale),
-            )
+        output, gate, matrix = fla_linear_attention_forward(
+            q,
+            k,
+            v,
+            beta,
+            a,
+            a_log,
+            dt_bias,
+            cumulative,
+            chunk_indices,
+            float(scale),
         )
         return output, gate, matrix
 
 
 def linear_backward(
-    grad_output, q, k, v, beta, a, a_log, dt_bias, gate, matrix,
-    cumulative, chunk_indices, *, scale,
+    grad_output,
+    q,
+    k,
+    v,
+    beta,
+    a,
+    a_log,
+    dt_bias,
+    gate,
+    matrix,
+    cumulative,
+    chunk_indices,
+    *,
+    scale,
 ):
     with torch.no_grad():
         sequence_metadata = None if cumulative.numel() == 0 else cumulative
@@ -520,8 +529,13 @@ def _linear_backward_op(
     chunk_indices: torch.Tensor,
     scale: float,
 ) -> tuple[
-    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-    torch.Tensor, torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
 ]:
     return linear_backward(
         grad_output,
@@ -542,8 +556,19 @@ def _linear_backward_op(
 
 @_linear_backward_op.register_fake
 def _linear_backward_fake(
-    grad_output, q, k, v, beta, a, a_log, dt_bias, gate, matrix,
-    cumulative, chunk_indices, scale,
+    grad_output,
+    q,
+    k,
+    v,
+    beta,
+    a,
+    a_log,
+    dt_bias,
+    gate,
+    matrix,
+    cumulative,
+    chunk_indices,
+    scale,
 ):
     del grad_output, gate, matrix, cumulative, chunk_indices, scale
     return (
@@ -559,24 +584,63 @@ def _linear_backward_fake(
 
 @flop_formula(_linear_forward_op)
 def _linear_forward_flops(
-    q, k, v, beta, a, a_log, dt_bias, cumulative, chunk_indices, *_rest,
-    out_val=None, **_kwargs,
+    q,
+    k,
+    v,
+    beta,
+    a,
+    a_log,
+    dt_bias,
+    cumulative,
+    chunk_indices,
+    *_rest,
+    out_val=None,
+    **_kwargs,
 ):
     del out_val
     return logical.linear_attention(
-        q, k, v, beta, a, a_log, dt_bias, cumulative, chunk_indices,
+        q,
+        k,
+        v,
+        beta,
+        a,
+        a_log,
+        dt_bias,
+        cumulative,
+        chunk_indices,
         entrypoint="forward",
     ).logical_flops
 
 
 @flop_formula(_linear_backward_op)
 def _linear_backward_flops(
-    grad_output, q, k, v, beta, a, a_log, dt_bias, gate, matrix, cumulative,
-    chunk_indices, *_rest, out_val=None, **_kwargs,
+    grad_output,
+    q,
+    k,
+    v,
+    beta,
+    a,
+    a_log,
+    dt_bias,
+    gate,
+    matrix,
+    cumulative,
+    chunk_indices,
+    *_rest,
+    out_val=None,
+    **_kwargs,
 ):
     del grad_output, gate, matrix, out_val
     return logical.linear_attention(
-        q, k, v, beta, a, a_log, dt_bias, cumulative, chunk_indices,
+        q,
+        k,
+        v,
+        beta,
+        a,
+        a_log,
+        dt_bias,
+        cumulative,
+        chunk_indices,
         entrypoint="backward",
     ).logical_flops
 
@@ -592,9 +656,7 @@ def _setup_linear_context(ctx, inputs, output):
 
 
 def _linear_autograd_backward(ctx, grad_output, _grad_gate, _grad_matrix):
-    gradients = _linear_backward_op(
-        grad_output, *ctx.saved_tensors, ctx.scale
-    )
+    gradients = _linear_backward_op(grad_output, *ctx.saved_tensors, ctx.scale)
     return (*gradients, None, None, None)
 
 
@@ -607,20 +669,48 @@ IMPLEMENTATIONS = tuple(
     register_implementation(implementation)
     for implementation in (
         Implementation(
-            "causal_conv_silu", "fla.causal_conv_silu", "fla", 100, True,
-            _causal_support, causal_apply, causal_forward, causal_backward,
+            "causal_conv_silu",
+            "fla.causal_conv_silu",
+            "fla",
+            100,
+            True,
+            _causal_support,
+            causal_apply,
+            causal_forward,
+            causal_backward,
         ),
         Implementation(
-            "l2_norm", "fla.l2_norm", "fla", 100, True,
-            _l2_support, l2_apply, l2_forward, l2_backward,
+            "l2_norm",
+            "fla.l2_norm",
+            "fla",
+            100,
+            True,
+            _l2_support,
+            l2_apply,
+            l2_forward,
+            l2_backward,
         ),
         Implementation(
-            "gated_rms_norm", "fla.gated_rms_norm", "fla", 100, True,
-            _gated_support, gated_apply, gated_forward, gated_backward,
+            "gated_rms_norm",
+            "fla.gated_rms_norm",
+            "fla",
+            100,
+            True,
+            _gated_support,
+            gated_apply,
+            gated_forward,
+            gated_backward,
         ),
         Implementation(
-            "linear_attention", "fla.linear_attention.gated_delta_rule", "fla", 100, True,
-            _linear_support, linear_apply, linear_forward, linear_backward,
+            "linear_attention",
+            "fla.linear_attention.gated_delta_rule",
+            "fla",
+            100,
+            True,
+            _linear_support,
+            linear_apply,
+            linear_forward,
+            linear_backward,
         ),
     )
 )

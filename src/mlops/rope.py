@@ -1,4 +1,4 @@
-"""Model-facing Llama RoPE semantic façade."""
+"""Public rotate-half rotary position operation."""
 
 from __future__ import annotations
 

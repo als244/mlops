@@ -235,7 +235,7 @@ optimizer update, outside the MoE forward/backward definition.
 The implementation exposes ordinary component tensors through PyTorch's tensor
 flatten/unflatten protocol. Integrations must account for all components and
 preserve the logical parameter gradient, rather than differentiating integer
-payloads as separate parameters. These contracts require no ShadowSpill imports.
+payloads as separate parameters.
 
 ## LoRA
 

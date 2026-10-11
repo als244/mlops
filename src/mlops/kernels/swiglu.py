@@ -8,7 +8,7 @@ try:
     import triton
     import triton.language as tl
     from triton.language.extra import libdevice
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     triton = None
     tl = None
     libdevice = None
@@ -20,11 +20,26 @@ _BLOCK = 1024
 if triton is not None:
 
     @triton.jit
-    def _forward_kernel(gate_ptr, up_ptr, output_ptr, size, BLOCK: tl.constexpr):
+    def _forward_kernel(
+        gate_ptr,
+        up_ptr,
+        output_ptr,
+        size,
+        BLOCK: tl.constexpr,
+        LIMIT: tl.constexpr = None,
+    ):
         offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         mask = offsets < size
         gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         up = tl.load(up_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        if LIMIT is not None:
+            limit = (
+                tl.full((), LIMIT, tl.float32)
+                .to(gate_ptr.dtype.element_ty)
+                .to(tl.float32)
+            )
+            gate = tl.minimum(gate, limit)
+            up = tl.minimum(tl.maximum(up, -limit), limit)
         silu = gate * tl.sigmoid(gate)
         silu = silu.to(output_ptr.dtype.element_ty).to(tl.float32)
         tl.store(
@@ -42,11 +57,21 @@ if triton is not None:
         grad_up_ptr,
         size,
         BLOCK: tl.constexpr,
+        LIMIT: tl.constexpr = None,
     ):
         offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         mask = offsets < size
         gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         up = tl.load(up_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        raw_gate, raw_up = gate, up
+        if LIMIT is not None:
+            limit = (
+                tl.full((), LIMIT, tl.float32)
+                .to(gate_ptr.dtype.element_ty)
+                .to(tl.float32)
+            )
+            gate = tl.minimum(gate, limit)
+            up = tl.minimum(tl.maximum(up, -limit), limit)
         grad = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         # Match PyTorch CUDA: accurate expf plus round-to-nearest division.
         sigmoid = libdevice.div_rn(1.0, 1.0 + libdevice.exp(-gate))
@@ -58,6 +83,9 @@ if triton is not None:
         #   (dy * sigmoid) * (1 + x * (1 - sigmoid))
         grad_gate = (grad_silu * sigmoid) * (1.0 + gate * (1.0 - sigmoid))
         grad_up = grad * silu
+        if LIMIT is not None:
+            grad_gate = tl.where(raw_gate <= limit, grad_gate, 0)
+            grad_up = tl.where((raw_up >= -limit) & (raw_up <= limit), grad_up, 0)
         tl.store(
             grad_gate_ptr + offsets,
             grad_gate.to(grad_gate_ptr.dtype.element_ty),
@@ -79,12 +107,22 @@ if triton is not None:
         size,
         REFERENCE_CASTS: tl.constexpr,
         BLOCK: tl.constexpr,
+        LIMIT: tl.constexpr = None,
     ):
         """Historical pre-fix kernel, retained only for ablation studies."""
         offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         mask = offsets < size
         gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         up = tl.load(up_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        raw_gate, raw_up = gate, up
+        if LIMIT is not None:
+            limit = (
+                tl.full((), LIMIT, tl.float32)
+                .to(gate_ptr.dtype.element_ty)
+                .to(tl.float32)
+            )
+            gate = tl.minimum(gate, limit)
+            up = tl.minimum(tl.maximum(up, -limit), limit)
         grad = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         sigmoid = tl.sigmoid(gate)
         silu = gate * sigmoid
@@ -94,6 +132,9 @@ if triton is not None:
             grad_silu = grad_silu.to(grad_gate_ptr.dtype.element_ty).to(tl.float32)
         grad_gate = grad_silu * (sigmoid * (1.0 + gate * (1.0 - sigmoid)))
         grad_up = grad * silu
+        if LIMIT is not None:
+            grad_gate = tl.where(raw_gate <= limit, grad_gate, 0)
+            grad_up = tl.where((raw_up >= -limit) & (raw_up <= limit), grad_up, 0)
         tl.store(
             grad_gate_ptr + offsets,
             grad_gate.to(grad_gate_ptr.dtype.element_ty),
@@ -107,7 +148,12 @@ if triton is not None:
 
     @triton.jit
     def _packed_forward_kernel(
-        packed_ptr, output_ptr, rows, width, BLOCK: tl.constexpr
+        packed_ptr,
+        output_ptr,
+        rows,
+        width,
+        BLOCK: tl.constexpr,
+        LIMIT: tl.constexpr = None,
     ):
         row = tl.program_id(0).to(tl.int64)
         block = tl.program_id(1).to(tl.int64)
@@ -116,6 +162,14 @@ if triton is not None:
         base = packed_ptr + row * (2 * width)
         gate = tl.load(base + columns, mask=mask, other=0.0).to(tl.float32)
         up = tl.load(base + width + columns, mask=mask, other=0.0).to(tl.float32)
+        if LIMIT is not None:
+            limit = (
+                tl.full((), LIMIT, tl.float32)
+                .to(packed_ptr.dtype.element_ty)
+                .to(tl.float32)
+            )
+            gate = tl.minimum(gate, limit)
+            up = tl.minimum(tl.maximum(up, -limit), limit)
         silu = (gate * tl.sigmoid(gate)).to(output_ptr.dtype.element_ty).to(tl.float32)
         tl.store(
             output_ptr + row * width + columns,
@@ -131,6 +185,7 @@ if triton is not None:
         rows,
         width,
         BLOCK: tl.constexpr,
+        LIMIT: tl.constexpr = None,
     ):
         row = tl.program_id(0).to(tl.int64)
         block = tl.program_id(1).to(tl.int64)
@@ -139,6 +194,15 @@ if triton is not None:
         base = packed_ptr + row * (2 * width)
         gate = tl.load(base + columns, mask=mask, other=0.0).to(tl.float32)
         up = tl.load(base + width + columns, mask=mask, other=0.0).to(tl.float32)
+        raw_gate, raw_up = gate, up
+        if LIMIT is not None:
+            limit = (
+                tl.full((), LIMIT, tl.float32)
+                .to(packed_ptr.dtype.element_ty)
+                .to(tl.float32)
+            )
+            gate = tl.minimum(gate, limit)
+            up = tl.minimum(tl.maximum(up, -limit), limit)
         grad = tl.load(grad_ptr + row * width + columns, mask=mask, other=0.0).to(
             tl.float32
         )
@@ -149,6 +213,9 @@ if triton is not None:
         grad_silu = grad_silu.to(grad_packed_ptr.dtype.element_ty).to(tl.float32)
         grad_gate = (grad_silu * sigmoid) * (1.0 + gate * (1.0 - sigmoid))
         grad_up = grad * silu
+        if LIMIT is not None:
+            grad_gate = tl.where(raw_gate <= limit, grad_gate, 0)
+            grad_up = tl.where((raw_up >= -limit) & (raw_up <= limit), grad_up, 0)
         grad_base = grad_packed_ptr + row * (2 * width)
         tl.store(
             grad_base + columns,
@@ -170,6 +237,7 @@ if triton is not None:
         width,
         REFERENCE_CASTS: tl.constexpr,
         BLOCK: tl.constexpr,
+        LIMIT: tl.constexpr = None,
     ):
         """Packed form of the historical pre-fix backward kernel."""
         row = tl.program_id(0).to(tl.int64)
@@ -179,6 +247,15 @@ if triton is not None:
         base = packed_ptr + row * (2 * width)
         gate = tl.load(base + columns, mask=mask, other=0.0).to(tl.float32)
         up = tl.load(base + width + columns, mask=mask, other=0.0).to(tl.float32)
+        raw_gate, raw_up = gate, up
+        if LIMIT is not None:
+            limit = (
+                tl.full((), LIMIT, tl.float32)
+                .to(packed_ptr.dtype.element_ty)
+                .to(tl.float32)
+            )
+            gate = tl.minimum(gate, limit)
+            up = tl.minimum(tl.maximum(up, -limit), limit)
         grad = tl.load(grad_ptr + row * width + columns, mask=mask, other=0.0).to(
             tl.float32
         )
@@ -190,6 +267,9 @@ if triton is not None:
             grad_silu = grad_silu.to(grad_packed_ptr.dtype.element_ty).to(tl.float32)
         grad_gate = grad_silu * (sigmoid * (1.0 + gate * (1.0 - sigmoid)))
         grad_up = grad * silu
+        if LIMIT is not None:
+            grad_gate = tl.where(raw_gate <= limit, grad_gate, 0)
+            grad_up = tl.where((raw_up >= -limit) & (raw_up <= limit), grad_up, 0)
         grad_base = grad_packed_ptr + row * (2 * width)
         tl.store(
             grad_base + columns,
@@ -209,15 +289,17 @@ def _can_use_triton(*tensors: torch.Tensor) -> bool:
     )
 
 
-def swiglu_forward(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+def swiglu_forward(gate: torch.Tensor, up: torch.Tensor, *, limit=None) -> torch.Tensor:
     if gate.shape != up.shape:
         raise ValueError(f"SwiGLU inputs differ: {gate.shape} vs {up.shape}")
     output = torch.empty_like(gate)
     if _can_use_triton(gate, up):
         _forward_kernel[(triton.cdiv(gate.numel(), _BLOCK),)](
-            gate, up, output, gate.numel(), BLOCK=_BLOCK
+            gate, up, output, gate.numel(), BLOCK=_BLOCK, LIMIT=limit
         )
         return output
+    if limit is not None:
+        gate, up = gate.clamp(max=limit), up.clamp(-limit, limit)
     return torch.nn.functional.silu(gate.float()).to(gate.dtype) * up
 
 
@@ -227,6 +309,7 @@ def swiglu_backward(
     up: torch.Tensor,
     *,
     variant: str,
+    limit=None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     grad_output = grad_output.contiguous()
     grad_gate = torch.empty_like(gate)
@@ -243,6 +326,7 @@ def swiglu_backward(
                 gate.numel(),
                 REFERENCE_CASTS=True,
                 BLOCK=_BLOCK,
+                LIMIT=limit,
             )
         else:
             _backward_kernel[grid](
@@ -253,9 +337,13 @@ def swiglu_backward(
                 grad_up,
                 gate.numel(),
                 BLOCK=_BLOCK,
+                LIMIT=limit,
             )
         return grad_gate, grad_up
 
+    raw_gate, raw_up = gate, up
+    if limit is not None:
+        gate, up = gate.clamp(max=limit), up.clamp(-limit, limit)
     gate_float = gate.float()
     sigmoid = torch.sigmoid(gate_float)
     grad_float = grad_output.float()
@@ -267,22 +355,26 @@ def swiglu_backward(
         grad_gate_value = (grad_silu * sigmoid) * (1.0 + gate_float * (1.0 - sigmoid))
     grad_gate.copy_(grad_gate_value.to(gate.dtype))
     grad_up.copy_((grad_float * silu).to(up.dtype))
+    if limit is not None:
+        grad_gate.masked_fill_(raw_gate > limit, 0)
+        grad_up.masked_fill_((raw_up < -limit) | (raw_up > limit), 0)
     return grad_gate, grad_up
 
 
-def swiglu_packed_forward(packed: torch.Tensor) -> torch.Tensor:
-    rows, twice_width = packed.shape
+def swiglu_packed_forward(packed: torch.Tensor, *, limit=None) -> torch.Tensor:
+    twice_width = packed.shape[-1]
+    rows = packed.numel() // twice_width
     width = twice_width // 2
     if twice_width != 2 * width:
         raise ValueError("packed SwiGLU width must be even")
-    output = torch.empty((rows, width), dtype=packed.dtype, device=packed.device)
+    output = packed.new_empty((*packed.shape[:-1], width))
     if triton is not None and packed.is_cuda and packed.is_contiguous():
         _packed_forward_kernel[(rows, triton.cdiv(width, _BLOCK))](
-            packed, output, rows, width, BLOCK=_BLOCK
+            packed, output, rows, width, BLOCK=_BLOCK, LIMIT=limit
         )
         return output
     return swiglu_forward(
-        packed[:, :width].contiguous(), packed[:, width:].contiguous()
+        packed[..., :width].contiguous(), packed[..., width:].contiguous(), limit=limit
     )
 
 
@@ -291,6 +383,7 @@ def swiglu_packed_backward(
     packed: torch.Tensor,
     *,
     variant: str,
+    limit=None,
 ) -> torch.Tensor:
     grad_packed = torch.empty_like(packed)
     return swiglu_packed_backward_out(
@@ -298,6 +391,7 @@ def swiglu_packed_backward(
         packed,
         grad_packed,
         variant=variant,
+        limit=limit,
     )
 
 
@@ -307,6 +401,7 @@ def swiglu_packed_backward_out(
     grad_packed: torch.Tensor,
     *,
     variant: str,
+    limit=None,
 ) -> torch.Tensor:
     """Write the packed VJP into caller-owned storage.
 
@@ -318,7 +413,8 @@ def swiglu_packed_backward_out(
     either disjoint destination half.  Callers remain responsible for proving
     that no later consumer needs the original packed values.
     """
-    rows, twice_width = packed.shape
+    twice_width = packed.shape[-1]
+    rows = packed.numel() // twice_width
     width = twice_width // 2
     if (
         grad_packed.shape != packed.shape
@@ -339,6 +435,7 @@ def swiglu_packed_backward_out(
                 width,
                 REFERENCE_CASTS=True,
                 BLOCK=_BLOCK,
+                LIMIT=limit,
             )
         else:
             _packed_backward_kernel[grid](
@@ -348,20 +445,22 @@ def swiglu_packed_backward_out(
                 rows,
                 width,
                 BLOCK=_BLOCK,
+                LIMIT=limit,
             )
         return grad_packed
     # Compute the fallback values before writing either source half so the
     # same alias-safe contract holds without Triton.
-    gate = packed[:, :width].contiguous()
-    up = packed[:, width:].contiguous()
+    gate = packed[..., :width].contiguous()
+    up = packed[..., width:].contiguous()
     gate_grad, up_grad = swiglu_backward(
         grad_output,
         gate,
         up,
         variant=variant,
+        limit=limit,
     )
-    grad_packed[:, :width].copy_(gate_grad)
-    grad_packed[:, width:].copy_(up_grad)
+    grad_packed[..., :width].copy_(gate_grad)
+    grad_packed[..., width:].copy_(up_grad)
     return grad_packed
 
 

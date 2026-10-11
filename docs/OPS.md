@@ -7,22 +7,23 @@ boundaries.
 
 ## Contents
 
-1. [API scope](#api-scope)
-2. [Reference-entry format](#reference-entry-format)
-3. [Tensor conventions](#tensor-conventions)
-4. [Quick index](#quick-index)
-5. [Embedding](#embedding)
-6. [Normalization and activations](#normalization-and-activations)
-7. [Rotary position operations](#rotary-position-operations)
-8. [Dense and latent attention](#dense-and-latent-attention)
-9. [DSA indexing and selected attention](#dsa-indexing-and-selected-attention)
-10. [Hybrid linear-attention operations](#hybrid-linear-attention-operations)
-11. [Mixture of experts](#mixture-of-experts)
-12. [Language-model epilogues](#language-model-epilogues)
-13. [Implementation-control API](#implementation-control-api)
-14. [Private dispatcher boundary](#private-dispatcher-boundary)
-15. [Operation-package example](#operation-package-example)
-16. [Explicit operations](#explicit-operations)
+- [API scope](#api-scope)
+- [Reference-entry format](#reference-entry-format)
+- [Tensor conventions](#tensor-conventions)
+- [Quick index](#quick-index)
+- [Embedding](#embedding)
+- [Normalization and activations](#normalization-and-activations)
+- [Rotary position operations](#rotary-position-operations)
+- [Dense and latent attention](#dense-and-latent-attention)
+- [DSA indexing and selected attention](#dsa-indexing-and-selected-attention)
+- [Hybrid linear-attention operations](#hybrid-linear-attention-operations)
+- [Mixture of experts](#mixture-of-experts)
+- [Hyper-connections](#hyper-connections)
+- [Language-model epilogues](#language-model-epilogues)
+- [Implementation-control API](#implementation-control-api)
+- [Private dispatcher boundary](#private-dispatcher-boundary)
+- [Operation-package example](#operation-package-example)
+- [Explicit operations](#explicit-operations)
 
 ## API scope
 
@@ -30,6 +31,7 @@ The stable model-facing import surface is:
 
 ```python
 from mlops import (
+    build_rope_tables,
     causal_conv_silu,
     cross_entropy,
     dsa_attention,
@@ -40,20 +42,29 @@ from mlops import (
     gated_rms_norm,
     gelu,
     head_loss,
-    lora_head_loss,
     index_scores,
+    kda_decay,
+    kimi_delta_attention,
     l2_norm,
     layer_norm,
     linear_attention,
     linear_mixer,
+    lora_head_loss,
+    mhc_coefficients,
+    mhc_combine,
+    mhc_normalize_streams,
     mla_attention,
     moe,
     packed_swiglu,
     partial_rope,
+    pooled_topk,
     prepare_packed_sequence_metadata,
     rms_norm,
     rope,
     selection_mask,
+    sigmoid_topk,
+    sparse_latent_attention,
+    sparse_mla,
     swiglu,
     topk_indices,
 )
@@ -157,13 +168,23 @@ replay is correct.
 | `swiglu`, `packed_swiglu` | activation | `[...,F]` | `builtin.*.triton` |
 | `gelu` | activation | shape of input | `builtin.gelu.aten_explicit_backward` |
 | `rope`, `partial_rope` | position | shape of input | `builtin.*.triton` |
+| `build_rope_tables` | reusable position tables | FP32 cosine/sine `[rows,rotary_dim]` | construction helper |
 | `flash_attention` | dense attention | `[T,Hq,Dh]` | `builtin.flash_attention.aten` |
 | `mla_attention` | latent attention | `[T,Hq,Dv]` | `builtin.mla_attention.flash` |
 | `index_scores`, `topk_indices` | DSA selection | `[T,T]`, `[T,K]` | `builtin.index_scores.einsum` / not dispatched |
+| `dsa_indexer_key_norm` | indexer normalization | shape of key | `builtin.dsa_indexer_key_norm.layer_norm` |
+| `selection_mask` | selected causal mask | FP32 `[query_rows,key_rows]`, 0 or -inf | construction helper |
+| `dsa_selection_override` | diagnostic selection | context manager | caller-supplied selection |
 | `dsa_attention` | selected attention | `[T,Hq,Dv]` | `builtin.dsa_attention.sparse` |
+| `sparse_latent_attention`, `sparse_mla` | tied-latent attention / composition | `[T,H,L]` / `[T,H,Dv]` | `builtin.sparse_latent_attention.tilelang` / composed |
+| `pooled_topk` | pooled causal selection | `[T,K+pool_size-1]` | `builtin.pooled_topk.tiled` |
+| `kimi_delta_attention`, `kda_decay` | recurrent attention / FP32 decay | `[T,H,D]` | `fla.kimi_delta_attention.chunk` / composed |
+| `sigmoid_topk` | expert selection | IDs and weights `[T,K]` | composed PyTorch |
+| `mhc_normalize_streams`, `mhc_coefficients`, `mhc_combine` | residual streams | normalized streams / coefficients / mixed streams | composed PyTorch |
 | `causal_conv_silu` | hybrid mixer | shape of input | `fla.causal_conv_silu` |
 | `linear_attention` | hybrid mixer | shape of V | `fla.linear_attention.gated_delta_rule` |
 | `linear_mixer` | graph-layout policy | shape of hidden | `builtin.linear_mixer.packed` |
+| `prepare_packed_sequence_metadata` | reusable sequence metadata | cumulative lengths and chunk indices | construction helper |
 | `moe` | routed experts | output + diagnostics | `builtin.moe.grouped_gemm_composed` |
 | `cross_entropy` | training loss | FP32 `[R]` or scalar | `builtin.cross_entropy.triton` |
 | `head_loss` | bounded-logits training epilogue | FP32 scalar | `builtin.head_loss.chunked` |
@@ -383,20 +404,20 @@ gated_rms_norm(
     gate: Tensor,
     weight: Tensor,
     eps: float = 1e-5,
+    *, activation: str = "silu",
 ) -> Tensor
 ```
 
 **Purpose**
 
-Computes the Qwen-hybrid gated normalization equivalent to
-`silu(gate) * RMSNorm(x) * weight`, using implementation-specific fused ordering.
+Computes gated RMS normalization using SiLU (default) or sigmoid gating, with FP32 normalization/gate arithmetic and output in the input dtype.
 
 **Parameters**
 
 | Name | Type/shape | Description |
 |---|---|---|
 | `x` | `Tensor[...,D]` | values to normalize |
-| `gate` | `Tensor[...,D]` | elementwise SiLU gate |
+| `gate` | `Tensor[...,D]` | elementwise gate input |
 | `weight` | `Tensor[D]` | learned gain |
 | `eps` | `float` | RMS stabilizer |
 
@@ -423,6 +444,9 @@ The optimized path saves `x`, `gate`, `weight`, and private FP32
 output = gated_rms_norm(values, output_gate, norm.weight)
 ```
 
+
+`activation` accepts `"silu"` or `"sigmoid"`; other values raise `ValueError`. Use the same choice in explicit forward and backward.
+
 ### `swiglu`
 
 **Status:** Public
@@ -430,7 +454,7 @@ output = gated_rms_norm(values, output_gate, norm.weight)
 **Signature**
 
 ```python
-swiglu(gate: Tensor, up: Tensor) -> Tensor
+swiglu(gate: Tensor, up: Tensor, *, limit: float | None = None) -> Tensor
 ```
 
 **Purpose**
@@ -470,6 +494,9 @@ device and dtype.
 activated = swiglu(gate_projection, up_projection)
 ```
 
+
+`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into the existing forward/backward kernels. Use the same limit in both explicit calls.
+
 ### `packed_swiglu`
 
 **Status:** Public
@@ -477,7 +504,7 @@ activated = swiglu(gate_projection, up_projection)
 **Signature**
 
 ```python
-packed_swiglu(packed: Tensor) -> Tensor
+packed_swiglu(packed: Tensor, *, limit: float | None = None) -> Tensor
 ```
 
 **Purpose**
@@ -513,6 +540,9 @@ The final width must be even.
 ```python
 activated = packed_swiglu(project(hidden))  # project width is 2F
 ```
+
+
+`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into the existing forward/backward kernels. Use the same limit in both explicit calls.
 
 ### `gelu`
 
@@ -852,6 +882,16 @@ dimensions must match, and `lengths` must cover `T`.
 latent_output = mla_attention(query, key, value, lengths)
 ```
 
+### `sparse_mla`
+
+`sparse_mla(query, latent, key_projection, value_projection, indices, *, scale)`
+absorbs the key projection into queries, calls tied-latent sparse attention,
+then applies the value projection. `query[T,H,Dqk]`, `latent[T,L]`,
+`key_projection[H,Dqk,L]`, and `value_projection[H,Dv,L]` are caller-owned.
+Returns `[T,H,Dv]`; gradients cover queries, latent and both projection tensors.
+Use the original query/key attention `scale`, not the latent width. Projection
+absorption can change BF16 intermediate rounding relative to expanded K/V.
+
 ## DSA indexing and selected attention
 
 ### `dsa_indexer_key_norm`
@@ -1173,6 +1213,28 @@ must not point to future tokens. Detected shape/length violations raise
 output = dsa_attention(query, key, value, indices, lengths)
 ```
 
+### `sparse_latent_attention`
+
+`sparse_latent_attention(q, kv, indices, *, scale)` accepts BF16
+`q[T,H,L]` and one shared `kv[T,L]` bank. It returns `[T,H,L]`.
+`indices[T,K]` contains unique causal key indices per sequence, with -1 padding;
+each query needs at least one key. H must be divisible by 16 and L one of
+64/128/256/512. `scale` is explicit. Backward returns dQ and the combined dKV.
+Implementation: `builtin.sparse_latent_attention.tilelang`.
+FP32 atomics in dKV mean bitwise deterministic gradients are not guaranteed.
+
+### `pooled_topk`
+
+`pooled_topk(q, key, gates, head_weights, position_bias, boundaries, *,
+top_k=2048, query_chunk=64, key_chunk=128)` selects pooled causal keys.
+CUDA inputs are `q[T,H,D]`, `key[T,D]`, `gates[T,D]`,
+`head_weights[T,H]`, and `position_bias[pool_size,D]`.
+`boundaries` is an integer CPU tensor with sequence boundaries, passed as runtime
+data. Output is INT32 `[T,top_k+pool_size-1]`, padded with -1.
+Selection is non-differentiable. Scores use bounded `query_chunk` and `key_chunk`
+tiles; short sequences select all causal keys without scoring.
+Implementation: `builtin.pooled_topk.tiled`. Ties need not match another top-k implementation.
+
 ## Hybrid linear-attention operations
 
 ### `causal_conv_silu`
@@ -1411,6 +1473,27 @@ The callback must preserve batch/sequence concatenation semantics. In
 output = linear_mixer(self._forward_segment, hidden, lengths)
 ```
 
+### `kimi_delta_attention`
+
+`kimi_delta_attention(q, k, v, g, beta, cumulative, chunks)` returns packed
+`[T,H,Dv]` KDA output. Inputs `q`, `k`, and `g` have shape `[T,H,Dk]`;
+`v` is `[T,H,Dv]` and `beta` is `[T,H]`. Q/K are already L2-normalized.
+Q/K/V share BF16 or FP16; `g` is FP32 bounded log decay in [-5,0].
+All inputs use one CUDA device. `cumulative` gives integer sequence boundaries
+and `chunks` gives integer (sequence, chunk) pairs for 64-token chunks.
+There is zero initial recurrent state and no returned final state.
+Implementation: `fla.kimi_delta_attention.chunk`. Autograd returns gradients
+for Q, K, V, decay and beta; metadata has no gradient. No caller tensors are
+retained in a global cache.
+
+### `kda_decay`
+
+`kda_decay(raw, dt_bias, a_log, *, lower_bound=-5.0)` maps projected
+`raw[T,H,D]`, per-channel `dt_bias[H*D]`, and per-head `a_log[H]`
+to FP32 negative log decay. All exponential/sigmoid arithmetic uses FP32.
+A negative `lower_bound` bounds the result; the current KDA algorithm requires
+values in [-5,0]. The ordinary PyTorch expression differentiates all inputs.
+
 ## Mixture of experts
 
 ### `moe`
@@ -1530,6 +1613,46 @@ output, aux, counts, probability_sum = moe(
     routing_mode="topk_then_softmax",
 )
 ```
+
+### `sigmoid_topk`
+
+`sigmoid_topk(logits, correction_bias, top_k, *, groups=1,
+selected_groups=1, scale=2.5, normalize=True)` returns expert IDs and weights.
+`logits[T,E]` and `correction_bias[E]` must be FP32. Selection can first
+restrict experts to `selected_groups` of the equal-sized `groups`.
+Bias affects selection only; differentiable weights come from unbiased sigmoid
+scores, optionally normalized then multiplied by `scale`.
+Dense router projection and any balancing objective remain caller-owned.
+
+## Hyper-connections
+
+These functions expose stream normalization, coefficient construction and
+residual mixing; the caller owns the learned projection. See the
+[attention and residual-mixing guide](ATTENTION.md#hyper-connections).
+
+### `mhc_normalize_streams`
+
+`mhc_normalize_streams(streams, *, eps=1e-5)` flattens the last two
+dimensions of `streams[...,N,D]` and applies FP32 RMS normalization.
+Returns `[...,N*D]` in FP32 for a caller-owned coefficient projection.
+`eps` stabilizes the variance.
+
+### `mhc_coefficients`
+
+`mhc_coefficients(streams, projected, bias, scale, *,
+sinkhorn_eps=1e-6, iterations=20)` turns FP32 projected coefficients into
+`(post, mixing, collapsed)`. Given `streams[...,N,D]`, `projected`
+has shape `[...,N*(N+2)]`, `bias[N*(N+2)]`, and `scale[3]`.
+Sigmoid/softmax and `iterations` of Sinkhorn normalization run in FP32;
+`sinkhorn_eps` stabilizes them. `collapsed[...,D]` returns in the streams'
+dtype; post and mixing remain FP32. The function is differentiable.
+
+### `mhc_combine`
+
+`mhc_combine(branch, streams, post, mixing)` expands `branch[...,D]`
+across `streams[...,N,D]` using `post[...,N]` and combines residuals
+using `mixing[...,N,N]`. Coefficients cast to the streams' dtype before
+mixing. Returns `[...,N,D]`, with ordinary PyTorch autograd.
 
 ## Language-model epilogues
 
@@ -1900,7 +2023,9 @@ allocator cache, and runtime leeway.
 
 Returns the operation's canonical logical hints merged with the exact
 implementation's optional physical/workspace hints. Every operation with an
-opaque operator has a canonical estimator, in `mlops.dispatch.logical_costs`.
+opaque operator has a canonical estimator under `mlops.dispatch`. Common
+formulas live in `logical_costs.py`; KDA, tied-latent attention and pooled-indexing
+formulas live in `attention_costs.py`.
 Estimation examines metadata only and retains no tensors. Profiling remains
 authoritative.
 
@@ -1962,6 +2087,9 @@ order.
 | `causal_conv_silu` | `fla.causal_conv_silu` | `native_torch.causal_conv_silu` |
 | `l2_norm` | `fla.l2_norm` | `native_torch.l2_norm` |
 | `gated_rms_norm` | `fla.gated_rms_norm` | `native_torch.gated_rms_norm` |
+| `kimi_delta_attention` | `fla.kimi_delta_attention.chunk` | none |
+| `sparse_latent_attention` | `builtin.sparse_latent_attention.tilelang` | none |
+| `pooled_topk` | `builtin.pooled_topk.tiled` | none |
 | `linear_attention` | `fla.linear_attention.gated_delta_rule` | `native_torch.linear_attention` |
 | `linear_mixer` | `builtin.linear_mixer.packed` | `native_torch.linear_mixer.per_sequence` |
 | `dsa_attention` | `builtin.dsa_attention.sparse` | `native_torch.dsa_attention` |
@@ -2120,6 +2248,8 @@ positions, routing indices, and sequence metadata are non-differentiable.
 | `partial_rope` | rotated tensor | none produced; retain positions | input |
 | `flash_attention` | attention output | LSE and sequence metadata | Q, K, V |
 | `dsa_attention` | selected-attention output | LSE; retain selected indices | Q, K, V |
+| `sparse_latent_attention` | shared-latent attention output | output and LSE; retain selected indices | Q, combined KV |
+| `kimi_delta_attention` | recurrent output | cumulative gates, Aqk, Akk and sequence metadata | Q, K, V, log decay, beta |
 | `causal_conv_silu` | convolution output | caller retains cumulative sequence lengths | input, weight |
 | `linear_attention` | recurrent output | FLA gate/matrix and sequence metadata | seven continuous inputs |
 | `moe` | routed output and diagnostics | complete route/dispatch state | hidden, residual, router, expert weights |
@@ -2226,6 +2356,7 @@ forward(
     gate: Tensor[...,D],
     weight: Tensor[D],
     eps: float = 1e-5,
+    *, activation: str = "silu",
 ) -> tuple[Tensor[...,D], Tensor[R]]
 
 backward(
@@ -2235,11 +2366,15 @@ backward(
     weight: Tensor[D],
     rstd: Tensor[R],
     eps: float = 1e-5,
+    *, activation: str = "silu",
 ) -> tuple[Tensor[...,D], Tensor[...,D], Tensor[D]]
 ```
 
 The operation computes `silu(gate) * RMSNorm(x) * weight`. Backward returns
 `(grad_x, grad_gate, grad_weight)`.
+
+
+`activation` accepts `"silu"` or `"sigmoid"`; other values raise `ValueError`. Use the same choice in explicit forward and backward.
 
 ### Activations and rotary position
 
@@ -2259,12 +2394,14 @@ backward.
 forward(
     gate: Tensor[...,F],
     up: Tensor[...,F],
+    *, limit: float | None = None,
 ) -> Tensor[...,F]
 
 backward(
     grad_output: Tensor[...,F],
     gate: Tensor[...,F],
     up: Tensor[...,F],
+    *, limit: float | None = None,
 ) -> tuple[Tensor[...,F], Tensor[...,F]]
 ```
 
@@ -2272,17 +2409,24 @@ Returns `silu(gate) * up`; backward returns `(grad_gate, grad_up)`. Force
 `builtin.swiglu.triton` or the historical
 `builtin.swiglu.triton_legacy` around both calls when selecting a variant.
 
+
+`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into the existing forward/backward kernels. Use the same limit in both explicit calls.
+
 #### `explicit.packed_swiglu`
 
 ```python
-forward(packed: Tensor[R,2F]) -> Tensor[R,F]
+forward(packed: Tensor[...,2F], *, limit: float | None = None) -> Tensor[...,F]
 backward(
-    grad_output: Tensor[R,F],
-    packed: Tensor[R,2F],
-) -> Tensor[R,2F]
+    grad_output: Tensor[...,F],
+    packed: Tensor[...,2F],
+    *, limit: float | None = None,
+) -> Tensor[...,2F]
 ```
 
 The first half of `packed` is the gate and the second is the up projection.
+
+
+`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into the existing forward/backward kernels. Use the same limit in both explicit calls.
 
 #### `explicit.rope`
 
@@ -2361,6 +2505,23 @@ backward(grad_output, q, k, v, indices, lse, lengths)
 
 `q` and `k` have shape `[T,Hq,Dqk]`, `v` has `[T,Hq,Dv]`, and `indices` has
 `[T,K]`. Selected indices are discrete fixed inputs and receive no gradient.
+
+#### `explicit.kimi_delta_attention`
+
+`forward(q, k, v, g, beta, cumulative, chunks)` returns
+`(output, gates, aqk, akk)`. Retain the original inputs and all three
+residuals for
+`backward(dy, q, k, v, g, beta, gates, aqk, akk, cumulative, chunks)`,
+which returns dQ, dK, dV, dG and dBeta. `gates` is the FP32 cumulative
+decay; `aqk` and `akk` are intra-chunk matrices. The semantic KDA constraints
+also apply here. Calls do not build an autograd graph.
+
+#### `explicit.sparse_latent_attention`
+
+`forward(q, kv, indices, *, scale)` returns `(output, lse)`.
+`backward(dy, q, kv, indices, output, lse, *, scale)` returns dQ and dKV.
+Retain inputs, output and FP32 softmax `lse`; pass the same `scale`
+to both calls. The semantic tied-latent constraints also apply here.
 
 #### `explicit.causal_conv_silu`
 

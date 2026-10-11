@@ -1,4 +1,4 @@
-"""Gated delta-rule recurrence used by Qwen3.5 linear-attention layers."""
+"""Gated delta-rule recurrence for linear attention."""
 
 from __future__ import annotations
 

@@ -57,8 +57,10 @@ def rms_norm(x, weight, eps=1e-5, *, entrypoint="forward", **_kwargs) -> CostHin
             logical_flops=5 * elements + 3 * rows,
             logical_bytes_accessed=2 * activation + weight_bytes,
             notes=(
-                "logical FLOPs count square, reduction, scale, rsqrt, "
-                "and two multiplies",
+                (
+                    "logical FLOPs count square, reduction, scale, rsqrt, "
+                    "and two multiplies"
+                ),
                 "logical bytes are minimum tensor traffic and exclude saved residuals",
             ),
         )
@@ -66,8 +68,10 @@ def rms_norm(x, weight, eps=1e-5, *, entrypoint="forward", **_kwargs) -> CostHin
         logical_flops=10 * elements + rows,
         logical_bytes_accessed=3 * activation + 2 * weight_bytes + 4 * rows,
         notes=(
-            "backward logical bytes include dy/x/weight/rstd reads "
-            "and dx/dweight writes",
+            (
+                "backward logical bytes include dy/x/weight/rstd reads "
+                "and dx/dweight writes"
+            ),
         ),
     )
 
@@ -91,8 +95,10 @@ def layer_norm(
         logical_flops=12 * elements + 2 * rows,
         logical_bytes_accessed=3 * activation + 2 * affine + 8 * rows,
         notes=(
-            "backward reads dy, x, weight, mean and rstd; "
-            "writes dx and the affine gradients",
+            (
+                "backward reads dy, x, weight, mean and rstd; "
+                "writes dx and the affine gradients"
+            ),
         ),
     )
 
@@ -116,30 +122,30 @@ def l2_norm(x, eps=1e-6, *, entrypoint="forward", **_kwargs) -> CostHints:
 
 
 def gated_rms_norm(
-    x, gate, weight, eps=1e-5, *, entrypoint="forward", **_kwargs
+    x, gate, weight, eps=1e-5, *, activation="silu", entrypoint="forward", **_kwargs
 ) -> CostHints:
-    """RMSNorm of ``x`` multiplied by the SiLU of ``gate``."""
+    """RMSNorm of ``x`` multiplied by the selected activation of ``gate``."""
     del eps
     elements = x.numel()
     rows = _rows(x)
-    activation = _bytes(x)
+    activation_bytes = _bytes(x)
     weight_bytes = _bytes(weight)
     if _entrypoint(entrypoint):
         return CostHints(
-            logical_flops=10 * elements + 3 * rows,
-            logical_bytes_accessed=3 * activation + weight_bytes + 4 * rows,
-            notes=("the norm's five per element, the SiLU's four, and one product",),
+            logical_flops=(10 if activation == "silu" else 9) * elements + 3 * rows,
+            logical_bytes_accessed=3 * activation_bytes + weight_bytes + 4 * rows,
+            notes=("normalization, selected gate activation, and elementwise product",),
         )
     return CostHints(
-        logical_flops=18 * elements + rows,
-        logical_bytes_accessed=5 * activation + 2 * weight_bytes + 4 * rows,
+        logical_flops=(18 if activation == "silu" else 15) * elements + rows,
+        logical_bytes_accessed=5 * activation_bytes + 2 * weight_bytes + 4 * rows,
         notes=(
             "backward reads dy, x, gate, weight and rstd; writes dx, dgate, dweight",
         ),
     )
 
 
-def swiglu(gate, up, *, entrypoint="forward", **_kwargs) -> CostHints:
+def swiglu(gate, up, *, limit=None, entrypoint="forward", **_kwargs) -> CostHints:
     """``silu(gate) * up``: sigmoid, two products."""
     elements = gate.numel()
     element = _bytes(gate) // max(elements, 1)
@@ -156,7 +162,7 @@ def swiglu(gate, up, *, entrypoint="forward", **_kwargs) -> CostHints:
     )
 
 
-def packed_swiglu(packed, *, entrypoint="forward", **_kwargs) -> CostHints:
+def packed_swiglu(packed, *, limit=None, entrypoint="forward", **_kwargs) -> CostHints:
     """``swiglu`` over the two halves of one ``[rows, 2 * width]`` tensor."""
     elements = packed.numel() // 2
     element = packed.element_size()
@@ -450,8 +456,10 @@ def moe(
             logical_flops=flops,
             logical_bytes_accessed=_bytes(h2, residual) + weights + _bytes(h2),
             notes=(
-                "minimum traffic reads the activations and every expert once and "
-                "writes the output; dispatch and h13 traffic is the implementation's",
+                (
+                    "minimum traffic reads the activations and every expert once and "
+                    "writes the output; dispatch and h13 traffic is the implementation's"
+                ),
             ),
         )
     return CostHints(
@@ -494,9 +502,7 @@ def cross_entropy(
         logical_bytes_accessed=(
             2 * logits_bytes + targets_bytes + weight_bytes + 8 * rows
         ),
-        notes=(
-            "backward bytes include logits, per-row cotangent/LSE, and logits VJP",
-        ),
+        notes=("backward bytes include logits, per-row cotangent/LSE, and logits VJP",),
     )
 
 
@@ -520,10 +526,17 @@ def head_loss(
     rows = _rows(hidden)
     width = hidden.shape[-1]
     vocabulary = head_weight.shape[0]
-    gradients = int(need_hidden_grad) * _bytes(hidden) + int(need_head_grad) * _bytes(head_weight)
+    gradients = int(need_hidden_grad) * _bytes(hidden) + int(need_head_grad) * _bytes(
+        head_weight
+    )
     if _entrypoint(entrypoint):
         return CostHints(
-            logical_flops=2 * rows * width * vocabulary * (1 + int(need_hidden_grad) + int(need_head_grad)) + 6 * rows * vocabulary,
+            logical_flops=2
+            * rows
+            * width
+            * vocabulary
+            * (1 + int(need_hidden_grad) + int(need_head_grad))
+            + 6 * rows * vocabulary,
             logical_bytes_accessed=(
                 _bytes(hidden, head_weight, targets) + gradients + 4
             ),
@@ -533,7 +546,11 @@ def head_loss(
             ),
         )
     return CostHints(
-        logical_flops=2 * (int(need_hidden_grad) * rows * width + int(need_head_grad) * vocabulary * width),
+        logical_flops=2
+        * (
+            int(need_hidden_grad) * rows * width
+            + int(need_head_grad) * vocabulary * width
+        ),
         logical_bytes_accessed=2 * gradients + 4,
         notes=("backward scales the two seed-one gradients by the loss cotangent",),
     )

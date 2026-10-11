@@ -1,4 +1,4 @@
-"""Fused Llama rotate-half RoPE forward/backward."""
+"""Fused rotate-half RoPE forward/backward."""
 
 from __future__ import annotations
 

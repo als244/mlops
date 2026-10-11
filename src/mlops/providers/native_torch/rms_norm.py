@@ -31,9 +31,9 @@ def _estimate(x, weight, _eps=1e-5, *, entrypoint, **_kwargs) -> CostHints:
 
 
 def apply(x, weight, eps=1e-5):
-    """Apply the ordinary PyTorch RMSNorm graph with Llama cast semantics."""
+    """Normalize in FP32, round to the input dtype, then apply the gain."""
     # Preserve float64 only for numerical gradcheck. Production float16,
-    # bfloat16, and float32 calls retain the reference model's fp32 reduction.
+    # bfloat16, and float32 calls retain the operation's fp32 reduction.
     compute = x if x.dtype == torch.float64 else x.float()
     rstd = torch.rsqrt(compute.square().mean(-1, keepdim=True) + float(eps))
     return ((compute * rstd).to(x.dtype) * weight).to(x.dtype)

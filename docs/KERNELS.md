@@ -25,3 +25,16 @@ To add raw mechanics, document dtype/layout/shape assumptions in the function,
 return fresh outputs, expose any VJP residual explicitly, and validate it first
 through its owning implementation adapter with opcheck, VJP parity, repeated
 backward, immutability, and capture tests.
+
+## KDA and tied-latent sparse attention
+
+`src/mlops/kernels/kda/` contains the adapted FLA chunked algorithm, per-call
+sequence metadata construction, and retained license/provenance. It does not
+retain caller tensor views by identity. `src/mlops/kernels/sparse_mla/` contains
+the attributed TileLang forward/backward kernels. Pooled index selection lives
+in `src/mlops/kernels/pooled_indexer.py`.
+
+The existing SwiGLU kernels accept a compile-time clipping limit in both directions;
+the default avoids the clipping branches. Gated RMSNorm threads the selected
+activation into FLA's fused normalization kernels. These variations share their
+existing registrations and explicit interfaces. See [ATTENTION.md](ATTENTION.md).

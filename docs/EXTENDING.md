@@ -23,7 +23,7 @@ never needs to know which implementation was added.
 | New implementation variant from an existing provider | existing provider module or a focused sibling module | No |
 | New mathematical operation | semantic façade, at least one provider, exports, docs, usually explicit module | Yes |
 | Add explicit forward/VJP access to an existing operation | `src/mlops/explicit/<operation>.py`, provider entrypoints, docs | Yes, explicit API only |
-| Add or improve cost hints | the operation's estimator in `src/mlops/dispatch/logical_costs.py` and/or `Implementation.estimate` | No execution change |
+| Add or improve cost hints | canonical estimator under `src/mlops/dispatch/` and/or `Implementation.estimate` | No execution change |
 | Add a raw Torch/Triton kernel | `src/mlops/kernels/<operation>.py` plus an implementation adapter | No by itself |
 | Add an optional dependency | provider adapter, support gate, project optional dependency | No |
 | Add dispatch/development infrastructure | `src/mlops/dispatch/`, exports, API docs | Contributor API only |
@@ -208,9 +208,9 @@ prefer an apply-only implementation and document why.
 Every custom operator the implementation registers, forward and backward,
 declares its FLOP count with `flop_formula` from `mlops.dispatch.costs`, placed
 beside the operator. The formula takes the operator's arguments plus `out_val`
-and delegates to the operation's canonical estimator in
-`src/mlops/dispatch/logical_costs.py`; it adds no arithmetic of its own, so
-every provider of one operation reports the same logical work:
+and delegates to the operation's canonical estimator under
+`src/mlops/dispatch/`; it adds no arithmetic of its own. Every provider of one
+operation therefore reports the same logical work:
 
 ```python
 from ...dispatch import logical_costs as logical
@@ -418,8 +418,9 @@ The integration would proceed as follows.
    Exact overrides still run this check and fail; they must never bypass the
    gate or fall back.
 4. **Adapt QuACK RMSNorm's low-level pair.** Call its `rmsnorm_fwd` with the
-   package's documented Llama semantics: affine weight, no bias/residual,
-   caller `eps`, stored fp32 `rstd`, and weight offset zero. Call
+   documented RMSNorm semantics: FP32 reduction, normalized activations rounded
+   to the input dtype before applying the affine weight, no bias/residual,
+   caller `eps`, stored FP32 `rstd`, and weight offset zero. Call
    `rmsnorm_bwd` with `x`, `weight`, `grad_output`, and `rstd`. Do not use
    QuACK's `nn.Module`, monkey patching, or `RMSNormFunction` as the mlops
    boundary.
@@ -567,8 +568,9 @@ boundaries; visible ATen graphs do not need one.
 
 ### 6. Add the operation's logical cost
 
-Add one estimator to `src/mlops/dispatch/logical_costs.py` and register it in
-that module's table. It takes the operation's forward arguments plus
+Add one estimator to `src/mlops/dispatch/logical_costs.py`, or a focused
+operation-family module such as `attention_costs.py`. Register it with
+`register_operation_estimator`. It takes the operation's forward arguments plus
 `entrypoint` and reports logical FLOPs and minimum tensor traffic for the
 forward and the backward, independent of provider; every provider's flop
 formulas then delegate to it. Concrete implementations may overlay physical
@@ -612,9 +614,9 @@ remain registered with clear explicit-surface rejection reasons.
 
 ### Add or refine cost hints
 
-Canonical estimators, one per operation in
-`src/mlops/dispatch/logical_costs.py`, describe provider-independent logical
-work, and every operator's flop formula delegates to them. Exact implementation
+Canonical estimators under `src/mlops/dispatch/` describe provider-independent
+logical work, with one estimator per operation. Every operator's flop formula
+delegates to its operation's estimator. Exact implementation
 estimators describe physical work and workspace. All of them must inspect
 metadata without running kernels or retaining tensors. Profiling remains
 authoritative.

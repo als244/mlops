@@ -45,6 +45,9 @@ OPAQUE_OPERATIONS = frozenset(
         "l2_norm",
         "layer_norm",
         "linear_attention",
+        "kimi_delta_attention",
+        "sparse_latent_attention",
+        "pooled_topk",
         "moe",
         "packed_swiglu",
         "partial_rope",
@@ -353,11 +356,27 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
     )
     finish_backward = _count(
         ops.moe_builtin_grouped_gemm_finish_bwd,
-        h2, h13, w2, route_weights, order, offsets, slots, top_k, None,
+        h2,
+        h13,
+        w2,
+        route_weights,
+        order,
+        offsets,
+        slots,
+        top_k,
+        None,
     )
     donated = _count(
         ops.moe_builtin_grouped_gemm_finish_bwd_donate_h13,
-        h2, h13, w2, route_weights, order, offsets, slots, top_k, None,
+        h2,
+        h13,
+        w2,
+        route_weights,
+        order,
+        offsets,
+        slots,
+        top_k,
+        None,
     )
     assert prepare_backward + finish_backward == backward
     assert donated == finish_backward
@@ -377,8 +396,12 @@ def test_lora_head_counts_only_requested_weight_gradients(fake):
     hidden, head = _tensor(7, 16), _tensor(31, 16)
     a, b, targets = _tensor(3, 16), _tensor(31, 3), _i64(7)
     arguments = hidden, head, a, b, targets, 0.7, 4, 7, None
-    frozen = _count(ops.lora_head_loss_builtin_chunked_fwd, *arguments, True, False, True, True)
-    trainable = _count(ops.lora_head_loss_builtin_chunked_fwd, *arguments, True, True, True, True)
+    frozen = _count(
+        ops.lora_head_loss_builtin_chunked_fwd, *arguments, True, False, True, True
+    )
+    trainable = _count(
+        ops.lora_head_loss_builtin_chunked_fwd, *arguments, True, True, True, True
+    )
     assert trainable - frozen == 2 * 7 * 16 * 31
     estimate = estimate_implementation("lora_head_loss", hidden, head, a, b, targets)
     assert estimate.logical_flops == frozen

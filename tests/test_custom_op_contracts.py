@@ -5,10 +5,12 @@ import importlib
 from functools import partial
 from pathlib import Path
 
-import mlops
-from mlops.lora import grouped as lora_grouped, routing as lora_routing
 import pytest
 import torch
+
+import mlops
+from mlops.lora import grouped as lora_grouped
+from mlops.lora import routing as lora_routing
 from mlops.preparation.packed_sequence import _prepare_op
 from mlops.providers.builtin.adamw import (
     _functional_op,
@@ -19,61 +21,28 @@ from mlops.providers.builtin.adamw import (
     _out_op,
 )
 
-
 # Import the defining modules without reaching through their public function
 # aliases. The model-facing package intentionally exports only semantic calls.
 
 
-fla_hybrid = importlib.import_module(
-    "mlops.providers.fla.hybrid"
-)
-dsa = importlib.import_module(
-    "mlops.providers.builtin.dsa"
-)
-cross_entropy = importlib.import_module(
-    "mlops.providers.builtin.cross_entropy"
-)
-embedding = importlib.import_module(
-    "mlops.providers.builtin.embedding"
-)
-flash_attention = importlib.import_module(
-    "mlops.providers.builtin.flash_attention"
-)
-gelu = importlib.import_module(
-    "mlops.providers.builtin.gelu"
-)
-head = importlib.import_module(
-    "mlops.providers.builtin.head"
-)
+fla_hybrid = importlib.import_module("mlops.providers.fla.hybrid")
+dsa = importlib.import_module("mlops.providers.builtin.dsa")
+cross_entropy = importlib.import_module("mlops.providers.builtin.cross_entropy")
+embedding = importlib.import_module("mlops.providers.builtin.embedding")
+flash_attention = importlib.import_module("mlops.providers.builtin.flash_attention")
+gelu = importlib.import_module("mlops.providers.builtin.gelu")
+head = importlib.import_module("mlops.providers.builtin.head")
 lora_head = importlib.import_module("mlops.providers.builtin.lora_head")
-layer_norm = importlib.import_module(
-    "mlops.providers.builtin.layer_norm"
-)
-moe = importlib.import_module(
-    "mlops.providers.builtin.moe"
-)
-moe_composed = importlib.import_module(
-    "mlops.providers.builtin.moe_composed"
-)
-partial_rope = importlib.import_module(
-    "mlops.providers.builtin.partial_rope"
-)
+layer_norm = importlib.import_module("mlops.providers.builtin.layer_norm")
+moe = importlib.import_module("mlops.providers.builtin.moe")
+moe_composed = importlib.import_module("mlops.providers.builtin.moe_composed")
+partial_rope = importlib.import_module("mlops.providers.builtin.partial_rope")
 rms_norm = importlib.import_module("mlops.rms_norm")
-rms_norm_builtin = importlib.import_module(
-    "mlops.providers.builtin.rms_norm"
-)
-rms_norm_liger = importlib.import_module(
-    "mlops.providers.liger.rms_norm"
-)
-scattermoe = importlib.import_module(
-    "mlops.providers.scattermoe.moe"
-)
-rope = importlib.import_module(
-    "mlops.providers.builtin.rope"
-)
-swiglu = importlib.import_module(
-    "mlops.providers.builtin.swiglu"
-)
+rms_norm_builtin = importlib.import_module("mlops.providers.builtin.rms_norm")
+rms_norm_liger = importlib.import_module("mlops.providers.liger.rms_norm")
+scattermoe = importlib.import_module("mlops.providers.scattermoe.moe")
+rope = importlib.import_module("mlops.providers.builtin.rope")
+swiglu = importlib.import_module("mlops.providers.builtin.swiglu")
 
 
 pytestmark = [
@@ -85,7 +54,14 @@ pytestmark = [
 PACKAGE_ROOT = Path(mlops.__file__).resolve().parent
 
 
+kda = importlib.import_module("mlops.providers.fla.kda")
+sparse_latent = importlib.import_module("mlops.providers.builtin.sparse_latent")
+pooled_indexer = importlib.import_module("mlops.providers.builtin.pooled_indexer")
+
 FORWARD_OPERATORS = {
+    "kimi_delta_attention_fla_fwd": kda._forward,
+    "sparse_latent_attention_tilelang_fwd": sparse_latent._forward,
+    "pooled_topk_builtin_tiled": pooled_indexer._select,
     "lora_grouped_linear_fwd": lora_grouped._forward,
     "lora_route": lora_routing._route,
     "lora_dispatch": lora_routing._dispatch,
@@ -118,7 +94,12 @@ FORWARD_OPERATORS = {
 }
 
 BACKWARD_OPERATORS = {
-    "lora_grouped_linear_bwd", "lora_route_bwd", "lora_dispatch_bwd", "lora_combine_bwd",
+    "kimi_delta_attention_fla_bwd",
+    "sparse_latent_attention_tilelang_bwd",
+    "lora_grouped_linear_bwd",
+    "lora_route_bwd",
+    "lora_dispatch_bwd",
+    "lora_combine_bwd",
     "causal_conv_silu_fla_bwd",
     "cross_entropy_builtin_triton_bwd",
     "dsa_attention_builtin_sparse_bwd",
@@ -184,10 +165,7 @@ def _rope_args():
     rows, width = 6, 16
     inverse = 1.0 / (
         10_000.0
-        ** (
-            torch.arange(0, width, 2, device="cuda", dtype=torch.float32)
-            / width
-        )
+        ** (torch.arange(0, width, 2, device="cuda", dtype=torch.float32) / width)
     )
     frequencies = torch.outer(
         torch.arange(rows, device="cuda", dtype=torch.float32), inverse
@@ -206,10 +184,7 @@ def _partial_rope_args():
     rows, width = 6, 8
     inverse = 1.0 / (
         10_000.0
-        ** (
-            torch.arange(0, width, 2, device="cuda", dtype=torch.float32)
-            / width
-        )
+        ** (torch.arange(0, width, 2, device="cuda", dtype=torch.float32) / width)
     )
     frequencies = torch.outer(
         torch.arange(rows, device="cuda", dtype=torch.float32), inverse
@@ -250,7 +225,21 @@ def _lora_head_args(weight_grad_dtype=None):
     head_weight = _parameter(31, 16).requires_grad_(False)
     a, b = _parameter(3, 16), _parameter(31, 3)
     targets = torch.randint(0, 31, (7,), device="cuda")
-    return hidden, head_weight, a, b, targets, 0.7, 4, 7, weight_grad_dtype, True, False, True, True
+    return (
+        hidden,
+        head_weight,
+        a,
+        b,
+        targets,
+        0.7,
+        4,
+        7,
+        weight_grad_dtype,
+        True,
+        False,
+        True,
+        True,
+    )
 
 
 def _head_args(weight_grad_dtype=None):
