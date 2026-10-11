@@ -73,7 +73,8 @@ only their implementations unavailable.
 - [Raw kernel boundary](docs/KERNELS.md)
 - [Optimizer API reference](docs/OPTIMIZERS.md)
 - [Expert-parallel layers and GPU validation](docs/EXPERT_PARALLEL.md)
-- [GLM operations: KDA, sparse MLA, mHC and routing](docs/GLM.md)
+- [Sequential experts and compressed checkpoint storage](docs/SEQUENTIAL_MOE.md)
+- [Attention, routing and residual mixing](docs/ATTENTION.md)
 
 ## Repository layout
 
@@ -83,10 +84,12 @@ mlops/
 ├── README.md
 ├── src/mlops/              importable package
 │   ├── dispatch/           registry, resolution, overrides, cost/gradcheck APIs
+│   ├── <operation>.py      general tensor functions, including KDA and MLA/DSA
 │   ├── explicit/           public stateless forward/VJP entrypoints
 │   ├── expert_parallel/    optional Quack/TE MoE and LoRA layers
-│   ├── glm/                GLM building blocks and optional KDA/sparse-MLA kernels
-│   ├── kernels/            private raw Torch/Triton mechanics
+│   ├── sequential_moe/     bounded sequential experts and LoRA
+│   ├── lora/               dense/expert LoRA configuration and modules
+│   ├── kernels/            private raw Torch/Triton/TileLang mechanics
 │   ├── optim/              PyTorch optimizers and functional/out=/in-place updates
 │   └── providers/          exact implementation adapters
 ├── tests/                  standalone contract and numerical tests
