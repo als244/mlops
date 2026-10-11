@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import torch
+
 from .dispatch import resolve_implementation
 
 
@@ -40,4 +42,37 @@ def dsa_attention(
     )
 
 
-__all__ = ["dsa_attention"]
+def _validate_sparse_latent(q, kv, indices):
+    if q.ndim != 3 or kv.shape != (q.shape[0], q.shape[-1]):
+        raise ValueError("Expected Q [tokens, heads, latent] and KV [tokens, latent]")
+    if q.shape[1] % 16 or q.shape[-1] not in (64, 128, 256, 512):
+        raise ValueError(
+            "Expected heads divisible by 16 and latent width 64/128/256/512"
+        )
+    if (
+        indices.ndim != 2
+        or indices.shape[0] != q.shape[0]
+        or indices.dtype not in (torch.int32, torch.int64)
+    ):
+        raise ValueError("Expected integer selected indices [tokens, selected_keys]")
+    if q.dtype != torch.bfloat16 or kv.dtype != q.dtype:
+        raise ValueError("Sparse TileLang attention currently requires BF16 Q and KV")
+    if not all(t.is_cuda and t.device == q.device for t in (q, kv, indices)):
+        raise ValueError("Sparse attention inputs must share one CUDA device")
+
+
+def sparse_latent_attention(q, kv, indices, *, scale):
+    """Selected attention with one latent KV tensor shared across query heads."""
+    _validate_sparse_latent(q, kv, indices)
+    implementation = resolve_implementation(
+        "sparse_latent_attention",
+        q,
+        kv,
+        indices,
+        scale=float(scale),
+        surface="semantic",
+    )
+    return implementation.apply(q, kv, indices, scale=float(scale))
+
+
+__all__ = ["dsa_attention", "sparse_latent_attention"]

@@ -16,6 +16,8 @@ engines.
 - [Cost hints](#cost-hints)
 - [Gradcheck](#gradcheck)
 - [Extending the package](#extending-the-package)
+- [Expert-parallel modules](#expert-parallel-modules)
+- [Reusable attention and routing](#reusable-attention-and-routing)
 
 ## Public surfaces
 
@@ -28,8 +30,8 @@ The package has two operation surfaces.
    entrypoints for callers that already manage residual tensors.
 
 Model and block packages consume public semantic functions from `mlops` or
-documented optional namespaces such as `mlops.glm`. They do not import
-dispatch, provider, or kernel internals.
+documented optional layer packages such as `mlops.expert_parallel`. They do
+not import dispatch, provider, or kernel internals.
 
 ## Optimizer surface
 
@@ -91,9 +93,9 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 | `src/mlops/explicit/<operation>.py` | public explicit forward/VJP façade |
 | `src/mlops/dispatch/` | scalar metadata, exact selection, overrides, tracing, logical costs and flop formulas, gradcheck |
 | `src/mlops/providers/<source>/` | exact implementation adapters; opaque custom-op/fake/autograd registration |
-| `src/mlops/kernels/` | raw Torch/Triton mechanics; no selection or fallback |
+| `src/mlops/kernels/` | raw Torch/Triton/TileLang mechanics; no selection or fallback |
 | `src/mlops/optim/` | standard optimizers plus functional, `out=`, and in-place update entrypoints |
-| `src/mlops/glm/` | optional GLM operations, autograd boundaries and attributed accelerator kernels; no model classes |
+| `src/mlops/kernels/kda/`, `kernels/sparse_mla/` | attributed attention kernels, imported lazily by standard registrations |
 | `src/mlops/bootstrap.py` | registers custom-op targets before artifact loading |
 
 `provider` is source metadata (`builtin`, `native_torch`, `liger`,
@@ -196,8 +198,9 @@ physical one. Every field is `int | None`: `None` means unknown and `0` means
 known-zero. Hints are advisory; measured runtime and allocator profiling remain
 authoritative.
 
-The canonical estimates live in one module,
-`src/mlops/dispatch/logical_costs.py`: one estimator per operation, taking the
+Canonical estimates are grouped under `src/mlops/dispatch/`:
+`logical_costs.py` holds common formulas and `attention_costs.py` holds KDA,
+tied-latent attention and pooled-indexing formulas. There is one estimator per operation, taking the
 operation's forward arguments plus `entrypoint` and reporting logical FLOPs and
 minimum tensor traffic for the forward and the backward. Logical means the
 mathematical work -- two per multiply-add of a matrix product, a small constant
@@ -266,11 +269,20 @@ opt-in `expert_parallel` pytest gate launches bounded, isolated GPU workers from
 its `gpu/` directory and preserves per-case logs/results. The default suite skips
 these checks. See [configuration, installation and validation](EXPERT_PARALLEL.md).
 
-## Optional operation groups
+## Reusable attention and routing
 
-The GLM building blocks in `mlops.glm` use a dedicated optional namespace, like
-the expert-parallel layer package. They expose tensor functions with ordinary
-autograd and one implementation per operation. They do not add entries to the
-top-level implementation registry or explicit surface. This keeps FLA/TileLang
-dependencies lazy. Import `mlops.glm.bootstrap` when loading an artifact that
-contains its custom operators. Full model composition remains caller-owned.
+KDA, sparse latent attention and pooled indexing follow the same semantic →
+registration → kernel structure as other operations. Their implementation IDs are
+`fla.kimi_delta_attention.chunk`, `builtin.sparse_latent_attention.tilelang`, and
+`builtin.pooled_topk.tiled`. Normal bootstrap registers their custom operations
+without importing FLA or TileLang. The accelerator libraries load at execution.
+
+KDA stays distinct from Gated DeltaNet because it has per-channel decay and a
+different residual/gradient contract. Tied-latent attention stays distinct from
+DSA's separate K/V inputs because its backward combines both contributions into
+one shared-bank gradient. Existing APIs absorb smaller variations:
+`swiglu`/`packed_swiglu` accept optional clipping, and `gated_rms_norm`
+accepts SiLU or sigmoid gating. Dense projections, LoRA factors, model composition,
+and checkpoint naming remain caller-owned.
+
+See [ATTENTION.md](ATTENTION.md) for contracts and kernel attribution.

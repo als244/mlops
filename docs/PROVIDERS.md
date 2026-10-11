@@ -208,9 +208,11 @@ Never execute a kernel or silently select another implementation.
 - invocation-local workspace bytes.
 
 Operation-level logical FLOPs and minimum bytes are not the adapter's to
-report: they come from the operation's canonical estimator in
-`src/mlops/dispatch/logical_costs.py`. What the adapter must do is give every
-custom operator it registers, forward and backward, a flop formula that
+report: they come from the operation's canonical estimator under
+`src/mlops/dispatch/`. Common formulas live in `logical_costs.py`; additional
+operation families can use focused modules such as `attention_costs.py`.
+The adapter gives every custom operator it registers, forward and backward,
+a flop formula that
 delegates to that estimator, with `flop_formula` from `mlops.dispatch.costs`,
 so PyTorch's flop counter prices the operator as it prices an ATen matrix
 product.
@@ -227,7 +229,8 @@ Liger's plain `autograd.Function` as the compiler boundary.
 
 The adapter:
 
-- preserves Llama cast semantics, offset zero, and `in_place=False`;
+- computes normalization in FP32, rounds normalized activations to the input
+  dtype before applying the gain, and uses offset zero and `in_place=False`;
 - derives launch scalars from input geometry;
 - gates the exact supported CUDA dtype/layout/width range;
 - reports Liger's per-invocation dweight partials as backward workspace;

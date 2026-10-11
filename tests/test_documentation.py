@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
 import re
+from pathlib import Path
 
 import mlops
 from mlops import dispatch, explicit, optim
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = PROJECT_ROOT / "docs"
@@ -18,7 +17,7 @@ DOCS = (
     DOCS_ROOT / "ARCHITECTURE.md",
     DOCS_ROOT / "EXPLICIT_OPS.md",
     DOCS_ROOT / "EXPERT_PARALLEL.md",
-    DOCS_ROOT / "GLM.md",
+    DOCS_ROOT / "ATTENTION.md",
     DOCS_ROOT / "EXTENDING.md",
     DOCS_ROOT / "KERNELS.md",
     DOCS_ROOT / "OPTIMIZERS.md",
@@ -72,9 +71,7 @@ def test_local_markdown_links_resolve_inside_project():
 
 
 def test_local_markdown_anchors_resolve():
-    link_pattern = re.compile(
-        r"\]\((?:(?P<path>[^)#]+\.md))?(?:#(?P<anchor>[^)]+))?\)"
-    )
+    link_pattern = re.compile(r"\]\((?:(?P<path>[^)#]+\.md))?(?:#(?P<anchor>[^)]+))?\)")
     for source in DOCS:
         for match in link_pattern.finditer(source.read_text()):
             anchor = match.group("anchor")
@@ -147,9 +144,9 @@ def test_extension_guide_covers_supported_workflows():
     for section in required_sections:
         assert section in reference
 
-    sonic_example = reference.split(
-        "### Worked example: add SonicMoE to `moe`", 1
-    )[1].split("### Worked example: one QuACK", 1)[0]
+    sonic_example = reference.split("### Worked example: add SonicMoE to `moe`", 1)[
+        1
+    ].split("### Worked example: one QuACK", 1)[0]
     quack_example = reference.split(
         "### Worked example: one QuACK provider for RMSNorm and cross entropy", 1
     )[1].split("## Add a new semantic operation", 1)[0]
@@ -166,7 +163,9 @@ def test_markdown_tables_have_consistent_column_counts():
     for source in DOCS:
         lines = source.read_text().splitlines()
         for index in range(len(lines) - 1):
-            if not lines[index].startswith("|") or not separator.match(lines[index + 1]):
+            if not lines[index].startswith("|") or not separator.match(
+                lines[index + 1]
+            ):
                 continue
             expected = lines[index].count("|")
             row = index + 2

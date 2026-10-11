@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from importlib import import_module
 
-
 _REGISTERED = False
 
 # Keep package-owned discovery explicit. Third-party entry-point discovery can
@@ -37,6 +36,9 @@ _CATALOG = (
     "mlops.providers.builtin.lora_head",
     "mlops.providers.native_torch.lora_head",
     "mlops.providers.fla.hybrid",
+    "mlops.providers.fla.kda",
+    "mlops.providers.builtin.sparse_latent",
+    "mlops.providers.builtin.pooled_indexer",
     "mlops.providers.native_torch.hybrid",
     "mlops.providers.builtin.linear_mixer",
     "mlops.providers.native_torch.linear_mixer",

@@ -42,8 +42,8 @@ def l2_apply(x, eps=1e-6):
     return l2_norm_forward(x, float(eps))[0]
 
 
-def gated_apply(x, gate, weight, eps=1e-5):
-    return gated_rms_norm_forward(x, gate, weight, float(eps))[0]
+def gated_apply(x, gate, weight, eps=1e-5, *, activation="silu"):
+    return gated_rms_norm_forward(x, gate, weight, float(eps), activation=activation)[0]
 
 
 def linear_apply(
@@ -73,25 +73,38 @@ IMPLEMENTATIONS = tuple(
         Implementation(
             operation="causal_conv_silu",
             implementation_id="native_torch.causal_conv_silu",
-            provider="native_torch", priority=0, deterministic=True,
-            supports=_supports, apply=causal_apply,
+            provider="native_torch",
+            priority=0,
+            deterministic=True,
+            supports=_supports,
+            apply=causal_apply,
         ),
         Implementation(
-            operation="l2_norm", implementation_id="native_torch.l2_norm",
-            provider="native_torch", priority=0, deterministic=True,
-            supports=_supports, apply=l2_apply,
+            operation="l2_norm",
+            implementation_id="native_torch.l2_norm",
+            provider="native_torch",
+            priority=0,
+            deterministic=True,
+            supports=_supports,
+            apply=l2_apply,
         ),
         Implementation(
             operation="gated_rms_norm",
             implementation_id="native_torch.gated_rms_norm",
-            provider="native_torch", priority=0, deterministic=True,
-            supports=_supports, apply=gated_apply,
+            provider="native_torch",
+            priority=0,
+            deterministic=True,
+            supports=_supports,
+            apply=gated_apply,
         ),
         Implementation(
             operation="linear_attention",
             implementation_id="native_torch.linear_attention",
-            provider="native_torch", priority=0, deterministic=True,
-            supports=_supports, apply=linear_apply,
+            provider="native_torch",
+            priority=0,
+            deterministic=True,
+            supports=_supports,
+            apply=linear_apply,
         ),
     )
 )

@@ -11,7 +11,8 @@ requires-python = ">=3.12"
 dependencies = ["torch>=2.13"]
 
 [project.optional-dependencies]
-fla = ["flash-linear-attention>=0.5.2"]
+# KDA calls tested private FLA kernel interfaces.
+fla = ["flash-linear-attention==0.5.2", "fla-core==0.5.2"]
 liger = ["liger-kernel==0.8.1"]
 # scattermoe publishes no PyPI distribution; 0.3.0 is the version at this commit.
 scattermoe = [
@@ -19,11 +20,9 @@ scattermoe = [
 ]
 # TileLang backs fla's gated-delta-rule backward on Hopper (fla enables it by
 # default on sm90 with Triton >= 3.4.0).
-tilelang = ["tilelang"]
+tilelang = ["tilelang==0.1.14"]
 providers = ["mlops[fla,liger,scattermoe,tilelang]"]
 dev = ["pytest", "ruff"]
-# GLM KDA uses private FLA kernel interfaces; retain the tested versions.
-glm = ["flash-linear-attention==0.5.2", "fla-core==0.5.2", "tilelang==0.1.14"]
 # MoonEP is installed separately by scripts/setup_expert_parallel.sh: its
 # upstream metadata pins an older Cutlass DSL than the supported Quack stack.
 ep-quack = [
@@ -46,15 +45,17 @@ where = ["src"]
 include = ["mlops*"]
 
 [tool.setuptools.package-data]
-"mlops.glm" = ["provenance.json", "kernels/*LICENSE"]
+"mlops.kernels.kda" = ["provenance.json", "*LICENSE"]
+"mlops.kernels.sparse_mla" = ["provenance.json", "*LICENSE"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
   "gpu: requires a CUDA device",
   "expert_parallel: opt-in Hopper/NCCL checks; enable with --run-expert-parallel",
 ]
 
 [tool.ruff]
-extend-exclude = ["tests/glm/references"]
+extend-exclude = ["tests/operations/references"]
 line-length = 88
 target-version = "py312"

@@ -74,7 +74,7 @@ def _estimate(x, weight, _eps=1e-5, *, entrypoint, **_kwargs) -> CostHints:
 
 
 def forward(x, weight, eps=1e-5):
-    """Return Liger ``(output, rstd)`` using Llama casting and offset zero."""
+    """Return Liger ``(output, rstd)`` with rounding before the affine gain."""
     if _liger_forward is None:
         raise RuntimeError(f"liger-kernel is unavailable: {_IMPORT_ERROR}")
     output, _x_rows, rstd, _block, _warps, _casting = _liger_forward(

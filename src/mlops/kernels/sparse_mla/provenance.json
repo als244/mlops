@@ -1,0 +1,19 @@
+{
+  "tilelang": {
+    "tilelang/sparse_mla_fwd.py": {
+      "url": "https://raw.githubusercontent.com/tile-ai/tilelang/194c1b897aa5269e9a89d44c88efdf578a3df620/examples/deepseek_v32/sparse_mla_fwd.py",
+      "sha256": "3c79a33636ec3c9cc50014e2b61b365143eba5d4cc34eed4a1ef057cbe072c30",
+      "bytes": 11784
+    },
+    "tilelang/sparse_mla_bwd.py": {
+      "url": "https://raw.githubusercontent.com/tile-ai/tilelang/194c1b897aa5269e9a89d44c88efdf578a3df620/examples/deepseek_v32/sparse_mla_bwd.py",
+      "sha256": "2d4e02717d42be6f22bb5288d972cc4903b845b573aaac2ff731bb9fdcbf0cbf",
+      "bytes": 13925
+    },
+    "tilelang/LICENSE": {
+      "url": "https://raw.githubusercontent.com/tile-ai/tilelang/194c1b897aa5269e9a89d44c88efdf578a3df620/LICENSE",
+      "sha256": "f70e5cdc24c3797af741930440086f9a0ad36930b05a3dfc25b420936dc2cfa1",
+      "bytes": 1283
+    }
+  }
+}

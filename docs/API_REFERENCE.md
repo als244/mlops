@@ -5,12 +5,16 @@ package requires PyTorch 2.13 or newer.
 
 ## Contents
 
-1. [Public tensor APIs](#public-tensor-apis)
-2. [Optimizer APIs](#optimizer-apis)
-3. [Operation categories](#operation-categories)
-4. [Dispatch and development APIs](#dispatch-and-development-apis)
-5. [Private implementation boundary](#private-implementation-boundary)
-6. [Contributor documentation](#contributor-documentation)
+- [Public tensor APIs](#public-tensor-apis)
+- [LoRA modules](#lora-modules)
+- [Attention and residual-mixing operations](#attention-and-residual-mixing-operations)
+- [Optimizer APIs](#optimizer-apis)
+- [Operation categories](#operation-categories)
+- [Dispatch and development APIs](#dispatch-and-development-apis)
+- [Private implementation boundary](#private-implementation-boundary)
+- [Contributor documentation](#contributor-documentation)
+- [Expert-parallel modules](#expert-parallel-modules)
+- [Sequential experts](#sequential-experts)
 
 ## Public tensor APIs
 
@@ -30,11 +34,13 @@ implementation ID, and constraint.
 `parameter_report`. [LoRA configuration and examples](LORA.md) describe target
 selection, frozen defaults, head loss, expert factors and memory accounting.
 
-## GLM building blocks
+## Attention and residual-mixing operations
 
-`mlops.glm` provides KDA, NoPE sparse MLA, pooled indexing, mHC, routing
-and clipped activation functions. [GLM.md](GLM.md) describes their precision,
-metadata, dependency and autograd contracts.
+KDA, tied-latent sparse attention, pooled indexing, mHC and sigmoid routing
+are general `mlops` tensor functions. [ATTENTION.md](ATTENTION.md) explains their
+precision, explicit metadata and optional accelerator dependencies.
+Clipped SwiGLU and sigmoid-gated RMSNorm are options on existing functions.
+All registered operators load through `mlops.bootstrap`.
 
 ## Optimizer APIs
 
@@ -59,9 +65,10 @@ optimizer, dtype, state, and tensor-entrypoint reference.
 | Normalization and activations | [Normalization and activations](OPS.md#normalization-and-activations) | [Normalization](OPS.md#normalization), [activations and rotary](OPS.md#activations-and-rotary-position) |
 | Rotary position | [Rotary position operations](OPS.md#rotary-position-operations) | [Activations and rotary](OPS.md#activations-and-rotary-position) |
 | Dense and latent attention | [Dense and latent attention](OPS.md#dense-and-latent-attention) | [Attention and sequence operations](OPS.md#attention-and-sequence-operations) |
-| DSA | [DSA indexing and selected attention](OPS.md#dsa-indexing-and-selected-attention) | [Selected-attention VJP](OPS.md#attention-and-sequence-operations) |
+| Sparse attention and indexing | [DSA indexing and selected attention](OPS.md#dsa-indexing-and-selected-attention) | [Selected-attention VJP](OPS.md#attention-and-sequence-operations) |
 | Hybrid mixers | [Hybrid linear-attention operations](OPS.md#hybrid-linear-attention-operations) | [Sequence-operation VJPs](OPS.md#attention-and-sequence-operations) |
 | Mixture of experts | [Mixture of experts](OPS.md#mixture-of-experts) | [MoE VJP](OPS.md#mixture-of-experts-1) |
+| Hyper-connections | [Residual-stream operations](OPS.md#hyper-connections) | ordinary PyTorch autograd |
 | Language-model losses/epilogues | [Language-model epilogues](OPS.md#language-model-epilogues) | [Loss VJPs](OPS.md#losses) |
 
 The [semantic quick index](OPS.md#quick-index) lists every public operation,
@@ -156,13 +163,15 @@ every operation as it was. Weight gradients another library computes and
 rounds -- FLA's causal convolution and gated RMSNorm, Liger's RMSNorm,
 ScatterMoE's experts -- come back as that library returns them. Autograd gives
 a parameter its gradient at the parameter's dtype, so eager training rounds
-the result again there; a caller that keeps gradients itself (ShadowSpill's
-`grad_dtype`) keeps what the operation returned. `weight_gradient_dtype`
+the result again there. A caller that manages returned gradient tensors directly
+can retain the operation's output dtype. `weight_gradient_dtype`
 reports the setting.
 
 Cost hints contain scalar metadata only and may be undefined. The canonical
-estimate of every operation with an opaque operator lives in
-`mlops.dispatch.logical_costs`, one estimator per operation. `flop_formula`
+estimate of every operation with an opaque operator is registered under
+`mlops.dispatch`, one estimator per operation. Common formulas live in
+`logical_costs.py`; KDA, tied-latent attention and pooled-indexing formulas live
+in `attention_costs.py`. `flop_formula`
 registers the decorated function as the FLOP count of one or more registered
 custom operators with PyTorch's flop counter, and `has_flop_formula` reports
 whether an operator has one; every operator this package registers does,
@@ -192,3 +201,10 @@ the owning preparation module and require no VJP.
 `mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
 TEMoELoRA modules with caller-owned groups and communication buffers.
 See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.md).
+
+## Sequential experts
+
+[SequentialMoE and SequentialMoELoRA](SEQUENTIAL_MOE.md) process experts
+individually with bounded per-expert workspace. Their package owns routing,
+expert execution and physical weight representations. Model architectures,
+checkpoint-name mappings and planner policies stay with the caller.
