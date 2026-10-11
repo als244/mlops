@@ -62,8 +62,8 @@ class _ExportedOperations(torch.nn.Module):
         sparse = torch.ops.mlops.sparse_latent_attention_tilelang_fwd(
             q, kv, indices, 0.125
         )
-        selection = torch.ops.mlops.pooled_topk_builtin_tiled(
-            q, kv, kv, beta, kv[:2], host_boundaries, 4, 64, 128
+        selection = torch.ops.mlops.pooled_topk_builtin_triton(
+            q, kv, kv, beta, kv[:2], host_boundaries, 4
         )
         return kda, sparse, selection
 
@@ -99,7 +99,7 @@ program = torch.export.load(sys.argv[1])
 targets = {str(n.target) for n in program.graph.nodes if n.op == "call_function"}
 assert "mlops.kimi_delta_attention_fla_fwd.default" in targets
 assert "mlops.sparse_latent_attention_tilelang_fwd.default" in targets
-assert "mlops.pooled_topk_builtin_tiled.default" in targets
+assert "mlops.pooled_topk_builtin_triton.default" in targets
 assert "fla" not in sys.modules
 assert "tilelang" not in sys.modules
 assert not any(n.startswith("mlops.glm") for n in sys.modules)

@@ -177,7 +177,7 @@ replay is correct.
 | `dsa_selection_override` | diagnostic selection | context manager | caller-supplied selection |
 | `dsa_attention` | selected attention | `[T,Hq,Dv]` | `builtin.dsa_attention.sparse` |
 | `sparse_latent_attention`, `sparse_mla` | tied-latent attention / composition | `[T,H,L]` / `[T,H,Dv]` | `builtin.sparse_latent_attention.tilelang` / composed |
-| `pooled_topk` | pooled causal selection | `[T,K+pool_size-1]` | `builtin.pooled_topk.tiled` |
+| `pooled_topk` | pooled causal selection | `[T,K+pool_size-1]` | `builtin.pooled_topk.triton` |
 | `kimi_delta_attention`, `kda_decay` | recurrent attention / FP32 decay | `[T,H,D]` | `fla.kimi_delta_attention.chunk` / composed |
 | `sigmoid_topk` | expert selection | IDs and weights `[T,K]` | composed PyTorch |
 | `mhc_normalize_streams`, `mhc_coefficients`, `mhc_combine` | residual streams | normalized streams / coefficients / mixed streams | composed PyTorch |
@@ -1226,14 +1226,24 @@ FP32 atomics in dKV mean bitwise deterministic gradients are not guaranteed.
 ### `pooled_topk`
 
 `pooled_topk(q, key, gates, head_weights, position_bias, boundaries, *,
-top_k=2048, query_chunk=64, key_chunk=128)` selects pooled causal keys.
+top_k=2048)` selects pooled causal keys.
 CUDA inputs are `q[T,H,D]`, `key[T,D]`, `gates[T,D]`,
 `head_weights[T,H]`, and `position_bias[pool_size,D]`.
 `boundaries` is an integer CPU tensor with sequence boundaries, passed as runtime
 data. Output is INT32 `[T,top_k+pool_size-1]`, padded with -1.
-Selection is non-differentiable. Scores use bounded `query_chunk` and `key_chunk`
-tiles; short sequences select all causal keys without scoring.
-Implementation: `builtin.pooled_topk.tiled`. Ties need not match another top-k implementation.
+Selection is non-differentiable; short sequences select all causal keys without
+scoring. The implementation, `builtin.pooled_topk.triton`, pools the keys of each
+sequence once, then one Triton launch per chunk of queries scores the chunk
+against every pooled key with the scale, ReLU and head weights applied in
+registers, and a second launch reads each query's FP32 scores and writes its
+selection, the cutoff found by a binary search over the float bit patterns and
+ties going to the lowest pool. A chunk's scores stay within 256 MiB, and a query
+wider than 16384 pools selects with `torch.topk` instead. Queries and keys that
+share a 16-bit dtype are scored on the tensor cores; any other dtypes are scored
+in FP32, which they reach exactly; the width may be at most 256. Ties need not
+match another top-k implementation, and the heads sum in another order than in
+PyTorch arithmetic, so a cutoff between scores closer than FP32 rounding may
+select either.
 
 ## Hybrid linear-attention operations
 
@@ -2089,7 +2099,7 @@ order.
 | `gated_rms_norm` | `fla.gated_rms_norm` | `native_torch.gated_rms_norm` |
 | `kimi_delta_attention` | `fla.kimi_delta_attention.chunk` | none |
 | `sparse_latent_attention` | `builtin.sparse_latent_attention.tilelang` | none |
-| `pooled_topk` | `builtin.pooled_topk.tiled` | none |
+| `pooled_topk` | `builtin.pooled_topk.triton` | none |
 | `linear_attention` | `fla.linear_attention.gated_delta_rule` | `native_torch.linear_attention` |
 | `linear_mixer` | `builtin.linear_mixer.packed` | `native_torch.linear_mixer.per_sequence` |
 | `dsa_attention` | `builtin.dsa_attention.sparse` | `native_torch.dsa_attention` |
