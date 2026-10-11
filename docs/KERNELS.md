@@ -32,7 +32,10 @@ backward, immutability, and capture tests.
 sequence metadata construction, and retained license/provenance. It does not
 retain caller tensor views by identity. `src/mlops/kernels/sparse_mla/` contains
 the attributed TileLang forward/backward kernels. Pooled index selection lives
-in `src/mlops/kernels/pooled_indexer.py`.
+in `src/mlops/kernels/pooled_indexer.py`: a Triton kernel that scores a chunk of
+queries against every pooled key with the head reduction fused, and a selection
+kernel that searches each query's FP32 scores for its cutoff and writes its
+selection.
 
 The existing SwiGLU kernels accept a compile-time clipping limit in both directions;
 the default avoids the clipping branches. Gated RMSNorm threads the selected

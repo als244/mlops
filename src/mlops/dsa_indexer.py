@@ -101,8 +101,6 @@ def pooled_topk(
     boundaries,
     *,
     top_k=2048,
-    query_chunk=64,
-    key_chunk=128,
 ):
     if (
         q.ndim != 3
@@ -122,14 +120,8 @@ def pooled_topk(
         raise ValueError(
             "Packed sequence boundaries must be explicit CPU integer metadata"
         )
-    if (
-        top_k < position_bias.shape[0]
-        or top_k % position_bias.shape[0]
-        or min(query_chunk, key_chunk) < 1
-    ):
-        raise ValueError(
-            "top_k must be a positive multiple of pool size and tile sizes must be positive"
-        )
+    if top_k < position_bias.shape[0] or top_k % position_bias.shape[0]:
+        raise ValueError("top_k must be a positive multiple of pool size")
     if not all(
         t.is_cuda and t.device == q.device
         for t in (q, key, gates, head_weights, position_bias)
@@ -144,8 +136,6 @@ def pooled_topk(
         position_bias,
         boundaries,
         top_k=top_k,
-        query_chunk=query_chunk,
-        key_chunk=key_chunk,
         surface="semantic",
     )
     return implementation.apply(
@@ -156,8 +146,6 @@ def pooled_topk(
         position_bias,
         boundaries,
         top_k=top_k,
-        query_chunk=query_chunk,
-        key_chunk=key_chunk,
     )
 
 

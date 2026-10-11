@@ -61,7 +61,7 @@ pooled_indexer = importlib.import_module("mlops.providers.builtin.pooled_indexer
 FORWARD_OPERATORS = {
     "kimi_delta_attention_fla_fwd": kda._forward,
     "sparse_latent_attention_tilelang_fwd": sparse_latent._forward,
-    "pooled_topk_builtin_tiled": pooled_indexer._select,
+    "pooled_topk_builtin_triton": pooled_indexer._select,
     "lora_grouped_linear_fwd": lora_grouped._forward,
     "lora_route": lora_routing._route,
     "lora_dispatch": lora_routing._dispatch,

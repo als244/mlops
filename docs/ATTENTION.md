@@ -122,24 +122,30 @@ and gate in FP32, then cast the result to the input dtype.
 ## Pooled indexing
 
 `pooled_topk(q, key, gates, head_weights, position_bias,
-boundaries, *, top_k=2048, query_chunk=64, key_chunk=128)` returns fixed-size
-INT32 `[T,top_k+pool_size-1]` selected indices, padded with -1.
+boundaries, *, top_k=2048)` returns fixed-size INT32 `[T,top_k+pool_size-1]`
+selected indices, padded with -1.
 
 - Payloads are CUDA tensors; `boundaries` is small, explicit CPU metadata.
 - CPU metadata is a runtime input to the custom op; changing its contents does
   not recompile the tested graph.
-- Scores are tiled per sequence. No global `[total_tokens,total_tokens]`
-  score matrix is allocated.
+- The keys of each sequence are pooled once, then one Triton launch per chunk
+  of queries scores the chunk against every pooled key with the scale, ReLU and
+  head weights applied in registers, and a second launch reads each query's
+  FP32 scores and writes its selection, the cutoff found by a binary search
+  over the float bit patterns and ties going to the lowest pool (a query wider
+  than 16384 pools selects with `torch.topk` instead). A chunk's scores stay
+  within 256 MiB, so no global `[total_tokens,total_tokens]` matrix exists and
+  a call makes a few dozen allocations however long the sequence.
+- Queries and keys sharing a 16-bit dtype are scored on the tensor cores; any
+  other dtypes are scored in FP32, which they reach exactly. The width may be
+  at most 256.
 - If a sequence fits within the key budget, every causal key is selected
   without score computation.
 - Tied top-k scores may select different equally ranked pools from
   Transformers' `torch.topk`. These are valid ties, but different selected
   keys can change attention outputs. Bitwise checkpoint parity is not claimed.
-- The current long-sequence ranking path uses PyTorch CUDA operations inside
-  the custom op. It is bounded but not yet a fused high-throughput indexer.
-
-Selection is non-differentiable, matching the published implementation. Any
-separate indexer-training objective would need its own explicitly defined path.
+  The heads sum in another order than in PyTorch arithmetic, so a cutoff
+  between scores closer than FP32 rounding may select either.
 
 ## Sparse attention and MLA
 

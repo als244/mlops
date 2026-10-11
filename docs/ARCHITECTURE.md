@@ -274,7 +274,7 @@ these checks. See [configuration, installation and validation](EXPERT_PARALLEL.m
 KDA, sparse latent attention and pooled indexing follow the same semantic →
 registration → kernel structure as other operations. Their implementation IDs are
 `fla.kimi_delta_attention.chunk`, `builtin.sparse_latent_attention.tilelang`, and
-`builtin.pooled_topk.tiled`. Normal bootstrap registers their custom operations
+`builtin.pooled_topk.triton`. Normal bootstrap registers their custom operations
 without importing FLA or TileLang. The accelerator libraries load at execution.
 
 KDA stays distinct from Gated DeltaNet because it has per-channel decay and a
