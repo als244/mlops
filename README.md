@@ -43,11 +43,11 @@ dependency.
 ```
 
 The script creates `.venv`, installs the supported PyTorch, installs mlops
-editable with every implementation provider — flash-linear-attention,
-liger-kernel, scattermoe, and tilelang — plus the FlashAttention-3 wheel
-from the PyTorch index (activated automatically on Hopper GPUs) and the
-development tools, and verifies the installation. To use an existing
-virtual or Conda environment:
+editable with every implementation provider — FlashAttention-3,
+flash-linear-attention, liger-kernel, scattermoe, and tilelang — and the
+development tools, and verifies the installation. FlashAttention-3 is
+installed whatever the local GPU and activated automatically on Hopper GPUs.
+To use an existing virtual or Conda environment:
 
 ```bash
 ./scripts/setup.sh --python "$CONDA_PREFIX/bin/python"
@@ -108,8 +108,18 @@ ruff check src/mlops tests
 
 `mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
 TEMoELoRA modules with caller-owned groups and communication buffers.
-The optional installer selects/downloads the matching CUDA build tools and sets
-up runtime libraries in the selected environment:
+Their backends are opt-in: setup installs them after everything else, which
+keeps the cuBLAS that Transformer Engine needs. Running setup without the
+flag restores the cuBLAS that torch pins, so pass it every time for an
+environment that uses TE:
+
+```bash
+./scripts/setup.sh --python /path/to/python --expert-parallel both
+```
+
+The optional installer it runs selects/downloads the matching CUDA build tools
+and sets up runtime libraries in the selected environment. It also adds the
+backends to an environment that is already set up:
 
 ```bash
 ./scripts/setup_expert_parallel.sh --python /path/to/python --backend both
