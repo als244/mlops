@@ -6,20 +6,24 @@ readonly default_environment="${project_root}/.venv"
 
 python_executable=""
 torch_backend="auto"
+expert_parallel=""
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/setup.sh [--python PATH] [--torch-backend BACKEND]
+                          [--expert-parallel quack|te|both]
 
 Create a complete mlops development environment.  By default the script
 creates .venv with Python 3.12 and automatically selects the installed GPU's
 PyTorch backend.  --python installs into an existing virtual or Conda
 environment instead.  Every optional implementation provider is installed:
-flash-linear-attention, liger-kernel, scattermoe, and tilelang, plus the
-FlashAttention-3 wheel from the PyTorch index, which mlops activates
-automatically on Hopper GPUs. The separate, optional expert-parallel modules
-can be added afterwards with scripts/setup_expert_parallel.sh; see
-docs/EXPERT_PARALLEL.md for their Hopper dependencies.
+FlashAttention-3, flash-linear-attention, liger-kernel, scattermoe, and
+tilelang. FlashAttention-3 is installed whatever the local GPU, and mlops
+activates it automatically on Hopper GPUs.  --expert-parallel also installs
+the optional expert-parallel backends -- Quack, Transformer Engine, or both,
+each with MoonEP -- through scripts/setup_expert_parallel.sh, which also adds
+them to an existing environment; see docs/EXPERT_PARALLEL.md for their
+Hopper dependencies.
 EOF
 }
 
@@ -33,6 +37,14 @@ while (($#)); do
     --torch-backend)
       [[ $# -ge 2 ]] || { echo "--torch-backend requires a value" >&2; exit 2; }
       torch_backend="$2"
+      shift 2
+      ;;
+    --expert-parallel)
+      [[ $# -ge 2 ]] || { echo "--expert-parallel requires quack, te, or both" >&2; exit 2; }
+      case "$2" in
+        quack|te|both) expert_parallel="$2" ;;
+        *) echo "--expert-parallel must be quack, te, or both" >&2; exit 2 ;;
+      esac
       shift 2
       ;;
     --help|-h)
@@ -87,25 +99,15 @@ echo "[2/4] Installing mlops with every implementation provider"
   --torch-backend "${torch_backend}" \
   --editable "${project_root}[providers,dev]"
 
-echo "[3/4] Installing FlashAttention-3 for this CUDA runtime"
-# FA3 is published only on the PyTorch index -- the PyPI release is empty and
-# yanked -- and that index serves one build per CUDA runtime under the same
-# file name. The root index is the CUDA 12 build, which fails to load beside a
-# CUDA 13 torch, so ask torch which runtime it was built for and take the
-# matching variant.
-cuda_index="$("${python_executable}" -c '
-import torch
-
-version = torch.version.cuda
-print("cu" + version.replace(".", "") if version else "cpu")
-')"
-if [[ "${cuda_index}" == "cpu" ]]; then
-  echo "  skipped: FlashAttention-3 needs a CUDA build of PyTorch"
-else
-  "${uv_executable}" pip install \
+if [[ -n "${expert_parallel}" ]]; then
+  echo "[3/4] Installing the '${expert_parallel}' expert-parallel backends"
+  # Last of the installs: installing torch restores the cuBLAS its wheel pins,
+  # and Transformer Engine needs the newer one this step puts back.
+  "${project_root}/scripts/setup_expert_parallel.sh" \
     --python "${python_executable}" \
-    --extra-index-url "https://download.pytorch.org/whl/${cuda_index}" \
-    flash-attn-3
+    --backend "${expert_parallel}"
+else
+  echo "[3/4] Skipping the expert-parallel backends; --expert-parallel adds them"
 fi
 
 echo "[4/4] Verifying PyTorch, the accelerator, and the providers"
@@ -139,6 +141,17 @@ for module_name, package_name in (
 ):
     import_module(module_name)
     print(f"{package_name}: {version(package_name)}")
+
+# Importing FA3 loads its CUDA extension without running a kernel, so on any
+# GPU it shows whether Hopper could use this install. The wheel is the CUDA 13
+# build, which a CUDA 12 torch cannot load; mlops then keeps PyTorch's own
+# attention kernels, a working install rather than a broken one.
+try:
+    import_module("flash_attn_interface")
+except ImportError as error:
+    print(f"flash-attn-3: not loadable beside this torch, so unused ({error})")
+else:
+    print(f"flash-attn-3: {version('flash-attn-3')}")
 
 PY
 

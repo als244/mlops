@@ -11,6 +11,14 @@ requires-python = ">=3.12"
 dependencies = ["torch>=2.13"]
 
 [project.optional-dependencies]
+# FA3 is published only on the PyTorch index (its PyPI release is an empty,
+# yanked placeholder), one build per CUDA major under one file name. The cu130
+# build links libcudart.so.13, so it loads beside any CUDA 13 torch, cu132
+# included; mlops activates it at dispatch time, and only on Hopper.
+fa3 = [
+  "flash-attn-3 @ https://download.pytorch.org/whl/cu130/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "flash-attn-3 @ https://download.pytorch.org/whl/cu130/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_34_aarch64.whl ; sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
 # KDA calls tested private FLA kernel interfaces.
 fla = ["flash-linear-attention==0.5.2", "fla-core==0.5.2"]
 liger = ["liger-kernel==0.8.1"]
@@ -21,7 +29,7 @@ scattermoe = [
 # TileLang backs fla's gated-delta-rule backward on Hopper (fla enables it by
 # default on sm90 with Triton >= 3.4.0).
 tilelang = ["tilelang==0.1.14"]
-providers = ["mlops[fla,liger,scattermoe,tilelang]"]
+providers = ["mlops[fa3,fla,liger,scattermoe,tilelang]"]
 dev = ["pytest", "ruff"]
 # MoonEP is installed separately by scripts/setup_expert_parallel.sh: its
 # upstream metadata pins an older Cutlass DSL than the supported Quack stack.
