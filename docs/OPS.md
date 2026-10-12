@@ -1652,7 +1652,9 @@ Returns `[...,N*D]` in FP32 for a caller-owned coefficient projection.
 `mhc_coefficients(streams, projected, bias, scale, *,
 sinkhorn_eps=1e-6, iterations=20)` turns FP32 projected coefficients into
 `(post, mixing, collapsed)`. Given `streams[...,N,D]`, `projected`
-has shape `[...,N*(N+2)]`, `bias[N*(N+2)]`, and `scale[3]`.
+has shape `[...,N*(N+2)]`, `bias[N*(N+2)]`, and `scale[3]`; `bias` and
+`scale` widen to FP32 whatever their dtype, so with the projection the whole
+coefficient computation is FP32, as DeepSeek's and GLM's mHC train it.
 Sigmoid/softmax and `iterations` of Sinkhorn normalization run in FP32;
 `sinkhorn_eps` stabilizes them. `collapsed[...,D]` returns in the streams'
 dtype; post and mixing remain FP32. The function is differentiable.

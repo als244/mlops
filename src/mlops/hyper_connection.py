@@ -12,7 +12,10 @@ def mhc_normalize_streams(streams, *, eps=1e-5):
 def mhc_coefficients(
     streams, projected, bias, scale, *, sinkhorn_eps=1e-6, iterations=20
 ):
-    """Convert externally projected FP32 logits into mHC coefficients."""
+    """Convert externally projected FP32 logits into mHC coefficients.
+
+    The coefficients are computed in FP32 whatever the bias and scale dtypes.
+    """
     if streams.ndim < 3:
         raise ValueError("Expected [..., streams, hidden] input")
     count = streams.shape[-2]
@@ -31,9 +34,10 @@ def mhc_coefficients(
         raise ValueError("Sinkhorn iterations must be positive")
     pre, post, mixing = projected.split((count, count, count * count), dim=-1)
     pre_bias, post_bias, mixing_bias = bias.float().split((count, count, count * count))
-    pre = (pre * scale[0] + pre_bias).sigmoid() + sinkhorn_eps
-    post = 2 * (post * scale[1] + post_bias).sigmoid()
-    mixing = (mixing * scale[2] + mixing_bias).unflatten(-1, (count, count))
+    pre_scale, post_scale, mixing_scale = scale.float().unbind()
+    pre = (pre * pre_scale + pre_bias).sigmoid() + sinkhorn_eps
+    post = 2 * (post * post_scale + post_bias).sigmoid()
+    mixing = (mixing * mixing_scale + mixing_bias).unflatten(-1, (count, count))
     mixing = mixing.softmax(-1) + sinkhorn_eps
     mixing = mixing / (mixing.sum(-2, keepdim=True) + sinkhorn_eps)
     for _ in range(iterations - 1):
