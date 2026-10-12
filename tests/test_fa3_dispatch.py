@@ -41,7 +41,7 @@ def test_builtin_flash_attention_activates_fa3_on_hopper():
         for _ in range(3)
     )
     output = mlops.flash_attention(q, k, v, _offsets(lengths), max(lengths), causal=True)
-    assert builtin_flash_attention._FA3_ACTIVE
+    assert builtin_flash_attention._maybe_activate_fa3(q.device)
 
     references = []
     start = 0
