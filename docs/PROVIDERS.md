@@ -15,9 +15,9 @@ modules directly.
 6. [Non-differentiable state-update operations](#non-differentiable-state-update-operations)
 7. [Explicit forward and backward](#explicit-forward-and-backward)
 8. [Support and cost hints](#support-and-cost-hints)
-9. [Atomic example: Liger RMSNorm](#atomic-example-liger-rmsnorm)
-10. [Composite example: ScatterMoE](#composite-example-scattermoe)
-11. [Future SonicMoE compatibility](#future-sonicmoe-compatibility)
+9. [Atomic example: FLA L2 norm](#atomic-example-fla-l2-norm)
+10. [Composite example: the composed builtin MoE](#composite-example-the-composed-builtin-moe)
+11. [SonicMoE](#sonicmoe)
 12. [Future QuACK compatibility](#future-quack-compatibility)
 13. [Acceptance checklist](#acceptance-checklist)
 
@@ -221,60 +221,108 @@ Use `None` for unknown and `0` only for known-zero. Workspace excludes model
 state, inputs, outputs, autograd residuals, reusable tables/prepacked weights,
 allocator cache, and runtime leeway. Profiling remains authoritative.
 
-## Atomic example: Liger RMSNorm
+## Atomic example: FLA L2 norm
 
-[`liger/rms_norm.py`](../src/mlops/providers/liger/rms_norm.py) adapts Liger Kernel 0.8.1's low-level
-RMSNorm forward/backward functions. It does not monkey patch a model or use
-Liger's plain `autograd.Function` as the compiler boundary.
+The `l2_norm` adapter in [`fla/hybrid.py`](../src/mlops/providers/fla/hybrid.py)
+wraps flash-linear-attention's low-level L2-norm forward and backward
+functions under `torch.no_grad()`. It does not use FLA's own
+`autograd.Function` as the compiler boundary.
 
 The adapter:
 
-- computes normalization in FP32, rounds normalized activations to the input
-  dtype before applying the gain, and uses offset zero and `in_place=False`;
-- derives launch scalars from input geometry;
-- gates the exact supported CUDA dtype/layout/width range;
-- reports Liger's per-invocation dweight partials as backward workspace;
-- gives both custom operators flop formulas that delegate to the RMSNorm
-  canonical estimate; and
-- owns functional fake/autograd custom-op targets.
+- gates on CUDA tensors through the provider's shared `_cuda_support` check;
+- owns a functional forward custom-op target that returns the normalized
+  output and the `rstd` residual, with a fake that reproduces both;
+- owns a functional backward custom-op target and registers autograd that
+  saves exactly the residuals the backward reads and marks `rstd`
+  non-differentiable; and
+- gives both custom operators flop formulas that delegate to the L2-norm
+  canonical estimate.
 
 This is the template for a small third-party kernel integration.
 
-## Composite example: ScatterMoE
+## Composite example: the composed builtin MoE
 
-[`scattermoe/moe.py`](../src/mlops/providers/scattermoe/moe.py) and
-[`scattermoe/engine.py`](../src/mlops/providers/scattermoe/engine.py) adapt ScatterMoE 0.3.0's low-level
-scatter/group operations. They do not instantiate its parameter-owning MLP or
-use `ParallelLinear.apply` as the compiler boundary.
+[`builtin/moe_composed.py`](../src/mlops/providers/builtin/moe_composed.py)
+splits the routed MoE into two opaque regions -- routing and the `w13`
+projection, then activation, the `w2` projection and the combine -- behind
+the one public `moe` contract, so AOTAutograd can rematerialize the first
+without replaying the second.
 
 The public MoE ABI keeps routing policy, auxiliary loss, residual/shared-expert
-composition, and logical parameters stable. ScatterMoE replaces only routed
-expert execution. Its assignment ordering and offsets are private custom-op
-residuals. Model-owned `w13`/`w2` tensors are passed directly.
+composition, and logical parameters stable. The regions' assignment ordering,
+offsets and the `h13` pre-activation are private custom-op residuals.
+Model-owned `w13`/`w2` tensors are passed directly.
 
 This is the template for a composite provider whose private VJP state differs
 from another implementation without changing model code.
 
-## Future SonicMoE compatibility
+## SonicMoE
 
-The canonical public MoE ABI was checked against
-[SonicMoE](https://github.com/Dao-AILab/sonic-moe) at commit
-`0349404acd7952592f73d180ff0c1510f6d112c2`. SonicMoE exposes both fused
-router/top-k execution and execution from caller-supplied sorted routing inputs,
-and privately uses expert-frequency offsets plus gather/scatter/reverse-scatter
-indices.
+[`sonicmoe/moe.py`](../src/mlops/providers/sonicmoe/moe.py) and
+[`sonicmoe/moe_composed.py`](../src/mlops/providers/sonicmoe/moe_composed.py)
+implement `moe` on [SonicMoE](https://github.com/Dao-AILab/sonic-moe)'s fused
+kernels (commit `7396f3e`, on Quack `35266c3`): the routing metadata, the
+gathered up projection with SwiGLU, the down projection with the
+score-weighted combine, and the fused backward kernels. Routing, the
+auxiliary loss and the probability sums are the package's own
+(`kernels/moe_router.py`, `providers/moe_common.py`), so every routing mode
+behaves exactly as with the builtin.
 
-Those values should remain private to a future `sonicmoe.moe` custom-op schema.
-The logical package weights `[E,H,2I]` and `[E,I,H]` correspond to SonicMoE's
-`[2I,H,E]` and `[H,I,E]` views with concatenated gate/up layout. A future
-adapter must validate accepted strides and make any required packing an
-explicit caller/module/artifact-owned tensor rather than hidden provider state.
-The initial mlops adapter is intentionally gated to SM90 and SM100 only,
-regardless of any additional architectures supported upstream. Its support
-function accepts exactly `(9, 0)` and `(10, 0)` until another architecture has
-independent correctness, capture, and performance evidence.
-The file-by-file integration workflow is documented in
-[Worked example: add SonicMoE to `moe`](EXTENDING.md#worked-example-add-sonicmoe-to-moe).
+The adapters accept CUDA tensors on compute capability 9.x and 10.x, bfloat16
+activations and expert weights, contiguous weights, and widths that are
+multiples of 8; there `sonicmoe.moe.composed` (priority 110) is the semantic
+default and `sonicmoe.moe` (95) the single-operator form. Both are
+semantic-only: the explicit façade's residual tuple is the builtin's.
+SonicMoE's expert-frequency offsets, gather/scatter/reverse indices and the
+saved pre-activation are private custom-op residuals. The logical package
+weights `w13 [E,2I,H]` (gate rows, then up rows) and `w2 [E,H,I]` are
+SonicMoE's native `[E, out, in]` storage with its concatenated gate/up
+layout, so the adapters take views and copy nothing. Quack is set up through
+`mlops.quack_runtime` (patches, tuning cache, SonicMoE imports that keep
+Quack's tuning policy).
+
+Quack tunes each GEMM once per key (function, shapes, stride pattern,
+dtypes) and, with `QUACK_CACHE_AUTOTUNING=1` (the runtime's default),
+persists the choice under `QUACK_CACHE_DIR`; later processes read it. Two
+things follow for anyone comparing runs across processes. Processes that
+tune independently can choose different tile configs, which accumulate in a
+different grouping and differ at an occasional bf16 rounding boundary. And
+a process that ran the tuning sweep itself -- candidates compiled in Quack's
+worker pool and benchmarked under CUDA-graph capture -- computes a slightly
+different, deterministic result for the rest of its life than a process that
+reads the cache, even for the same config. Both are valid roundings of the
+same math; for bitwise agreement between processes, tune in a separate
+process first (shadowspill's numerical gate runs a warm-up process before
+its arms) and point every process at one cache directory. The file-by-file
+structure is in
+[Worked example: the SonicMoE implementations of `moe`](EXTENDING.md#worked-example-the-sonicmoe-implementations-of-moe)
+
+FP8 expert weights are `QuackFP8Weight` containers, the expert-parallel
+path's parameter type (`expert_parallel/quack/parameters/fp8.py`): each
+weight's E4M3 rows and E4M3 transpose with one descale per row of each,
+quantized once -- `QuackFP8Weight.quantize(w13, interleaved=True)` and
+`QuackFP8Weight.quantize(w2)` from a checkpoint's weights, or `copy_` from a
+bf16/fp32 master after an optimizer step (both orientations by the Triton
+quantizers in `expert_parallel/quack/kernels/`). `w13`'s rows are stored
+interleaved, gate and up rows adjacent, the order Quack's paired SwiGLU
+epilogue reads; the logical view, `dequantize()` and the gradients stay in
+`nn.Linear` order. With such weights `moe` runs the experts' GEMMs in E4M3 on
+SM90 (`providers/sonicmoe/fp8.py`): the routed rows, the cotangents and the
+rematerialized activation are quantized per row per call by the same
+kernels, gathered or activated in the one pass; the up projection (with the
+SwiGLU epilogue), the down projection and the two activation-gradient GEMMs
+are the expert-parallel path's scale-aware epilogue kernels on the same
+routing metadata as the bf16 forms, so the saved pre-activation `h` and the
+residuals are unchanged. Weight gradients stay the bf16 varlen-K GEMMs, at
+the containers' logical dtype. The operators take containers as the
+expert-parallel operators do (a dispatch rule turns each into its
+components). `compute_precision` names the GEMMs' precision apart from the
+weights: `"fp8_current"` on bf16 weights quantizes them per call (straight
+through for their gradients), `"bf16"` on containers dequantizes them per
+call -- in every implementation, which is how the builtin and native
+implementations take FP8 weights. SM100 is declined for FP8 math until the
+kernels are validated there.
 
 ## Future QuACK compatibility
 
