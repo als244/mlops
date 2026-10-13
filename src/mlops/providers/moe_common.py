@@ -124,6 +124,21 @@ def routing_gradient(
     return grad_logits
 
 
+def skipped_gradient(like, dtype=None):
+    """The placeholder a backward operator returns for a gradient nobody asked
+    for (its parameter's ``needs_input_grad`` is false): an empty tensor at
+    the gradient's dtype, which the autograd wrapper turns into ``None``.
+    Operators return tensors, so the GEMM is skipped and this stands in."""
+    return torch.empty(
+        0, dtype=like.dtype if dtype is None else dtype, device=like.device
+    )
+
+
+def requested(gradient, needed):
+    """``gradient`` when its parameter asked for one, else ``None``."""
+    return gradient if needed else None
+
+
 def router_weight_gradient(grad_logits, router_input, router_weight, weight_grad_dtype):
     """``grad_logits.T @ router_input`` at ``weight_grad_dtype`` (the router's own
     when ``None``), in ``router_weight``'s strides.
@@ -274,6 +289,9 @@ def backward_routed(
     lengths: Sequence[int],
     swiglu_variant: str = "triton",
     weight_grad_dtype: torch.dtype | None = None,
+    need_router: bool = True,
+    need_w13: bool = True,
+    need_w2: bool = True,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -302,27 +320,33 @@ def backward_routed(
         )
 
         route_scale = route_weights.reshape(-1)[order.long()].float().contiguous()
-        scale_rows_(dispatched_grad, route_scale)
-        grad_w2 = grouped_mm_wgrad(
-            activated,
-            dispatched_grad,
-            offsets,
-            tuple(w2_experts.shape),
-            weight_grad_dtype,
-        )
+        if need_w2:
+            scale_rows_(dispatched_grad, route_scale)
+            grad_w2 = grouped_mm_wgrad(
+                activated,
+                dispatched_grad,
+                offsets,
+                tuple(w2_experts.shape),
+                weight_grad_dtype,
+            )
+        else:
+            grad_w2 = skipped_gradient(w2_experts, weight_grad_dtype)
         scale_rows_(grad_activated, route_scale)
         grad_h13 = swiglu_packed_backward(
             grad_activated,
             h13,
             variant=str(swiglu_variant),
         )
-        grad_w13 = grouped_mm_wgrad(
-            dispatched,
-            grad_h13,
-            offsets,
-            tuple(w13_experts.shape),
-            weight_grad_dtype,
-        )
+        if need_w13:
+            grad_w13 = grouped_mm_wgrad(
+                dispatched,
+                grad_h13,
+                offsets,
+                tuple(w13_experts.shape),
+                weight_grad_dtype,
+            )
+        else:
+            grad_w13 = skipped_gradient(w13_experts, weight_grad_dtype)
         grad_dispatched = grouped_mm_dgrad(grad_h13, w13_experts, offsets)
         grad_h2 = dispatch_backward(grad_dispatched, slots)
 
@@ -337,11 +361,15 @@ def backward_routed(
             lengths=lengths,
         )
         grad_logits_storage = grad_logits.to(logits.dtype)
-        grad_router = router_weight_gradient(
-            grad_logits_storage,
-            h2_flat.to(router_weight.dtype),
-            router_weight,
-            weight_grad_dtype,
+        grad_router = (
+            router_weight_gradient(
+                grad_logits_storage,
+                h2_flat.to(router_weight.dtype),
+                router_weight,
+                weight_grad_dtype,
+            )
+            if need_router
+            else skipped_gradient(router_weight, weight_grad_dtype)
         )
         add_router_input_gradient_(grad_h2, grad_logits_storage, router_weight)
         return (

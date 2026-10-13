@@ -13,6 +13,8 @@ from ..expert_weights import bf16_compute_support, dequantize_expert_weights
 from ..moe_common import (
     backward_routed,
     forward_routed,
+    requested,
+    skipped_gradient,
 )
 
 
@@ -227,6 +229,9 @@ def _backward_op(
     routing_mode: str,
     lengths: list[int],
     weight_grad_dtype: torch.dtype | None,
+    need_router: bool,
+    need_w13: bool,
+    need_w2: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     return backward(
         grad_output,
@@ -248,6 +253,9 @@ def _backward_op(
         lengths=lengths,
         weight_grad_dtype=weight_grad_dtype,
         swiglu_implementation="builtin.packed_swiglu.triton",
+        need_router=need_router,
+        need_w13=need_w13,
+        need_w2=need_w2,
     )
 
 
@@ -271,15 +279,24 @@ def _backward_fake(
     routing_mode,
     lengths,
     weight_grad_dtype,
+    need_router,
+    need_w13,
+    need_w2,
 ):
     del grad_aux, grad_probability_sum, logits, route_weights, route_ids
     del order, offsets, slots, h13, top_k, routing_mode, lengths
     return (
         torch.empty_like(h2),
         torch.empty_like(grad_output),
-        torch.empty_like(router_weight, dtype=weight_grad_dtype),
-        torch.empty_like(w13_experts, dtype=weight_grad_dtype),
-        torch.empty_like(w2_experts, dtype=weight_grad_dtype),
+        torch.empty_like(router_weight, dtype=weight_grad_dtype)
+        if need_router
+        else skipped_gradient(router_weight, weight_grad_dtype),
+        torch.empty_like(w13_experts, dtype=weight_grad_dtype)
+        if need_w13
+        else skipped_gradient(w13_experts, weight_grad_dtype),
+        torch.empty_like(w2_experts, dtype=weight_grad_dtype)
+        if need_w2
+        else skipped_gradient(w2_experts, weight_grad_dtype),
     )
 
 
@@ -415,7 +432,9 @@ def _autograd_backward(
         grad_probability_sum = torch.zeros(
             router_weight.shape[0], dtype=torch.float32, device=h2.device
         )
-    gradients = _backward_op(
+    # Inputs: h2, residual, router_weight, w13_experts, w2_experts, ...
+    needs = ctx.needs_input_grad
+    grad_h2, grad_residual, grad_router, grad_w13, grad_w2 = _backward_op(
         grad_output,
         grad_aux,
         grad_probability_sum,
@@ -424,8 +443,18 @@ def _autograd_backward(
         ctx.routing_mode,
         ctx.lengths,
         ctx.weight_grad_dtype,
+        bool(needs[2]),
+        bool(needs[3]),
+        bool(needs[4]),
     )
-    return (*gradients, None, None, None, None, None, None, None, None, None)
+    return (
+        grad_h2,
+        grad_residual,
+        requested(grad_router, needs[2]),
+        requested(grad_w13, needs[3]),
+        requested(grad_w2, needs[4]),
+        *([None] * 9),
+    )
 
 
 _forward_op.register_autograd(_autograd_backward, setup_context=_setup_context)

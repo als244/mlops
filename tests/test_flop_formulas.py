@@ -312,6 +312,9 @@ def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
             None,
             "native",
             [],
+            True,
+            True,
+            True,
         )
         == backward
     )
@@ -354,6 +357,8 @@ def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
         None,
         "native",
         [],
+        True,
+        True,
     )
     finish_backward = _count(
         ops.moe_sonicmoe_finish_bwd,
@@ -368,6 +373,7 @@ def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
         None,
         "native",
         [],
+        True,
     )
     assert prepare_backward + finish_backward == backward
 
@@ -436,6 +442,9 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
             "softmax_then_topk",
             [8],
             None,
+            True,
+            True,
+            True,
         )
         == backward
     )
@@ -453,6 +462,8 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
         "softmax_then_topk",
         [8],
         None,
+        True,
+        True,
     )
     finish_backward = _count(
         ops.moe_builtin_grouped_gemm_finish_bwd,
@@ -465,6 +476,7 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
         slots,
         top_k,
         None,
+        True,
     )
     donated = _count(
         ops.moe_builtin_grouped_gemm_finish_bwd_donate_h13,
@@ -477,6 +489,7 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
         slots,
         top_k,
         None,
+        True,
     )
     assert prepare_backward + finish_backward == backward
     assert donated == finish_backward
