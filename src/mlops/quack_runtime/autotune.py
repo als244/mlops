@@ -29,7 +29,7 @@ def apply():
     ):
         raise RuntimeError(
             "Unsupported Quack candidate generator. Use the pinned stock release "
-            "and import mlops.expert_parallel.quack before sonicmoe.functional."
+            "and import mlops.quack_runtime before sonicmoe.functional."
         )
     interface = sys.modules.get("quack.gemm_interface")
     mod_tuning = sys.modules.get("quack.gemm_runtime.autotune")
@@ -37,7 +37,7 @@ def apply():
         mod_tuning is not None and mod_tuning._MOD_TUNERS
     ):
         raise RuntimeError(
-            "Import mlops.expert_parallel.quack before creating or using Quack GEMM tuners"
+            "Import mlops.quack_runtime before creating or using Quack GEMM tuners"
         )
 
     @wraps(original)
@@ -73,8 +73,14 @@ def apply():
 
 
 @lru_cache(maxsize=1)
-def router_kernels():
-    """Load SonicMoE's router without adopting its global Quack tuning policy."""
+def sonicmoe_functional():
+    """Import SonicMoE's kernels without adopting its global Quack tuning policy.
+
+    Importing ``sonicmoe.functional`` replaces Quack's autotuner call, its
+    SM90/SM100 candidate generators and the tuned GEMM's candidate list; mlops
+    keeps its own. Returns the ``sonicmoe.functional`` package, whose
+    ``forward``, ``backward`` and ``triton_kernels`` submodules hold the kernels.
+    """
     import quack.autotuner as at
     import quack.gemm_config as gc
     from quack.gemm_interface import gemm_tuned
@@ -86,9 +92,7 @@ def router_kernels():
         gemm_tuned.configs,
     )
     try:
-        from sonicmoe.functional.backward import _topk_softmax_bwd
-        from sonicmoe.functional.forward import _topk_softmax_fwd
-        from sonicmoe.functional.triton_kernels import TC_topk_router_metadata_triton
+        from sonicmoe import functional
     finally:
         (
             at.Autotuner.__call__,
@@ -96,4 +100,15 @@ def router_kernels():
             gc._get_sm100_configs,
             gemm_tuned.configs,
         ) = saved
-    return _topk_softmax_fwd, _topk_softmax_bwd, TC_topk_router_metadata_triton
+    return functional
+
+
+@lru_cache(maxsize=1)
+def router_kernels():
+    """SonicMoE's router forward, backward and routing-metadata kernels."""
+    functional = sonicmoe_functional()
+    return (
+        functional.forward._topk_softmax_fwd,
+        functional.backward._topk_softmax_bwd,
+        functional.triton_kernels.TC_topk_router_metadata_triton,
+    )

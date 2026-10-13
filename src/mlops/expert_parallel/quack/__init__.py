@@ -13,10 +13,14 @@ def _initialize():
     global _initialized
     if _initialized:
         return
-    from .._compat import quack_autotune, quack_pipeline
+    from pathlib import Path
 
-    quack_pipeline.apply()
-    quack_autotune.apply()
+    from ...quack_runtime import initialize as initialize_quack_runtime
+    from ...quack_runtime import register_source_dir
+
+    initialize_quack_runtime()
+    # This package's own CuTe epilogues are kernel source Quack must fingerprint.
+    register_source_dir(Path(__file__).resolve().parents[1])
     from .._compat import initialize_moonep
 
     initialize_moonep()

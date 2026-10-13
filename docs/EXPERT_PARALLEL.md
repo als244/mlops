@@ -61,10 +61,13 @@ search path, so pip-installed cuDNN/NCCL need no system-wide installation.
 MoonEP's pinned upstream metadata requires Cutlass DSL 4.4.2, whereas the tested
 Quack stack requires 4.7.1. The setup script installs DSL 4.7.1 and installs
 MoonEP with `--no-deps`; installed MoonEP source remains unchanged. `pip check`
-reports this known metadata mismatch. The `ep-quack` and `ep-te` extras install
-the backend libraries; MoonEP must also be installed by the script above.
+reports this known metadata mismatch. The `ep-quack` extra (the `sonicmoe`
+provider extra, which brings Quack, plus Triton) and `ep-te` install the
+backend libraries; MoonEP must also be installed by the script above.
 
-Small, source-checked compatibility patches are isolated in this package:
+Small, source-checked compatibility patches are isolated in this package's
+`_compat/` and, for Quack, in `mlops/quack_runtime/` (shared with the
+SonicMoE provider):
 MoonEP singleton support, its planner compiler compatibility fix, Quack's
 one-stage SM90 pipeline correction, and its
 extended autotuning candidates. They apply in memory and never edit dependency
@@ -269,7 +272,7 @@ All implementation code lives in `src/mlops/expert_parallel/`:
 | `transformer_engine/` | TE layer, operators, communication and grouped expert math |
 | Each backend's `lora/` | LoRA layer, factor storage and forward/backward integration |
 | `lora.py`, `parameters.py`, `kernels/` | Shared LoRA configuration, BF16 compute weights and gradient reduction |
-| `_compat/` | Isolated, source-checked MoonEP and Quack runtime patches |
+| `_compat/` | Isolated, source-checked MoonEP runtime patches (Quack's are in `mlops/quack_runtime/`) |
 | `reference/` | Independent PyTorch routing/expert math, without optional backend imports |
 
 Backend code owns computation; application code owns optimizers, training,
