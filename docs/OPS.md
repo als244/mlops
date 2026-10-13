@@ -284,8 +284,7 @@ dimension. Backend shape errors are raised for incompatible inputs.
 
 **Implementations**
 
-`builtin.rms_norm.triton` (default), `liger.rms_norm`, or
-`native_torch.rms_norm`.
+`builtin.rms_norm.triton` (default) or `native_torch.rms_norm`.
 
 **Example**
 
@@ -1531,6 +1530,7 @@ moe(
     shared_w2: Tensor | None = None,
     shared_gate_weight: Tensor | None = None,
     shared_mode: str = "add",
+    compute_precision: str | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]
 ```
 
@@ -1546,9 +1546,9 @@ diagnostics.
 |---|---|---|
 | `h2` | `Tensor[...,D]`, `R` flattened rows | normalized expert input |
 | `residual` | same shape as `h2` | residual base |
-| `router_weight` | `Tensor[D,E]` | router projection |
-| `w13_experts` | `Tensor[E,D,2F]` | packed gate/up expert weights |
-| `w2_experts` | `Tensor[E,F,D]` | expert down weights |
+| `router_weight` | `Tensor[E,D]` | router projection (`nn.Linear` weight) |
+| `w13_experts` | `Tensor[E,2F,D]` | packed gate/up expert weights: per expert an `nn.Linear` weight whose first `F` rows are the gate and last `F` rows the up projection |
+| `w2_experts` | `Tensor[E,D,F]` | expert down weights (`nn.Linear` weights) |
 | `top_k` | positive `int` | routes selected per row |
 | `routing_mode` | `str` | `softmax_then_topk`, `topk_then_softmax`, or `sigmoid_noaux_tc` |
 | `router_bias` | `Optional[Tensor[E]]` | optional bias used for selection |
@@ -1556,10 +1556,11 @@ diagnostics.
 | `topk_group` | positive `int` | groups retained before expert selection |
 | `routed_scaling` | `float` | multiplier for selected route weights |
 | `lengths` | `Optional[Sequence[int]]` | sequence-wise auxiliary-loss boundaries; omitted means one segment |
-| `shared_w13` | `Optional[Tensor[D,2Fs]]` | optional shared gate/up projection |
-| `shared_w2` | `Optional[Tensor[Fs,D]]` | optional shared down projection |
-| `shared_gate_weight` | tensor compatible with `[D,1]` | required by sigmoid-gated shared mode |
+| `shared_w13` | `Optional[Tensor[2Fs,D]]` | optional shared gate/up projection (gate rows, then up rows) |
+| `shared_w2` | `Optional[Tensor[D,Fs]]` | optional shared down projection |
+| `shared_gate_weight` | tensor compatible with `[1,D]` | required by sigmoid-gated shared mode |
 | `shared_mode` | `Literal["add", "sigmoid"]` | shared-expert combination |
+| `compute_precision` | `Optional[str]` | the precision of the experts' GEMMs, apart from how the weights are stored. `None`: the weights' own -- FP8 when `w13_experts`/`w2_experts` are `QuackFP8Weight` containers (`expert_parallel/quack/parameters/fp8.py`: each weight's E4M3 rows and transpose with a descale per row, built once by `QuackFP8Weight.quantize(weight, interleaved=True)` for `w13` and `.quantize(weight)` for `w2`, or published from a master with `copy_`), bf16 otherwise. `"fp8_current"`: E4M3 GEMMs with current per-row scaling of the routed rows and cotangents, served by the SonicMoE implementations on SM90; bf16 weights are quantized per call. `"bf16"`: bf16 GEMMs, FP8 containers dequantized per call (every implementation). Weight gradients come at the weights' logical dtype in `nn.Linear` row order; implementations that cannot honor a request decline, and dispatch fails when none can |
 
 **Returns**
 
@@ -1578,14 +1579,16 @@ expert projections. Backward returns gradients for `h2`, `residual`,
 `router_weight`, `w13_experts`, and `w2_experts`; the builtin implementations
 return the weights' at
 [`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
-one is set, ScatterMoE its router's. Router bias, counts,
+one is set. Router bias, counts,
 probability diagnostics, and discrete route metadata do not receive gradients.
 The operation itself does not update router-bias or round counters.
 
 **Constraints and exceptions**
 
 - `h2.shape == residual.shape`.
-- Expert tensor dimensions must agree with `D`, `E`, and `F`.
+- Every weight is an `nn.Linear` weight, `[out, in]` per expert:
+  `router_weight` is `[E,D]`, `w13_experts[e]` is `[2F,D]` with gate rows then
+  up rows, and `w2_experts[e]` is `[D,F]`; their `D`, `E`, and `F` must agree.
 - `1 <= top_k <= E`.
 - Shared W13/W2 must be supplied together.
 - `shared_mode` must be `add` or `sigmoid`.
@@ -1597,9 +1600,12 @@ shapes or implementations raise their backend error.
 
 **Implementations**
 
-`builtin.moe.grouped_gemm_composed` (default), the single-region opaque control
-`builtin.moe.grouped_gemm`, `scattermoe.moe`, or `native_torch.moe`. The
-composed builtin keeps the same semantic call but exposes routing/dispatch/
+`sonicmoe.moe.composed` -- the default on compute capability 9.x and 10.x
+when the `sonicmoe` extra is installed -- and its single-region form
+`sonicmoe.moe`; `builtin.moe.grouped_gemm_composed` (the default elsewhere)
+and the single-region opaque control `builtin.moe.grouped_gemm`; or
+`native_torch.moe`. The SonicMoE forms are semantic-only and bfloat16-only.
+The composed builtin keeps the same semantic call but exposes routing/dispatch/
 `w13` separately from SwiGLU/`w2`/combine so AOT can rematerialize `h13`
 without replaying the expert down projection. Routed expert activation remains
 part of the selected MoE implementation; it does not consult the standalone
@@ -2086,7 +2092,7 @@ order.
 | `cross_entropy` | `builtin.cross_entropy.triton` | `native_torch.cross_entropy` |
 | `embedding` | `builtin.embedding.deterministic` | `native_torch.embedding` |
 | `gelu` | `builtin.gelu.aten_explicit_backward` | `native_torch.gelu` |
-| `rms_norm` | `builtin.rms_norm.triton` | `liger.rms_norm`, `native_torch.rms_norm` |
+| `rms_norm` | `builtin.rms_norm.triton` | `native_torch.rms_norm` |
 | `layer_norm` | `builtin.layer_norm.triton` | `native_torch.layer_norm` |
 | `swiglu` | `builtin.swiglu.triton` | `builtin.swiglu.triton_legacy`, `native_torch.swiglu` |
 | `packed_swiglu` | `builtin.packed_swiglu.triton` | `builtin.packed_swiglu.triton_legacy`, `native_torch.packed_swiglu` |
@@ -2107,7 +2113,7 @@ order.
 | `dsa_attention` | `builtin.dsa_attention.sparse` | `native_torch.dsa_attention` |
 | `dsa_indexer_key_norm` | `builtin.dsa_indexer_key_norm.layer_norm` | `native_torch.dsa_indexer_key_norm` |
 | `index_scores` | `builtin.index_scores.einsum` | `native_torch.index_scores` |
-| `moe` | `builtin.moe.grouped_gemm_composed` | `builtin.moe.grouped_gemm`, `scattermoe.moe`, `native_torch.moe` |
+| `moe` | `sonicmoe.moe.composed` on compute capability 9.x/10.x, else `builtin.moe.grouped_gemm_composed` | `sonicmoe.moe`, `builtin.moe.grouped_gemm`, `native_torch.moe` |
 
 ## Private dispatcher boundary
 
@@ -2125,7 +2131,7 @@ the provider source rather than frozen as another public ABI.
 All dispatcher schemas are functional (`mutates_args=()`), and the contract
 suite runs `torch.library.opcheck` over every registered opaque forward. Target
 names include operation, provider, and variant—for example
-`rms_norm_liger_fwd` and `moe_scattermoe_fwd`—so captured graphs retain exact
+`l2_norm_fla_fwd` and `moe_builtin_grouped_gemm_fwd`—so captured graphs retain exact
 implementation identity.
 
 ## Operation-package example
@@ -2612,8 +2618,9 @@ backward(
 ) -> tuple[grad_h2, grad_residual, grad_router, grad_w13, grad_w2]
 ```
 
-`h2` and `residual` have `[...,D]`; `router_weight` is `[D,E]`;
-`w13_experts` is `[E,D,2F]`; and `w2_experts` is `[E,F,D]`.
+`h2` and `residual` have `[...,D]`; `router_weight` is `[E,D]`;
+`w13_experts` is `[E,2F,D]` (gate rows, then up rows); and `w2_experts` is
+`[E,D,F]` -- every weight in `nn.Linear`'s `[out, in]` orientation.
 Backward requires cotangents for the differentiable public `output`, `aux`, and
 `probability_sum` roots. `counts` and discrete routing/dispatch metadata have
 no VJP. Forward and backward must use the same `top_k`, `routing_mode`, packed

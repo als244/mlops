@@ -39,8 +39,8 @@ moe_composed = importlib.import_module("mlops.providers.builtin.moe_composed")
 partial_rope = importlib.import_module("mlops.providers.builtin.partial_rope")
 rms_norm = importlib.import_module("mlops.rms_norm")
 rms_norm_builtin = importlib.import_module("mlops.providers.builtin.rms_norm")
-rms_norm_liger = importlib.import_module("mlops.providers.liger.rms_norm")
-scattermoe = importlib.import_module("mlops.providers.scattermoe.moe")
+sonicmoe_moe = importlib.import_module("mlops.providers.sonicmoe.moe")
+sonicmoe_moe_composed = importlib.import_module("mlops.providers.sonicmoe.moe_composed")
 rope = importlib.import_module("mlops.providers.builtin.rope")
 swiglu = importlib.import_module("mlops.providers.builtin.swiglu")
 
@@ -81,10 +81,11 @@ FORWARD_OPERATORS = {
     "moe_builtin_grouped_gemm_fwd": moe._forward_op,
     "moe_builtin_grouped_gemm_prepare_fwd": moe_composed._prepare_op,
     "moe_builtin_grouped_gemm_finish_fwd": moe_composed._finish_op,
-    "moe_scattermoe_fwd": scattermoe._forward_op,
+    "moe_sonicmoe_fwd": sonicmoe_moe._forward_op,
+    "moe_sonicmoe_prepare_fwd": sonicmoe_moe_composed._prepare_op,
+    "moe_sonicmoe_finish_fwd": sonicmoe_moe_composed._finish_op,
     "partial_rope_builtin_triton_fwd": partial_rope._forward_op,
     "rms_norm_builtin_triton_fwd": rms_norm_builtin._forward_op,
-    "rms_norm_liger_fwd": rms_norm_liger._forward_op,
     "rope_builtin_triton_table_fwd": rope._table_forward_op,
     "rope_builtin_triton_analytic_fwd": rope._analytic_forward_op,
     "packed_swiglu_builtin_triton_fwd": swiglu._packed_forward_op,
@@ -113,10 +114,11 @@ BACKWARD_OPERATORS = {
     "moe_builtin_grouped_gemm_bwd",
     "moe_builtin_grouped_gemm_prepare_bwd",
     "moe_builtin_grouped_gemm_finish_bwd",
-    "moe_scattermoe_bwd",
+    "moe_sonicmoe_bwd",
+    "moe_sonicmoe_prepare_bwd",
+    "moe_sonicmoe_finish_bwd",
     "partial_rope_builtin_triton_bwd",
     "rms_norm_builtin_triton_bwd",
-    "rms_norm_liger_bwd",
     "rope_builtin_triton_table_bwd",
     "rope_builtin_triton_analytic_bwd",
     "packed_swiglu_builtin_triton_bwd",
@@ -304,11 +306,11 @@ def _moe_args(weight_grad_dtype=None):
     return (
         _parameter(8, 32),
         _parameter(8, 32),
-        # Model code supplies ``nn.Linear.weight.T`` rather than a newly
-        # contiguous router matrix; fake output strides must match this path.
-        _parameter(4, 32).T,
-        _parameter(4, 32, 64),
-        _parameter(4, 32, 32),
+        # nn.Linear orientation, with an expert width that is neither the
+        # model width nor half of it, so an orientation slip changes a shape.
+        _parameter(4, 32),
+        _parameter(4, 48, 32),
+        _parameter(4, 32, 24),
         torch.empty(0, device="cuda", dtype=torch.bfloat16),
         2,
         "softmax_then_topk",
@@ -355,11 +357,97 @@ def _moe_finish_args(weight_grad_dtype=None):
     )
 
 
+def _fp8_moe_args(weight_grad_dtype=None):
+    """The MoE arguments with every width a multiple of 16 (E4M3 row pitch),
+    the expert weights as the operators see FP8 containers: their E4M3 rows
+    in place and the other components in the trailing list."""
+    from mlops.expert_parallel.quack.parameters.fp8 import QuackFP8Weight
+
+    arguments = list(_moe_args(weight_grad_dtype))
+    w13 = QuackFP8Weight.quantize(_parameter(4, 96, 32).detach(), interleaved=True)
+    w2 = QuackFP8Weight.quantize(_parameter(4, 32, 48).detach())  # w2 [E, D, F]
+    arguments[3], arguments[4] = w13._data, w2._data
+    components = [
+        w13._transposed,
+        w13._scale,
+        w13._transposed_scale,
+        w2._transposed,
+        w2._scale,
+        w2._transposed_scale,
+    ]
+    arguments[13] = weight_grad_dtype or torch.bfloat16  # resolved for FP8 math
+    return tuple(arguments), components
+
+
+def _sonicmoe_moe_args(weight_grad_dtype=None, compute_precision="native"):
+    if compute_precision == "native":
+        arguments, components = _moe_args(weight_grad_dtype), []
+    else:
+        arguments, components = _fp8_moe_args(weight_grad_dtype)
+    probe = list(arguments[:5])
+    if compute_precision != "native":
+        probe[3] = _parameter(4, 96, 32)
+        probe[4] = _parameter(4, 32, 48)
+    if not sonicmoe_moe.supports(
+        *probe,
+        surface="semantic",
+        top_k=arguments[6],
+        routing_mode=arguments[7],
+        lengths=arguments[11],
+        compute_precision=None if compute_precision == "native" else compute_precision,
+    ):
+        pytest.skip(
+            "SonicMoE needs a Hopper or Blackwell GPU with its extras"
+            + (" (SM90 for fp8_current)" if compute_precision != "native" else "")
+        )
+    return (*arguments, compute_precision, components)
+
+
+def _sonicmoe_prepare_args(weight_grad_dtype=None, compute_precision="native"):
+    arguments = _sonicmoe_moe_args(weight_grad_dtype, compute_precision)
+    return (
+        *(arguments[index] for index in (0, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)),
+        arguments[15][:3],
+    )
+
+
+def _sonicmoe_finish_args(weight_grad_dtype=None, compute_precision="native"):
+    arguments = _sonicmoe_moe_args(weight_grad_dtype, compute_precision)
+    prepared = sonicmoe_moe_composed._prepare_op(
+        *_sonicmoe_prepare_args(weight_grad_dtype, compute_precision)
+    )
+    return (
+        prepared[10],
+        arguments[4],
+        prepared[4],
+        prepared[6],
+        prepared[7],
+        prepared[8],
+        prepared[9],
+        arguments[1],
+        arguments[6],
+        arguments[13],
+        compute_precision,
+        arguments[15][3:],
+    )
+
+
+def _sonicmoe_fp8_args(weight_grad_dtype=None):
+    return _sonicmoe_moe_args(weight_grad_dtype, "fp8_current")
+
+
+def _sonicmoe_fp8_prepare_args(weight_grad_dtype=None):
+    return _sonicmoe_prepare_args(weight_grad_dtype, "fp8_current")
+
+
+def _sonicmoe_fp8_finish_args(weight_grad_dtype=None):
+    return _sonicmoe_finish_args(weight_grad_dtype, "fp8_current")
+
+
 OPCHECK_CASES = (
     ("cross_entropy", cross_entropy._forward_op, _cross_entropy_args),
     ("embedding", embedding._forward_op, _embedding_args),
     ("rms_norm_builtin", rms_norm_builtin._forward_op, _builtin_rms_norm_args),
-    ("rms_norm_liger", rms_norm_liger._forward_op, _rms_norm_args),
     ("layer_norm", layer_norm._forward_op, _layer_norm_args),
     ("rope_table", rope._table_forward_op, _rope_args),
     ("rope_analytic", rope._analytic_forward_op, _rope_args),
@@ -384,7 +472,20 @@ OPCHECK_CASES = (
     ("moe", moe._forward_op, _moe_args),
     ("moe_prepare", moe_composed._prepare_op, _moe_prepare_args),
     ("moe_finish", moe_composed._finish_op, _moe_finish_args),
-    ("scattermoe", scattermoe._forward_op, _moe_args),
+    ("moe_sonicmoe", sonicmoe_moe._forward_op, _sonicmoe_moe_args),
+    ("moe_sonicmoe_prepare", sonicmoe_moe_composed._prepare_op, _sonicmoe_prepare_args),
+    ("moe_sonicmoe_finish", sonicmoe_moe_composed._finish_op, _sonicmoe_finish_args),
+    ("moe_sonicmoe_fp8", sonicmoe_moe._forward_op, _sonicmoe_fp8_args),
+    (
+        "moe_sonicmoe_fp8_prepare",
+        sonicmoe_moe_composed._prepare_op,
+        _sonicmoe_fp8_prepare_args,
+    ),
+    (
+        "moe_sonicmoe_fp8_finish",
+        sonicmoe_moe_composed._finish_op,
+        _sonicmoe_fp8_finish_args,
+    ),
     # The operations that return weight gradients, asked for them at fp32.
     *(
         (f"{name}_fp32_weight_gradients", operator, partial(make, torch.float32))
@@ -397,7 +498,19 @@ OPCHECK_CASES = (
             ("moe", moe._forward_op, _moe_args),
             ("moe_prepare", moe_composed._prepare_op, _moe_prepare_args),
             ("moe_finish", moe_composed._finish_op, _moe_finish_args),
-            ("scattermoe", scattermoe._forward_op, _moe_args),
+            ("moe_sonicmoe", sonicmoe_moe._forward_op, _sonicmoe_moe_args),
+            (
+                "moe_sonicmoe_prepare",
+                sonicmoe_moe_composed._prepare_op,
+                _sonicmoe_prepare_args,
+            ),
+            (
+                "moe_sonicmoe_finish",
+                sonicmoe_moe_composed._finish_op,
+                _sonicmoe_finish_args,
+            ),
+            (
+            ),
         )
     ),
 )
@@ -450,5 +563,16 @@ def test_registered_operator_schema_is_functional(name):
     ids=[case[0] for case in OPCHECK_CASES],
 )
 def test_custom_op_registration_contract(_name, operator, make_args):
-    results = torch.library.opcheck(operator, make_args())
+    utilities = [
+        "test_schema",
+        "test_autograd_registration",
+        "test_faketensor",
+        "test_aot_dispatch_dynamic",
+    ]
+    if "fp8" in _name:
+        # SchemaCheckMode's mutation check does arithmetic on every input,
+        # which E4M3 tensors have no kernels for; the schema itself is the
+        # same one the bf16 case checks.
+        utilities.remove("test_schema")
+    results = torch.library.opcheck(operator, make_args(), test_utils=tuple(utilities))
     assert set(results.values()) == {"SUCCESS"}

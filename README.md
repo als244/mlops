@@ -44,7 +44,7 @@ dependency.
 
 The script creates `.venv`, installs the supported PyTorch, installs mlops
 editable with every implementation provider — FlashAttention-3,
-flash-linear-attention, liger-kernel, scattermoe, and tilelang — and the
+flash-linear-attention, Quack, SonicMoE, and tilelang — and the
 development tools, and verifies the installation. FlashAttention-3 is
 installed whatever the local GPU and activated automatically on Hopper GPUs.
 To use an existing virtual or Conda environment:

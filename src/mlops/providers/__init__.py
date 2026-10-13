@@ -20,7 +20,6 @@ _CATALOG = (
     "mlops.providers.native_torch.layer_norm",
     "mlops.providers.builtin.rms_norm",
     "mlops.providers.native_torch.rms_norm",
-    "mlops.providers.liger.rms_norm",
     "mlops.providers.builtin.swiglu",
     "mlops.providers.native_torch.swiglu",
     "mlops.providers.builtin.rope",
@@ -47,7 +46,8 @@ _CATALOG = (
     "mlops.providers.builtin.moe_composed",
     "mlops.providers.builtin.moe",
     "mlops.providers.native_torch.moe",
-    "mlops.providers.scattermoe.moe",
+    "mlops.providers.sonicmoe.moe_composed",
+    "mlops.providers.sonicmoe.moe",
 )
 
 
