@@ -31,9 +31,11 @@ from ...kernels.moe_router import current_route_weight_precision, route
 from ..builtin.moe import supports as builtin_supports
 from ..moe_common import (
     add_router_input_gradient_,
+    requested,
     router_weight_gradient,
     routing_gradient,
     routing_statistics,
+    skipped_gradient,
 )
 from . import fp8
 
@@ -211,8 +213,10 @@ def down_backward(
     scatter,
     grad_dtype,
     compute_precision="native",
+    need_weight=True,
 ):
-    """Return ``(dh, grad_route_weights, dw2)`` from the output cotangent.
+    """Return ``(dh, grad_route_weights, dw2)`` from the output cotangent
+    (``dw2`` ``None`` unless ``need_weight``).
 
     One SonicMoE kernel takes the cotangent back through ``w2`` and SwiGLU to
     the pre-activation gradient, the route-weight gradient and the
@@ -253,20 +257,22 @@ def down_backward(
             s_scatter_idx=scatter,
             activation_type="swiglu",
         )
-    dw2 = torch.empty(
-        w2_experts.shape,
-        dtype=w2_experts.dtype if grad_dtype is None else grad_dtype,
-        device=h.device,
-    )
-    gemm(
-        grad_output_flat.T,
-        a_prime,
-        out=dw2,
-        cu_seqlens_k=offsets,
-        A_idx=gather,
-        batch_idx_permute=None,
-        dynamic_scheduler=False,
-    )
+    dw2 = None
+    if need_weight:
+        dw2 = torch.empty(
+            w2_experts.shape,
+            dtype=w2_experts.dtype if grad_dtype is None else grad_dtype,
+            device=h.device,
+        )
+        gemm(
+            grad_output_flat.T,
+            a_prime,
+            out=dw2,
+            cu_seqlens_k=offsets,
+            A_idx=gather,
+            batch_idx_permute=None,
+            dynamic_scheduler=False,
+        )
     return dh, ds.view(rows, top_k).to(route_weights.dtype), dw2
 
 
@@ -280,10 +286,12 @@ def up_backward(
     top_k,
     grad_dtype,
     compute_precision="native",
+    need_weight=True,
 ):
     """Return ``(grad_h2_flat, dw13)`` from the pre-activation gradient: the
     rows' gradient through ``w13``, ``dw13 = dh.T @ x`` per expert at
-    ``grad_dtype``, and the rows summed back onto their tokens."""
+    ``grad_dtype`` (``None`` unless ``need_weight``), and the rows summed back
+    onto their tokens."""
     from quack.gemm_interface import gemm
 
     functional_kernels = kernels()
@@ -302,21 +310,23 @@ def up_backward(
             is_glu_activation=True,
             concat_layout=True,
         )
-    dw13 = torch.empty(
-        w13_experts.shape,
-        dtype=w13_experts.dtype if grad_dtype is None else grad_dtype,
-        device=dh.device,
-    )
-    gemm(
-        h2_flat.T,
-        dh,
-        out=dw13.transpose(1, 2),
-        cu_seqlens_k=offsets,
-        A_idx=gather,
-        batch_idx_permute=None,
-        dynamic_scheduler=False,
-        concat_layout=("out",),
-    )
+    dw13 = None
+    if need_weight:
+        dw13 = torch.empty(
+            w13_experts.shape,
+            dtype=w13_experts.dtype if grad_dtype is None else grad_dtype,
+            device=dh.device,
+        )
+        gemm(
+            h2_flat.T,
+            dh,
+            out=dw13.transpose(1, 2),
+            cu_seqlens_k=offsets,
+            A_idx=gather,
+            batch_idx_permute=None,
+            dynamic_scheduler=False,
+            concat_layout=("out",),
+        )
     grad_h2 = torch.empty_like(h2_flat)
     functional_kernels.backward._token_broadcast_backward(
         dx_reduced=grad_h2,
@@ -433,9 +443,13 @@ def backward(
     lengths,
     weight_grad_dtype=None,
     compute_precision="native",
+    need_router=True,
+    need_w13=True,
+    need_w2=True,
 ):
     """Return VJPs for ``h2, residual, router_weight, w13, w2`` in order, the
-    weights' at ``weight_grad_dtype`` (their own when ``None``)."""
+    weights' at ``weight_grad_dtype`` (their own when ``None``); a weight
+    nobody asked a gradient for gets a placeholder and no GEMM."""
     with torch.no_grad():
         h2_flat = h2.reshape(-1, h2.shape[-1]).contiguous()
         grad_output_flat = grad_output.reshape_as(h2_flat).contiguous()
@@ -449,6 +463,7 @@ def backward(
             scatter,
             weight_grad_dtype,
             compute_precision,
+            need_weight=need_w2,
         )
         grad_h2, grad_w13 = up_backward(
             h2_flat,
@@ -460,6 +475,7 @@ def backward(
             int(top_k),
             weight_grad_dtype,
             compute_precision,
+            need_weight=need_w13,
         )
         grad_logits = routing_gradient(
             grad_aux,
@@ -472,19 +488,39 @@ def backward(
             lengths=lengths,
         )
         grad_logits_storage = grad_logits.to(logits.dtype)
-        grad_router = router_weight_gradient(
-            grad_logits_storage,
-            h2_flat.to(router_weight.dtype),
-            router_weight,
-            weight_grad_dtype,
+        grad_router = (
+            router_weight_gradient(
+                grad_logits_storage,
+                h2_flat.to(router_weight.dtype),
+                router_weight,
+                weight_grad_dtype,
+            )
+            if need_router
+            else skipped_gradient(router_weight, weight_grad_dtype)
         )
         add_router_input_gradient_(grad_h2, grad_logits_storage, router_weight)
+        # Under FP8 the weights are component tuples; the gradient dtype is
+        # then always resolved, so the placeholders never need theirs.
         return (
             grad_h2.reshape(h2.shape),
             grad_output.clone(),
             grad_router,
-            grad_w13,
-            grad_w2,
+            grad_w13
+            if grad_w13 is not None
+            else skipped_gradient(
+                h2,
+                weight_grad_dtype
+                if weight_grad_dtype is not None
+                else w13_experts.dtype,
+            ),
+            grad_w2
+            if grad_w2 is not None
+            else skipped_gradient(
+                h2,
+                weight_grad_dtype
+                if weight_grad_dtype is not None
+                else w2_experts.dtype,
+            ),
         )
 
 
@@ -625,6 +661,9 @@ def _backward_op(
     weight_grad_dtype: torch.dtype | None,
     compute_precision: str,
     weight_components: list[torch.Tensor],
+    need_router: bool,
+    need_w13: bool,
+    need_w2: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     w13_experts, w2_experts = fp8.weights(
         compute_precision, weight_components, w13_experts, w2_experts
@@ -650,6 +689,9 @@ def _backward_op(
         lengths=lengths,
         weight_grad_dtype=weight_grad_dtype,
         compute_precision=compute_precision,
+        need_router=need_router,
+        need_w13=need_w13,
+        need_w2=need_w2,
     )
 
 
@@ -676,6 +718,9 @@ def _backward_fake(
     weight_grad_dtype,
     compute_precision,
     weight_components,
+    need_router,
+    need_w13,
+    need_w2,
 ):
     del grad_aux, grad_probability_sum, logits, route_weights, route_ids
     del offsets, gather, scatter, reverse, h, top_k, routing_mode, lengths
@@ -683,9 +728,15 @@ def _backward_fake(
     return (
         torch.empty_like(h2),
         torch.empty_like(grad_output),
-        torch.empty_like(router_weight, dtype=weight_grad_dtype),
-        torch.empty_like(w13_experts, dtype=weight_grad_dtype),
-        torch.empty_like(w2_experts, dtype=weight_grad_dtype),
+        torch.empty_like(router_weight, dtype=weight_grad_dtype)
+        if need_router
+        else skipped_gradient(router_weight, weight_grad_dtype),
+        torch.empty_like(w13_experts, dtype=weight_grad_dtype)
+        if need_w13
+        else skipped_gradient(w13_experts, weight_grad_dtype),
+        torch.empty_like(w2_experts, dtype=weight_grad_dtype)
+        if need_w2
+        else skipped_gradient(w2_experts, weight_grad_dtype),
     )
 
 
@@ -830,7 +881,9 @@ def _autograd_backward(
         grad_probability_sum = torch.zeros(
             router_weight.shape[0], dtype=torch.float32, device=h2.device
         )
-    gradients = _backward_op(
+    # Inputs: h2, residual, router_weight, w13_experts, w2_experts, ...
+    needs = ctx.needs_input_grad
+    grad_h2, grad_residual, grad_router, grad_w13, grad_w2 = _backward_op(
         grad_output,
         grad_aux,
         grad_probability_sum,
@@ -841,8 +894,19 @@ def _autograd_backward(
         ctx.weight_grad_dtype,
         ctx.compute_precision,
         list(components),
+        bool(needs[2]),
+        bool(needs[3]),
+        bool(needs[4]),
     )
-    return (*gradients, *([None] * 10), [None] * len(components))
+    return (
+        grad_h2,
+        grad_residual,
+        requested(grad_router, needs[2]),
+        requested(grad_w13, needs[3]),
+        requested(grad_w2, needs[4]),
+        *([None] * 10),
+        [None] * len(components),
+    )
 
 
 _forward_op.register_autograd(_autograd_backward, setup_context=_setup_context)
