@@ -31,7 +31,7 @@ def main():
     output.view(torch.uint8).fill_(0x7F)
     scales = torch.empty(rows, device="cuda", dtype=torch.float32)
     _quantize_rows[(rows,)](
-        source, output, scales, width, width, width, width, num_warps=4
+        source, output, scales, source, width, width, width, False, width, num_warps=4
     )
     selected = output[[0, rows - 2, rows - 1]].float().cpu()
     selected_scales = scales[[0, rows - 2, rows - 1]].cpu()

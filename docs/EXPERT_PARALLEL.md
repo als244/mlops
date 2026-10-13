@@ -230,7 +230,8 @@ FP8 parameters also support optimizer publication through
 `compute_weight.copy_(dense_master)`. Dense masters are owned by the caller's
 optimizer, and `dense_master.copy_(compute_weight)` initializes them from the
 compute representation. Quack publishes both independently scaled orientations
-with traceable PyTorch operations. TE weight quantizers expose a mutating custom
+with its Triton quantizers (`kernels/quantize_transpose.py::quantize_weights_fp8`:
+the row quantizer and a batched transposing one, at HBM bandwidth). TE weight quantizers expose a mutating custom
 operation over their payloads and scales and call TE's GPU quantization;
 the CPU path supports checkpoint restoration. Publication happens in the
 optimizer update, outside the MoE forward/backward definition.
