@@ -112,11 +112,13 @@ def routing_gradient(
     if routing_mode == "sigmoid_noaux_tc":
         scores = torch.sigmoid(logits.float())
         probabilities = scores / scores.sum(-1, keepdim=True)
+        jacobian_scale = (1.0 - scores) * probabilities
     else:
         probabilities = torch.softmax(logits.float(), dim=-1)
+        jacobian_scale = probabilities
     grad_sum = grad_probability_sum.float()
     grad_logits.add_(
-        probabilities
+        jacobian_scale
         * (grad_sum.unsqueeze(0) - (probabilities @ grad_sum).unsqueeze(1))
     )
     return grad_logits
