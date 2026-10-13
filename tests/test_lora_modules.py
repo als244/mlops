@@ -63,7 +63,7 @@ def test_grouped_projection_skips_frozen_weight_work(need_x, need_weight, monkey
     module = importlib.import_module("mlops.lora.grouped")
     torch.manual_seed(735)
     x = torch.randn(13, 9, requires_grad=need_x)
-    w = torch.randn(4, 9, 7, requires_grad=need_weight)
+    w = torch.randn(4, 7, 9, requires_grad=need_weight)
     offsets = torch.tensor(
         [0, 3, 3, 11, 13], dtype=torch.int32
     )  # includes empty expert
@@ -77,7 +77,7 @@ def test_grouped_projection_skips_frozen_weight_work(need_x, need_weight, monkey
     monkeypatch.setattr(module, "grouped_mm_wgrad", wgrad)
     y = grouped_linear(x, w, offsets)
     expected = torch.cat(
-        [x[int(offsets[i]) : int(offsets[i + 1])] @ w[i] for i in range(4)]
+        [x[int(offsets[i]) : int(offsets[i + 1])] @ w[i].T for i in range(4)]
     )
     torch.testing.assert_close(y, expected)
     if need_x or need_weight:
@@ -125,12 +125,12 @@ def test_grouped_cuda_projections_and_gradients(dtype, shape):
     torch.manual_seed(186)
     d, h = shape
     x = (torch.randn(173, d, device="cuda", dtype=dtype) * 0.1).requires_grad_()
-    w = (torch.randn(4, d, h, device="cuda", dtype=dtype) * 0.1).requires_grad_()
+    w = (torch.randn(4, h, d, device="cuda", dtype=dtype) * 0.1).requires_grad_()
     offsets = torch.tensor([0, 57, 57, 129, 173], device="cuda", dtype=torch.int32)
     y = grouped_linear(x, w, offsets)
     ref = torch.cat(
         [
-            x[a:b] @ w[i]
+            x[a:b] @ w[i].T
             for i, (a, b) in enumerate([(0, 57), (57, 57), (57, 129), (129, 173)])
         ]
     )

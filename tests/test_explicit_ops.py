@@ -6,32 +6,49 @@ import ast
 import importlib
 from pathlib import Path
 
-import mlops
 import pytest
 import torch
 
+import mlops
 from mlops import (
     embedding as semantic_embedding,
-    flash_attention as semantic_flash_attention,
-    gelu as semantic_gelu,
-    layer_norm as semantic_layer_norm,
-    moe as semantic_moe,
-    packed_swiglu as semantic_packed_swiglu,
-    partial_rope as semantic_partial_rope,
-    rms_norm as semantic_rms_norm,
-    rope as semantic_rope,
-    swiglu as semantic_swiglu,
 )
 from mlops import explicit
-from mlops.kernels.flash_attention import (
-    native_flash_attention_supported,
+from mlops import (
+    flash_attention as semantic_flash_attention,
+)
+from mlops import (
+    gelu as semantic_gelu,
+)
+from mlops import (
+    layer_norm as semantic_layer_norm,
+)
+from mlops import (
+    moe as semantic_moe,
+)
+from mlops import (
+    packed_swiglu as semantic_packed_swiglu,
+)
+from mlops import (
+    partial_rope as semantic_partial_rope,
+)
+from mlops import (
+    rms_norm as semantic_rms_norm,
+)
+from mlops import (
+    rope as semantic_rope,
+)
+from mlops import (
+    swiglu as semantic_swiglu,
 )
 from mlops.dispatch import (
     explain_implementation,
     implementation_registry,
     use_implementation,
 )
-
+from mlops.kernels.flash_attention import (
+    native_flash_attention_supported,
+)
 
 PACKAGE_ROOT = Path(mlops.__file__).resolve().parent
 
@@ -365,18 +382,21 @@ def test_explicit_moe_matches_registered_multi_root_autograd_vjp():
     torch.manual_seed(7)
     h2 = torch.randn(8, 32, device="cuda", dtype=torch.bfloat16).requires_grad_()
     residual = torch.randn_like(h2, requires_grad=True)
-    router = torch.randn(32, 4, device="cuda", dtype=torch.float32).requires_grad_()
-    w13 = torch.randn(4, 32, 64, device="cuda", dtype=torch.bfloat16).requires_grad_()
-    w2 = torch.randn(4, 32, 32, device="cuda", dtype=torch.bfloat16).requires_grad_()
+    router = torch.randn(4, 32, device="cuda", dtype=torch.float32).requires_grad_()
+    w13 = torch.randn(4, 48, 32, device="cuda", dtype=torch.bfloat16).requires_grad_()
+    w2 = torch.randn(4, 32, 24, device="cuda", dtype=torch.bfloat16).requires_grad_()
     primals = (h2, residual, router, w13, w2)
     lengths = (8,)
 
-    output, aux, _counts, probability_sum = semantic_moe(
-        *primals,
-        top_k=2,
-        routing_mode="softmax_then_topk",
-        lengths=lengths,
-    )
+    # The explicit VJP below is the builtin's; compare it with the builtin's
+    # registered autograd, whatever this GPU's default implementation is.
+    with use_implementation("moe", "builtin.moe.grouped_gemm"):
+        output, aux, _counts, probability_sum = semantic_moe(
+            *primals,
+            top_k=2,
+            routing_mode="softmax_then_topk",
+            lengths=lengths,
+        )
     grad_output = torch.randn_like(output)
     grad_aux = torch.tensor(0.37, device="cuda")
     grad_probability_sum = torch.randn_like(probability_sum)
@@ -440,9 +460,9 @@ def test_trace_visible_moe_composition_matches_opaque_builtin():
     base = (
         torch.randn(8, 32, device="cuda", dtype=torch.bfloat16),
         torch.randn(8, 32, device="cuda", dtype=torch.bfloat16),
-        torch.randn(32, 4, device="cuda", dtype=torch.float32),
-        torch.randn(4, 32, 64, device="cuda", dtype=torch.bfloat16),
-        torch.randn(4, 32, 32, device="cuda", dtype=torch.bfloat16),
+        torch.randn(4, 32, device="cuda", dtype=torch.float32),
+        torch.randn(4, 48, 32, device="cuda", dtype=torch.bfloat16),
+        torch.randn(4, 32, 24, device="cuda", dtype=torch.bfloat16),
     )
     grad_output = torch.randn_like(base[0])
     grad_aux = torch.tensor(0.37, device="cuda")
@@ -453,9 +473,14 @@ def test_trace_visible_moe_composition_matches_opaque_builtin():
         "routing_mode": "softmax_then_topk",
         "lengths": (8,),
     }
-    assert explain_implementation(
-        "moe", *base, **resolution_kwargs
-    ).selected == "builtin.moe.grouped_gemm_composed"
+    from mlops.providers.sonicmoe.moe import supports as sonicmoe_supports
+
+    default = (
+        "sonicmoe.moe.composed"
+        if sonicmoe_supports(*base, surface="semantic", **resolution_kwargs)
+        else "builtin.moe.grouped_gemm_composed"
+    )
+    assert explain_implementation("moe", *base, **resolution_kwargs).selected == default
     assert explain_implementation(
         "moe", *base, surface="explicit", **resolution_kwargs
     ).selected == "builtin.moe.grouped_gemm"

@@ -1,4 +1,9 @@
-"""Standalone deterministic Triton grouped GEMM for expert segments."""
+"""Standalone deterministic Triton grouped GEMM for expert segments.
+
+Weights use the nn.Linear layout ``[experts, out, in]``: the forward computes
+each segment's ``x @ weight[e].T``, the data gradient ``grad @ weight[e]``, and
+the weight gradient ``grad.T @ x``.
+"""
 
 from __future__ import annotations
 
@@ -113,16 +118,16 @@ if triton is not None:
 
     @triton.jit
     def _grouped_wgrad_kernel(
-        x_ptr,
-        grad_ptr,
+        left_ptr,
+        right_ptr,
         output_ptr,
         offsets_ptr,
         k_dim,
         n_dim,
-        stride_xm,
-        stride_xk,
-        stride_gm,
-        stride_gn,
+        stride_lm,
+        stride_lk,
+        stride_rm,
+        stride_rn,
         stride_oe,
         stride_ok,
         stride_on,
@@ -131,6 +136,7 @@ if triton is not None:
         BK: tl.constexpr,
         FP32_PRECISION: tl.constexpr,
     ):
+        """``output[e] = left.T @ right`` over expert ``e``'s rows."""
         expert = tl.program_id(0).to(tl.int64)
         rows_start = tl.load(offsets_ptr + expert).to(tl.int64)
         rows_end = tl.load(offsets_ptr + expert + 1).to(tl.int64)
@@ -142,17 +148,19 @@ if triton is not None:
         for row in range(rows_start, rows_end, BK):
             reduction = row + tl.arange(0, BK).to(tl.int64)
             reduction_mask = reduction < rows_end
-            x = tl.load(
-                x_ptr + reduction[None, :] * stride_xm + inner[:, None] * stride_xk,
+            left = tl.load(
+                left_ptr + reduction[None, :] * stride_lm + inner[:, None] * stride_lk,
                 mask=reduction_mask[None, :] & inner_mask[:, None],
                 other=0.0,
             )
-            grad = tl.load(
-                grad_ptr + reduction[:, None] * stride_gm + outer[None, :] * stride_gn,
+            right = tl.load(
+                right_ptr + reduction[:, None] * stride_rm + outer[None, :] * stride_rn,
                 mask=reduction_mask[:, None] & outer_mask[None, :],
                 other=0.0,
             )
-            accumulator = tl.dot(x, grad, accumulator, input_precision=FP32_PRECISION)
+            accumulator = tl.dot(
+                left, right, accumulator, input_precision=FP32_PRECISION
+            )
         pointer = (
             output_ptr
             + expert * stride_oe
@@ -174,8 +182,10 @@ def _tile_prefix(offsets, block_rows):
     return prefix
 
 
-def _native_torch(x, weight, offsets, transpose=False):
-    output_width = weight.shape[1] if transpose else weight.shape[2]
+def _native_torch(x, weight, offsets, dgrad=False):
+    """Each expert's ``x @ weight[e].T`` over its rows; ``x @ weight[e]`` for
+    ``dgrad``."""
+    output_width = weight.shape[2] if dgrad else weight.shape[1]
     output = torch.zeros((x.shape[0], output_width), dtype=x.dtype, device=x.device)
     row_experts = torch.searchsorted(
         offsets[1:].contiguous(),
@@ -183,38 +193,41 @@ def _native_torch(x, weight, offsets, transpose=False):
         right=True,
     )
     for expert in range(weight.shape[0]):
-        product = x @ (weight[expert].T if transpose else weight[expert])
+        product = x @ (weight[expert] if dgrad else weight[expert].T)
         output.copy_(torch.where((row_experts == expert).unsqueeze(1), product, output))
     return output
 
 
 def grouped_mm_forward(x, weight, offsets):
+    """Each expert's ``x @ weight[e].T`` over its rows, ``weight`` being
+    ``[experts, out, in]``."""
     if triton is None or not x.is_cuda:
         return _native_torch(x, weight, offsets)
-    output = torch.empty((x.shape[0], weight.shape[2]), dtype=x.dtype, device=x.device)
+    out_dim, in_dim = weight.shape[1], weight.shape[2]
+    output = torch.empty((x.shape[0], out_dim), dtype=x.dtype, device=x.device)
     bm, bn, bk, warps, stages = _tiles(
         max(1, x.shape[0] // weight.shape[0]),
-        weight.shape[2],
-        weight.shape[1],
+        out_dim,
+        in_dim,
         x.dtype,
         x.device,
     )
     prefix = _tile_prefix(offsets, bm)
     grid_0 = triton.cdiv(x.shape[0], bm) + weight.shape[0]
-    _grouped_mm_kernel[(grid_0, triton.cdiv(weight.shape[2], bn))](
+    _grouped_mm_kernel[(grid_0, triton.cdiv(out_dim, bn))](
         x,
         weight,
         output,
         offsets,
         prefix,
-        weight.shape[2],
-        weight.shape[1],
+        out_dim,
+        in_dim,
         weight.shape[0],
         x.stride(0),
         x.stride(1),
         weight.stride(0),
-        weight.stride(1),
         weight.stride(2),
+        weight.stride(1),
         output.stride(0),
         output.stride(1),
         BM=bm,
@@ -230,34 +243,35 @@ def grouped_mm_forward(x, weight, offsets):
 
 
 def grouped_mm_dgrad(grad, weight, offsets):
+    """Each expert's ``grad @ weight[e]`` over its rows: the data gradient of
+    :func:`grouped_mm_forward`."""
     if triton is None or not grad.is_cuda:
-        return _native_torch(grad, weight, offsets, transpose=True)
-    output = torch.empty(
-        (grad.shape[0], weight.shape[1]), dtype=grad.dtype, device=grad.device
-    )
+        return _native_torch(grad, weight, offsets, dgrad=True)
+    out_dim, in_dim = weight.shape[1], weight.shape[2]
+    output = torch.empty((grad.shape[0], in_dim), dtype=grad.dtype, device=grad.device)
     bm, bn, bk, warps, stages = _tiles(
         max(1, grad.shape[0] // weight.shape[0]),
-        weight.shape[1],
-        weight.shape[2],
+        in_dim,
+        out_dim,
         grad.dtype,
         grad.device,
     )
     prefix = _tile_prefix(offsets, bm)
     grid_0 = triton.cdiv(grad.shape[0], bm) + weight.shape[0]
-    _grouped_mm_kernel[(grid_0, triton.cdiv(weight.shape[1], bn))](
+    _grouped_mm_kernel[(grid_0, triton.cdiv(in_dim, bn))](
         grad,
         weight,
         output,
         offsets,
         prefix,
-        weight.shape[1],
-        weight.shape[2],
+        in_dim,
+        out_dim,
         weight.shape[0],
         grad.stride(0),
         grad.stride(1),
         weight.stride(0),
-        weight.stride(2),
         weight.stride(1),
+        weight.stride(2),
         output.stride(0),
         output.stride(1),
         BM=bm,
@@ -273,8 +287,9 @@ def grouped_mm_dgrad(grad, weight, offsets):
 
 
 def grouped_mm_wgrad(x, grad, offsets, weight_shape, dtype=None):
-    """Each expert's ``x.T @ grad`` over its rows, summed at fp32 and returned
-    at ``dtype`` -- ``x``'s when ``None``."""
+    """Each expert's ``grad.T @ x`` over its rows -- the ``[experts, out, in]``
+    weight gradient of :func:`grouped_mm_forward` -- summed at fp32 and
+    returned at ``dtype``, ``x``'s when ``None``."""
     output = torch.empty(
         weight_shape, dtype=x.dtype if dtype is None else dtype, device=x.device
     )
@@ -293,16 +308,16 @@ def grouped_mm_wgrad(x, grad, offsets, weight_shape, dtype=None):
                 triton.cdiv(weight_shape[2], bj),
             )
         ](
-            x,
             grad,
+            x,
             output,
             offsets,
             weight_shape[1],
             weight_shape[2],
-            x.stride(0),
-            x.stride(1),
             grad.stride(0),
             grad.stride(1),
+            x.stride(0),
+            x.stride(1),
             output.stride(0),
             output.stride(1),
             output.stride(2),
@@ -322,6 +337,6 @@ def grouped_mm_wgrad(x, grad, offsets, weight_shape, dtype=None):
         right=True,
     )
     for expert in range(weight_shape[0]):
-        selected = (row_experts == expert).unsqueeze(1).to(x.dtype)
-        output[expert].copy_((x * selected).T.to(output.dtype) @ grad.to(output.dtype))
+        selected = (row_experts == expert).unsqueeze(1).to(grad.dtype)
+        output[expert].copy_((grad * selected).T.to(output.dtype) @ x.to(output.dtype))
     return output

@@ -367,10 +367,10 @@ def _moe_geometry(h2, router_weight, w13_experts, w2_experts, top_k):
     return {
         "rows": rows,
         "width": h2.shape[-1],
-        "experts": router_weight.shape[1],
+        "experts": router_weight.shape[0],
         "assignments": rows * int(top_k),
-        "packed": w13_experts.shape[2],
-        "expert_width": w2_experts.shape[1],
+        "packed": w13_experts.shape[1],
+        "expert_width": w2_experts.shape[2],
     }
 
 
@@ -411,8 +411,8 @@ def moe_finish(h13, w2_experts, *, entrypoint="forward") -> CostHints:
     """The activation, down-projection and combine region of ``moe``."""
     flops = _moe_finish_flops(
         h13.shape[0],
-        w2_experts.shape[1],
         w2_experts.shape[2],
+        w2_experts.shape[1],
         forward=_entrypoint(entrypoint),
     )
     return CostHints(logical_flops=flops)
