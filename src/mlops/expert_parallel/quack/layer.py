@@ -7,6 +7,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 
+from ...kernels.router import routed_logits
 from ..parameters import BF16ComputeWeight
 from .buffers import bind_buffer
 from .config import config_signature
@@ -70,11 +71,15 @@ class QuackMoE(nn.Module):
         yield self.down_weight
 
     def route(self, x):
+        # The router GEMM at the trainers' precision (mlops.kernels.router):
+        # operands at x's dtype, fp32 sums and logits; the weight's gradient
+        # at router_weight_grad_dtype, the activation's at x's dtype.
         with torch.autocast(device_type=x.device.type, enabled=False):
-            logits = F.linear(
-                x.to(self.config.router_dtype),
-                self.router_weight.to(self.config.router_dtype),
-            ).float()
+            logits = routed_logits(
+                x,
+                self.router_weight,
+                weight_grad_dtype=self.config.router_weight_grad_dtype,
+            )
         p, ids, hist = route_op(logits, self.config.top_k, self.config.renormalize_topk)
         return ids, p, hist
 

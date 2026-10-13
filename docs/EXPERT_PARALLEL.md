@@ -150,7 +150,7 @@ hidden widths must be multiples of 128; top-k is at most 32.
 | --- | --- | --- |
 | `compute_precision` | `"bf16"` | Routed weight/activation computation; FP8 choices are listed above |
 | `weight_grad_dtype` | `torch.float32` | Returned routed/shared weight gradient dtype |
-| `router_dtype` | `torch.float32` | Router weight and logit computation dtype |
+| `router_dtype` | `torch.float32` | Router weight dtype (its logits come from bf16 operands with fp32 sums, see below) |
 | `router_weight_grad_dtype` | `torch.float32` | Returned router gradient dtype |
 | `num_shared_experts` | `0` | Shared expert count, packed into one wider BF16 MLP |
 | `shared_expert_dim` | Routed hidden width | Width of each shared expert |
@@ -178,7 +178,11 @@ Selection happens at initialization without inspecting GPU routing counts;
 `gemm_tuned=True` bypasses these fixed choices.
 
 BF16/FP32 are supported gradient/router dtypes. An FP32 router requires FP32
-gradients. There is no layer-owned master-parameter or optimizer-state dtype.
+gradients. The router's logits are formed as every MoE path here forms them
+(`mlops.kernels.router`): the operands at the activation's dtype (bf16), the
+sums and the logits in fp32, the weight's gradient summed in fp32 from two
+bf16 pieces of the cotangent and returned at `router_weight_grad_dtype`.
+There is no layer-owned master-parameter or optimizer-state dtype.
 Quack's expert GEMM and cross-rank reduction scratch is FP32 even when returned
 gradients are BF16. Bank alignment applies to each rank's complete allocation,
 with 128-row expert tiles; individual experts need not occupy full VMM pages.

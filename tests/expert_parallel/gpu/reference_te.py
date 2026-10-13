@@ -103,7 +103,7 @@ def check_router(layer, x):
         dtype=config.router_dtype,
         renormalize_topk=config.renormalize_topk,
     )
-    logits = router_logits(value, weight, dtype=config.router_dtype)
+    logits = router_logits(value, weight, dtype=config.router_dtype, form="operands")
     selected = logits.gather(-1, ids.long()).sort(-1).values
     expected = logits.gather(-1, reference_ids.long()).sort(-1).values
     torch.testing.assert_close(selected, expected, atol=0, rtol=0)

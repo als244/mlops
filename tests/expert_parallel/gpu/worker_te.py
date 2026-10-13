@@ -141,7 +141,7 @@ def run_window(
             with torch.no_grad():
                 ids, _ = layer.route(x)
             pr = routing_probabilities(
-                router_logits(xr, router, dtype=config.router_dtype),
+                router_logits(xr, router, dtype=config.router_dtype, form="operands"),
                 ids,
                 renormalize_topk=config.renormalize_topk,
             )

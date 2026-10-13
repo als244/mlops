@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as functional
 
 from .moe_router import route_torch
+from .router import routed_logits
 
 
 def native_torch_moe(
@@ -36,8 +37,7 @@ def native_torch_moe(
     original_shape = h2.shape
     h2_flat = h2.reshape(-1, h2.shape[-1])
     residual_flat = residual.reshape_as(h2_flat)
-    router_input = h2_flat.to(router_weight.dtype)
-    logits = functional.linear(router_input, router_weight)
+    logits = routed_logits(h2_flat, router_weight)
     route_weights, route_ids = route_torch(
         logits,
         int(top_k),

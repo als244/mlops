@@ -8,9 +8,25 @@ All arguments are ordinary tensors, including dequantized expert weights.
 import torch
 from torch.nn import functional as F
 
+from ...kernels.router import routed_logits
 
-def router_logits(x, weight, *, dtype=torch.float32):
-    return F.linear(x.to(dtype), weight.to(dtype)).float()
+
+def router_logits(x, weight, *, dtype=torch.float32, form="trainers"):
+    """The router's fp32 logits as the layers form them.
+
+    ``form="trainers"`` (the Quack layers and every local MoE path) is
+    `mlops.kernels.router.routed_logits`: operands at ``x``'s dtype, fp32
+    sums and logits; ``dtype`` is then only the weight's dtype for its
+    gradient. ``form="operands"`` is the earlier form, both operands taken to
+    ``dtype``, which the Transformer Engine layer still uses until its
+    ``route`` adopts the shared helper (its one-line change waits in the
+    plan folder's patches): its tests ask for it explicitly.
+    """
+    if form == "operands":
+        return F.linear(x.to(dtype), weight.to(dtype)).float()
+    if form != "trainers":
+        raise ValueError(f"unknown router form {form!r}")
+    return routed_logits(x, weight, weight_grad_dtype=dtype)
 
 
 def routing_probabilities(logits, expert_ids, *, renormalize_topk=True):
@@ -21,9 +37,11 @@ def routing_probabilities(logits, expert_ids, *, renormalize_topk=True):
     return logits.softmax(-1).gather(-1, ids)
 
 
-def route(x, weight, *, top_k, dtype=torch.float32, renormalize_topk=True):
+def route(
+    x, weight, *, top_k, dtype=torch.float32, renormalize_topk=True, form="trainers"
+):
     """Reference routing, tested separately from expert computation."""
-    logits = router_logits(x, weight, dtype=dtype)
+    logits = router_logits(x, weight, dtype=dtype, form=form)
     ids = logits.topk(top_k, dim=-1).indices.to(torch.int32)
     return ids, routing_probabilities(logits, ids, renormalize_topk=renormalize_topk)
 
