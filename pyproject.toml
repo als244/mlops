@@ -21,24 +21,24 @@ fa3 = [
 ]
 # KDA calls tested private FLA kernel interfaces.
 fla = ["flash-linear-attention==0.5.2", "fla-core==0.5.2"]
-liger = ["liger-kernel==0.8.1"]
-# scattermoe publishes no PyPI distribution; 0.3.0 is the version at this commit.
-scattermoe = [
-  "scattermoe @ git+https://github.com/shawntan/scattermoe.git@47b5e1502e5a10e82c8e5945d761b877849871e7",
-]
 # TileLang backs fla's gated-delta-rule backward on Hopper (fla enables it by
 # default on sm90 with Triton >= 3.4.0).
 tilelang = ["tilelang==0.1.14"]
-providers = ["mlops[fa3,fla,liger,scattermoe,tilelang]"]
+# Quack's GEMMs are CUTLASS CuTe DSL kernels (Linux wheels only); SonicMoE's
+# MoE kernels build on them. Both run on Hopper and Blackwell GPUs.
+quack = [
+  "quack-kernels @ git+https://github.com/Dao-AILab/quack.git@35266c3298f0e9bf6d5f46c30aace2eaeae517e3 ; sys_platform == 'linux'",
+  "nvidia-cutlass-dsl==4.7.1 ; sys_platform == 'linux'",
+]
+sonicmoe = [
+  "mlops[quack]",
+  "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@7396f3e604827d8186c2e16e64b28ee33d3defd0 ; sys_platform == 'linux'",
+]
+providers = ["mlops[fa3,fla,quack,sonicmoe,tilelang]"]
 dev = ["pytest", "ruff"]
 # MoonEP is installed separately by scripts/setup_expert_parallel.sh: its
 # upstream metadata pins an older Cutlass DSL than the supported Quack stack.
-ep-quack = [
-  "triton==3.7.1",
-  "quack-kernels @ git+https://github.com/Dao-AILab/quack.git@35266c3298f0e9bf6d5f46c30aace2eaeae517e3",
-  "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@7396f3e604827d8186c2e16e64b28ee33d3defd0",
-  "nvidia-cutlass-dsl==4.7.1",
-]
+ep-quack = ["mlops[sonicmoe]", "triton==3.7.1"]
 ep-te = [
   "triton==3.7.1",
   "nvidia-cutlass-dsl==4.7.1",

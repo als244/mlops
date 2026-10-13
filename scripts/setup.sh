@@ -17,9 +17,9 @@ Create a complete mlops development environment.  By default the script
 creates .venv with Python 3.12 and automatically selects the installed GPU's
 PyTorch backend.  --python installs into an existing virtual or Conda
 environment instead.  Every optional implementation provider is installed:
-FlashAttention-3, flash-linear-attention, liger-kernel, scattermoe, and
-tilelang. FlashAttention-3 is installed whatever the local GPU, and mlops
-activates it automatically on Hopper GPUs.  --expert-parallel also installs
+FlashAttention-3, flash-linear-attention, Quack, SonicMoE, and tilelang.
+FlashAttention-3 is installed whatever the local GPU, and mlops activates it
+automatically on Hopper GPUs; Quack and SonicMoE serve Hopper and Blackwell.  --expert-parallel also installs
 the optional expert-parallel backends -- Quack, Transformer Engine, or both,
 each with MoonEP -- through scripts/setup_expert_parallel.sh, which also adds
 them to an existing environment; see docs/EXPERT_PARALLEL.md for their
@@ -135,8 +135,8 @@ import mlops  # noqa: F401  -- registers every provider adapter
 
 for module_name, package_name in (
     ("fla", "flash-linear-attention"),
-    ("liger_kernel", "liger-kernel"),
-    ("scattermoe", "scattermoe"),
+    ("quack", "quack-kernels"),
+    ("sonicmoe", "sonic-moe"),
     ("tilelang", "tilelang"),
 ):
     import_module(module_name)
