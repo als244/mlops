@@ -213,3 +213,127 @@ def quantize_transpose_fp8(value, *, poison_padding=False, row_scales=None):
                 num_warps=4,
             )
     return data[:, :tokens], scales
+
+
+@triton.jit
+def _batched_transpose_quantize(
+    W,
+    Q,
+    S,
+    OUT,
+    IN,
+    HALF,
+    INTERLEAVE: tl.constexpr,
+    BLOCK_OUT: tl.constexpr,
+    BLOCK_IN: tl.constexpr,
+):
+    # W[e] is [OUT, IN] row-major; Q[e] is [IN, OUT] row-major, each of its
+    # rows (a column of W[e]) with its own descale: the K-major operand the
+    # FP8 MMA reads for a backward. Two coalesced passes over a column block:
+    # the column maxima, then the quantized tiles stored transposed. With
+    # INTERLEAVE, row r of W[e] lands in column 2r (r < HALF) or 2(r - HALF) + 1:
+    # gate and up rows adjacent, the order the row orientation keeps them in.
+    expert = tl.program_id(0).to(tl.int64)
+    block = tl.program_id(1).to(tl.int64)
+    cols = block * BLOCK_IN + tl.arange(0, BLOCK_IN)
+    col_mask = cols < IN
+    source = W + expert * OUT * IN
+    amax = tl.zeros([BLOCK_IN], dtype=tl.float32)
+    for start in range(0, OUT, BLOCK_OUT):
+        rows = start + tl.arange(0, BLOCK_OUT)
+        mask = (rows[:, None] < OUT) & col_mask[None, :]
+        tile = tl.load(source + rows[:, None] * IN + cols[None, :], mask, other=0)
+        amax = tl.maximum(amax, tl.max(tl.abs(tile.to(tl.float32)), axis=0))
+    scale = tl.maximum(amax * (1.0 / 448.0), 1e-12)
+    tl.store(S + expert * IN + cols, scale, col_mask)
+    target = Q + expert * IN * OUT
+    for start in range(0, OUT, BLOCK_OUT):
+        rows = start + tl.arange(0, BLOCK_OUT)
+        mask = (rows[:, None] < OUT) & col_mask[None, :]
+        tile = tl.load(source + rows[:, None] * IN + cols[None, :], mask, other=0)
+        quantized = tl.div_rn(tile.to(tl.float32), scale[None, :])
+        quantized = tl.minimum(tl.maximum(quantized, -448.0), 448.0)
+        if INTERLEAVE:
+            placed = tl.where(rows < HALF, 2 * rows, 2 * (rows - HALF) + 1)
+        else:
+            placed = rows
+        tl.store(
+            target + cols[:, None] * OUT + placed[None, :],
+            tl.trans(quantized),
+            tl.trans(mask),
+        )
+
+
+def quantize_batched_transpose_fp8(weight, *, interleave_rows=False):
+    """Per-expert transposes of ``weight [E, out, in]``: E4M3 ``[E, in, out]``
+    and FP32 ``[E, in]`` descales, each row of the transpose (a column of the
+    weight) with its own, by the row quantizer's equations in two coalesced
+    passes per column block instead of a strided copy. With
+    ``interleave_rows`` the transpose's columns hold the weight's gate rows
+    (its first half) and up rows adjacent: column ``2j`` is row ``j`` and
+    column ``2j + 1`` row ``out/2 + j``. Shapes are runtime arguments."""
+    if (
+        weight.ndim != 3
+        or not weight.is_cuda
+        or weight.dtype not in (torch.bfloat16, torch.float32)
+    ):
+        raise ValueError("Expected a CUDA BF16 or FP32 [experts, out, in] weight")
+    source = weight.contiguous()
+    experts, out, inner = source.shape
+    if interleave_rows and out % 2:
+        raise ValueError("Interleaving gate and up rows needs an even row count")
+    data = torch.empty(
+        experts, inner, out, device=source.device, dtype=torch.float8_e4m3fn
+    )
+    scales = torch.empty(experts, inner, device=source.device, dtype=torch.float32)
+    if experts and out and inner:
+        block_in = 64
+        _batched_transpose_quantize[(experts, triton.cdiv(inner, block_in))](
+            source,
+            data,
+            scales,
+            out,
+            inner,
+            out // 2,
+            interleave_rows,
+            64,
+            block_in,
+            num_warps=4,
+        )
+    return data, scales
+
+
+def interleaved_rows(experts, out, device):
+    """Row indices of an ``[E, out, in]`` weight in gate/up-adjacent order:
+    position ``2j`` of each expert reads its row ``j``, position ``2j + 1``
+    its row ``out/2 + j``."""
+    position = torch.arange(out, device=device)
+    within = (position % 2) * (out // 2) + position // 2
+    experts = torch.arange(experts, device=device)[:, None] * out
+    return (experts + within[None, :]).reshape(-1)
+
+
+def quantize_weights_fp8(weight, *, interleave_rows=False):
+    """Both orientations of ``weight [E, out, in]`` at once, for a weight read
+    as ``W`` by a forward and ``Wᵀ`` by its backward: ``(data [E, out, in],
+    transposed [E, in, out], scale [E, out], transposed_scale [E, in])``, E4M3
+    data and FP32 descales in `QuackFP8Weight`'s component order. With
+    ``interleave_rows`` both orientations hold the rows in gate/up-adjacent
+    order (`interleaved_rows`)."""
+    from .quantize_rows import quantize_rows_fp8
+
+    source = weight.contiguous()
+    experts, out, inner = source.shape
+    gather = interleaved_rows(experts, out, source.device) if interleave_rows else None
+    rows, row_scales = quantize_rows_fp8(
+        source.reshape(experts * out, inner), gather=gather
+    )
+    columns, column_scales = quantize_batched_transpose_fp8(
+        source, interleave_rows=interleave_rows
+    )
+    return (
+        rows.contiguous().view(experts, out, inner),
+        columns,
+        row_scales.view(experts, out),
+        column_scales,
+    )
