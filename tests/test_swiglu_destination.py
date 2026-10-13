@@ -69,7 +69,7 @@ def test_planning_moe_vjp_donates_only_the_declared_activation(weight_grad_dtype
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
     torch.manual_seed(19)
-    tokens, hidden, top_k, experts, expert_width = 8, 32, 2, 4, 32
+    tokens, hidden, top_k, experts, expert_width = 8, 32, 2, 4, 24
     assignments = tokens * top_k
     grad_output = torch.randn(
         tokens, hidden, device="cuda", dtype=torch.bfloat16
@@ -78,7 +78,7 @@ def test_planning_moe_vjp_donates_only_the_declared_activation(weight_grad_dtype
         assignments, 2 * expert_width, device="cuda", dtype=torch.bfloat16
     )
     w2 = torch.randn(
-        experts, expert_width, hidden, device="cuda", dtype=torch.bfloat16
+        experts, hidden, expert_width, device="cuda", dtype=torch.bfloat16
     )
     route_weights = torch.rand(tokens, top_k, device="cuda")
     order = torch.arange(assignments, device="cuda", dtype=torch.int32)

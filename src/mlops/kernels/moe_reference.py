@@ -8,15 +8,6 @@ import torch.nn.functional as functional
 from .moe_router import route_torch
 
 
-def project(x, engine_weight):
-    """Apply either an nn.Linear-owned transposed view or engine weight."""
-    return (
-        functional.linear(x, engine_weight.T)
-        if not engine_weight.is_contiguous()
-        else x @ engine_weight
-    )
-
-
 def native_torch_moe(
     h2,
     residual,
@@ -36,12 +27,17 @@ def native_torch_moe(
     lengths,
     shared_mode,
 ):
-    """Return the native-Torch output and load-balance statistics."""
+    """Return the native-Torch output and load-balance statistics.
+
+    Every weight is in nn.Linear orientation: ``router_weight [E, D]``,
+    ``w13_experts [E, 2F, D]`` with gate rows then up rows, ``w2_experts
+    [E, D, F]``, and the shared weights ``[2Fs, D]``, ``[D, Fs]``, ``[1, D]``.
+    """
     original_shape = h2.shape
     h2_flat = h2.reshape(-1, h2.shape[-1])
     residual_flat = residual.reshape_as(h2_flat)
     router_input = h2_flat.to(router_weight.dtype)
-    logits = project(router_input, router_weight)
+    logits = functional.linear(router_input, router_weight)
     route_weights, route_ids = route_torch(
         logits,
         int(top_k),
@@ -51,7 +47,7 @@ def native_torch_moe(
         topk_group=int(topk_group),
         routed_scaling=float(routed_scaling),
     )
-    expert_count = router_weight.shape[1]
+    expert_count = router_weight.shape[0]
     counts = torch.bincount(route_ids.reshape(-1).long(), minlength=expert_count)
     if routing_mode == "sigmoid_noaux_tc":
         scores = torch.sigmoid(logits.float())
@@ -74,19 +70,19 @@ def native_torch_moe(
         frequency = counts.float() / route_ids.numel()
         aux = expert_count * (frequency * probabilities.mean(0)).sum()
 
-    width = w2_experts.shape[1]
+    width = w2_experts.shape[2]
     routed = torch.zeros_like(h2_flat, dtype=torch.float32)
     for expert in range(expert_count):
         coefficient = (route_weights * (route_ids == expert)).sum(-1)
-        h13 = h2_flat @ w13_experts[expert]
+        h13 = functional.linear(h2_flat, w13_experts[expert])
         gate, up = h13[:, :width], h13[:, width:]
         activated = functional.silu(gate.float()).to(gate.dtype) * up
-        expert_output = activated @ w2_experts[expert]
+        expert_output = functional.linear(activated, w2_experts[expert])
         routed = routed + coefficient[:, None] * expert_output.float()
     base = residual_flat
     if shared_w13 is not None:
-        shared_h13 = project(h2_flat, shared_w13)
-        shared_width = shared_w2.shape[0]
+        shared_h13 = functional.linear(h2_flat, shared_w13)
+        shared_width = shared_w2.shape[1]
         shared_gate, shared_up = (
             shared_h13[:, :shared_width],
             shared_h13[:, shared_width:],
@@ -94,13 +90,13 @@ def native_torch_moe(
         shared_activated = (
             functional.silu(shared_gate.float()).to(shared_gate.dtype) * shared_up
         )
-        shared = project(shared_activated, shared_w2)
+        shared = functional.linear(shared_activated, shared_w2)
         if shared_mode == "sigmoid":
-            gate = torch.sigmoid(project(h2_flat, shared_gate_weight).float())
+            gate = torch.sigmoid(functional.linear(h2_flat, shared_gate_weight).float())
             shared = (gate * shared.float()).to(residual_flat.dtype)
         base = residual_flat + shared
     output = (base.float() + routed).to(h2.dtype)
     return output.reshape(original_shape), aux, counts, probabilities.sum(0)
 
 
-__all__ = ["native_torch_moe", "project"]
+__all__ = ["native_torch_moe"]

@@ -105,13 +105,13 @@ def test_an_experts_weight_gradient_is_their_sum_unrounded(device):
     offsets = torch.tensor([0, 10, 10, 24], dtype=torch.int32, device=device)
     exact = torch.stack(
         [
-            x[start:stop].double().T @ grad[start:stop].double()
+            grad[start:stop].double().T @ x[start:stop].double()
             for start, stop in zip(offsets[:-1].tolist(), offsets[1:].tolist())
         ]
     )
 
-    rounded = grouped_mm_wgrad(x, grad, offsets, (3, 16, 8))
-    wide = grouped_mm_wgrad(x, grad, offsets, (3, 16, 8), torch.float32)
+    rounded = grouped_mm_wgrad(x, grad, offsets, (3, 8, 16))
+    wide = grouped_mm_wgrad(x, grad, offsets, (3, 8, 16), torch.float32)
 
     assert rounded.dtype == torch.bfloat16 and wide.dtype == torch.float32
     torch.testing.assert_close(wide.double(), exact, rtol=1e-5, atol=1e-5)

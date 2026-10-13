@@ -1,5 +1,6 @@
 """Trace-visible grouped linear projections with demand-driven gradients.
 
+Weights are ``[experts, out, in]`` and each segment computes ``x @ w[e].T``.
 Offsets stay on device; each GPU call is one grouped kernel, not a Python loop
 launching one GEMM per expert. Frozen weights have no weight-gradient output.
 """
@@ -29,7 +30,7 @@ def _forward(
 
 @_forward.register_fake
 def _fake(x, weight, offsets, grad_dtype, need_x, need_weight):
-    return x.new_empty((x.shape[0], weight.shape[2]))
+    return x.new_empty((x.shape[0], weight.shape[1]))
 
 
 @torch.library.custom_op(
@@ -57,7 +58,7 @@ def _backward(
 @_backward.register_fake
 def _backward_fake(grad, x, weight, offsets, weight_shape, grad_dtype):
     return (
-        None if weight is None else grad.new_empty((grad.shape[0], weight.shape[1])),
+        None if weight is None else grad.new_empty((grad.shape[0], weight.shape[2])),
         None
         if x is None
         else torch.empty(
