@@ -61,6 +61,22 @@ loop per expert nor reconstructs full expert weights. Frozen base projections
 compute input gradients but omit weight-gradient GEMMs and outputs. Routing,
 activation and factor gradients remain necessary.
 
+`expert_lora(..., implementation=)` takes the SonicMoE path
+(`providers/sonicmoe/lora.py`) where it applies -- a Hopper or Blackwell GPU
+with the `quack` and `sonicmoe` extras -- and the builtin grouped GEMMs
+elsewhere; `"builtin"` or `"sonicmoe"` force one. On the SonicMoE path the
+routed rows are never materialized: the GEMMs gather them from the token rows
+and SonicMoE's router kernels sum them back, the up projection adds the LoRA
+term before SwiGLU inside Quack's gated GEMM, the down projection adds its
+term inside its GEMM, each backward accumulates the LoRA branch into the base
+row gradient in place, one row pass over the interleaved pre-activation gives
+the score gradient, the pre-activation gradient and the scaled activation,
+the activation itself is not saved, and the LoRA scale is folded into the
+small `B` factors. `compute_precision` means what it means
+for `mlops.moe` (see [OPS.md](OPS.md)): a frozen base held as
+`QuackFP8Weight` containers, as loaded from an FP8 checkpoint, runs both
+projections and their row gradients in FP8.
+
 The separate [expert-parallel modules](EXPERT_PARALLEL.md) provide
 `QuackMoELoRA` and `TEMoELoRA` with their own communication and factor-precision
 configuration. They are not converted automatically by `apply_lora`.
