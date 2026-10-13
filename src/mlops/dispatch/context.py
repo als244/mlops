@@ -8,6 +8,7 @@ caller that makes it once: ``set_implementations``,
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from types import MappingProxyType
@@ -79,6 +80,36 @@ def set_implementations(overrides: Mapping[str, str]) -> None:
     _OVERRIDES.set(_merged(_validated(overrides)))
 
 
+ENVIRONMENT_OVERRIDES = "MLOPS_IMPLEMENTATIONS"
+
+
+def apply_environment_overrides() -> Mapping[str, str]:
+    """Apply ``MLOPS_IMPLEMENTATIONS`` -- comma-separated
+    ``operation=implementation_id`` pairs -- as :func:`set_implementations`
+    would, so a process tree can be given one choice through its environment.
+
+    Runs once when ``mlops`` is imported; an empty or absent variable chooses
+    nothing. Returns the choices applied.
+    """
+    specification = os.environ.get(ENVIRONMENT_OVERRIDES, "").strip()
+    if not specification:
+        return MappingProxyType({})
+    overrides: dict[str, str] = {}
+    for item in specification.split(","):
+        operation, separator, implementation_id = item.partition("=")
+        if not separator or not operation.strip() or not implementation_id.strip():
+            raise ValueError(
+                f"{ENVIRONMENT_OVERRIDES} expects comma-separated "
+                f"operation=implementation_id pairs, got {item!r}"
+            )
+        overrides[operation.strip()] = implementation_id.strip()
+    from ..providers import ensure_implementations_registered
+
+    ensure_implementations_registered()
+    set_implementations(overrides)
+    return MappingProxyType(overrides)
+
+
 @contextmanager
 def use_implementation(operation: str, implementation_id: str):
     """Convenience context manager for one exact implementation override."""
@@ -144,7 +175,7 @@ def weight_gradients_at(dtype: torch.dtype | None):
     an operation is called and travels with it, so a captured graph keeps the
     one it was captured under. ``None``, the default, is each weight's own
     dtype. Operations whose weight gradients a library computes and rounds
-    itself -- FLA's, Liger's -- return them as that library does.
+    itself -- FLA's -- return them as that library does.
     """
     token = _WEIGHT_GRADIENT_DTYPE.set(_floating(dtype))
     try:

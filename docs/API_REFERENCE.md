@@ -118,7 +118,11 @@ fail with their support reason; implementations never silently fall back.
 `use_implementations` applies its overrides for one block; `set_implementations`
 applies the same validated overrides for the rest of the calling context, for a
 process that chooses once, and so do `set_deterministic_kernels` and
-`set_weight_gradient_dtype` for the requests below.
+`set_weight_gradient_dtype` for the requests below. The environment can make
+the `set_implementations` choice for a whole process tree:
+`MLOPS_IMPLEMENTATIONS=moe=builtin.moe.grouped_gemm_composed,rms_norm=...`
+(comma-separated `operation=implementation_id` pairs) is applied when `mlops`
+is imported, by `apply_environment_overrides`.
 
 Without an override, resolution filters unsupported candidates and selects the
 highest-priority remaining implementation. Variable-length FlashAttention requires
@@ -160,8 +164,8 @@ chunks at it. The dtype is read when the operation is called and passed to its
 forward and backward operators, so a captured graph keeps the dtype it was
 captured under. `None`, the default, is each weight's own dtype and leaves
 every operation as it was. Weight gradients another library computes and
-rounds -- FLA's causal convolution and gated RMSNorm, Liger's RMSNorm,
-ScatterMoE's experts -- come back as that library returns them. Autograd gives
+rounds -- FLA's causal convolution and gated RMSNorm -- come back as that
+library returns them. Autograd gives
 a parameter its gradient at the parameter's dtype, so eager training rounds
 the result again there. A caller that manages returned gradient tensors directly
 can retain the operation's output dtype. `weight_gradient_dtype`

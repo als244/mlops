@@ -39,10 +39,9 @@ def test_registry_contains_exact_rms_norm_implementations():
     registry = implementation_registry()
     assert set(registry["rms_norm"]) == {
         "builtin.rms_norm.triton",
-        "liger.rms_norm",
         "native_torch.rms_norm",
     }
-    assert registry["rms_norm"]["liger.rms_norm"].provider == "liger"
+    assert registry["rms_norm"]["builtin.rms_norm.triton"].provider == "builtin"
 
 
 def test_nested_overrides_restore_and_trace_exact_ids():
@@ -66,6 +65,29 @@ def test_nested_overrides_restore_and_trace_exact_ids():
     assert dict(dispatch_manifest(trace)) == {
         "rms_norm": "native_torch.rms_norm"
     }
+
+
+def test_the_environment_can_make_the_choice_for_a_process(monkeypatch):
+    from types import MappingProxyType
+
+    from mlops.dispatch import context
+
+    monkeypatch.setenv(context.ENVIRONMENT_OVERRIDES, "rms_norm=native_torch.rms_norm")
+    token = context._OVERRIDES.set(MappingProxyType({}))
+    try:
+        applied = context.apply_environment_overrides()
+        assert dict(applied) == {"rms_norm": "native_torch.rms_norm"}
+        assert context.implementation_override("rms_norm") == "native_torch.rms_norm"
+    finally:
+        context._OVERRIDES.reset(token)
+    monkeypatch.setenv(context.ENVIRONMENT_OVERRIDES, "")
+    assert dict(context.apply_environment_overrides()) == {}
+    monkeypatch.setenv(context.ENVIRONMENT_OVERRIDES, "rms_norm")
+    with pytest.raises(ValueError, match="operation=implementation_id"):
+        context.apply_environment_overrides()
+    monkeypatch.setenv(context.ENVIRONMENT_OVERRIDES, "rms_norm=no.such")
+    with pytest.raises(ValueError, match="unknown implementation"):
+        context.apply_environment_overrides()
 
 
 def test_a_choice_set_once_holds_until_changed():
@@ -292,7 +314,7 @@ def test_gradcheck_suite_reports_passes_and_unsupported_implementations():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize(
     "implementation_id",
-    ("builtin.rms_norm.triton", "liger.rms_norm"),
+    ("builtin.rms_norm.triton",),
 )
 def test_rms_norm_external_vjps_are_repeatable_and_non_mutating(implementation_id):
     torch.manual_seed(8173)
@@ -319,10 +341,6 @@ def test_rms_norm_external_vjps_are_repeatable_and_non_mutating(implementation_i
         (
             "builtin.rms_norm.triton",
             "mlops.rms_norm_builtin_triton_fwd.default",
-        ),
-        (
-            "liger.rms_norm",
-            "mlops.rms_norm_liger_fwd.default",
         ),
     ),
 )

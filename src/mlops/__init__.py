@@ -3,6 +3,7 @@
 from . import optim as optim
 from .causal_conv import causal_conv_silu
 from .cross_entropy import cross_entropy
+from .dispatch.context import apply_environment_overrides
 from .dsa import (
     dsa_attention,
     sparse_latent_attention,
@@ -36,6 +37,9 @@ from .rope_tables import build_rope_tables
 from .routing import sigmoid_topk
 from .sequence_metadata import prepare_packed_sequence_metadata
 from .swiglu import packed_swiglu, swiglu
+
+# One choice for a whole process tree, if the environment makes it.
+_environment_choices = apply_environment_overrides()
 
 __all__ = [
     "build_rope_tables",
