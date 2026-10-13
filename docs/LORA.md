@@ -61,6 +61,9 @@ loop per expert nor reconstructs full expert weights. Frozen base projections
 compute input gradients but omit weight-gradient GEMMs and outputs. Routing,
 activation and factor gradients remain necessary.
 
+Both compositions form the router's logits through `mlops.kernels.router`,
+as every `moe` implementation does: operands at the activation's dtype, fp32
+sums and logits, the router weight's gradient at its own dtype.
 `expert_lora(..., implementation=)` takes the SonicMoE path
 (`providers/sonicmoe/lora.py`) where it applies -- a Hopper or Blackwell GPU
 with the `quack` and `sonicmoe` extras -- and the builtin grouped GEMMs

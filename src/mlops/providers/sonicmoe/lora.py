@@ -44,12 +44,12 @@ containers as the ``moe`` operators do.
 from __future__ import annotations
 
 import torch
-from torch.nn import functional as F
 
 from ...dispatch.context import weight_gradient_dtype
 from ...dispatch.costs import flop_formula
 from ...dispatch.registry import SupportResult
 from ...expert_parallel.quack.kernels.swiglu_rows import routed_swiglu_rows_backward
+from ...kernels.router import routed_logits
 from ...lora.routing import routing
 from . import fp8
 from .moe import CAPABILITIES, ROW_ALIGNMENT, available, kernels, metadata
@@ -842,7 +842,7 @@ def expert_lora(
         compute_precision, gate_up, down, hidden.dtype
     )
     flat = hidden.reshape(-1, hidden.shape[-1]).contiguous()
-    logits = F.linear(flat.to(router_weight.dtype), router_weight)
+    logits = routed_logits(flat, router_weight)
     weights, ids = routing(logits, top_k, routing_mode)
     experts = gate_up.shape[0]
     offsets, gather, scatter, reverse = metadata(ids.to(torch.int32), experts)

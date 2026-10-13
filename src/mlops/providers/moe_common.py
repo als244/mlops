@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import torch
 
-from ..kernels.matmul import product_at
+from ..kernels import router
 from ..kernels.moe_dispatch import (
     combine,
     dispatch,
@@ -141,17 +141,18 @@ def requested(gradient, needed):
 
 def router_weight_gradient(grad_logits, router_input, router_weight, weight_grad_dtype):
     """``grad_logits.T @ router_input`` at ``weight_grad_dtype`` (the router's own
-    when ``None``), in ``router_weight``'s strides.
+    when ``None``), in ``router_weight``'s strides, through
+    `mlops.kernels.router` (fp32 sums over the activation's dtype).
 
     A custom VJP result must honor the advertised input layout, not merely the
     layout the GEMM produces: a caller supplying a view of its parameter gets
     the gradient in that view's strides, so AOT's inverse view restores the
     ordinary contiguous parameter-gradient ABI.
     """
-    grad_router = (
-        grad_logits.T @ router_input
-        if weight_grad_dtype is None
-        else product_at(grad_logits.T, router_input, weight_grad_dtype)
+    grad_router = router.router_weight_gradient(
+        grad_logits,
+        router_input,
+        router_weight.dtype if weight_grad_dtype is None else weight_grad_dtype,
     )
     if grad_router.stride() != router_weight.stride():
         aligned = torch.empty_strided(
@@ -167,10 +168,7 @@ def router_weight_gradient(grad_logits, router_input, router_weight, weight_grad
 
 def add_router_input_gradient_(grad_h2, grad_logits_storage, router_weight):
     """Add the router's share of the hidden-input gradient in place."""
-    if router_weight.dtype == grad_h2.dtype:
-        grad_h2.addmm_(grad_logits_storage, router_weight)
-    else:
-        grad_h2.add_((grad_logits_storage @ router_weight).to(grad_h2.dtype))
+    router.add_router_input_gradient_(grad_h2, grad_logits_storage, router_weight)
 
 
 def forward_routed(
@@ -222,8 +220,7 @@ def forward_routed(
         original_shape = h2.shape
         h2_flat = h2.reshape(-1, h2.shape[-1]).contiguous()
         residual_flat = residual.reshape_as(h2_flat).contiguous()
-        router_input = h2_flat.to(router_weight.dtype)
-        logits = router_input @ router_weight.T
+        logits = router.router_logits(h2_flat, router_weight)
         route_weights, route_ids = route(
             logits,
             int(top_k),
@@ -363,10 +360,7 @@ def backward_routed(
         grad_logits_storage = grad_logits.to(logits.dtype)
         grad_router = (
             router_weight_gradient(
-                grad_logits_storage,
-                h2_flat.to(router_weight.dtype),
-                router_weight,
-                weight_grad_dtype,
+                grad_logits_storage, h2_flat, router_weight, weight_grad_dtype
             )
             if need_router
             else skipped_gradient(router_weight, weight_grad_dtype)

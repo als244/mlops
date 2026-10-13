@@ -1546,7 +1546,7 @@ diagnostics.
 |---|---|---|
 | `h2` | `Tensor[...,D]`, `R` flattened rows | normalized expert input |
 | `residual` | same shape as `h2` | residual base |
-| `router_weight` | `Tensor[E,D]` | router projection (`nn.Linear` weight) |
+| `router_weight` | `Tensor[E,D]` | router projection (`nn.Linear` weight), any float dtype; the logits come from `mlops.kernels.router`: operands at `h2`'s dtype (bf16/fp16 on CUDA), sums and logits in fp32, the weight's gradient summed in fp32 from two bf16 pieces of the cotangent and returned at the weight's dtype (or `weight_gradient_dtype`) |
 | `w13_experts` | `Tensor[E,2F,D]` | packed gate/up expert weights: per expert an `nn.Linear` weight whose first `F` rows are the gate and last `F` rows the up projection |
 | `w2_experts` | `Tensor[E,D,F]` | expert down weights (`nn.Linear` weights) |
 | `top_k` | positive `int` | routes selected per row |

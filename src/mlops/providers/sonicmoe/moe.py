@@ -28,6 +28,7 @@ from ...dispatch import logical_costs as logical
 from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.moe_router import current_route_weight_precision, route
+from ...kernels.router import router_logits
 from ..builtin.moe import supports as builtin_supports
 from ..moe_common import (
     add_router_input_gradient_,
@@ -44,14 +45,23 @@ ROW_ALIGNMENT = 8
 CAPABILITIES = (9, 10)
 
 
-@lru_cache(maxsize=1)
+_AVAILABLE: bool | None = None
+
+
+@torch.compiler.assume_constant_result
 def available() -> bool:
     """Whether the ``quack`` and ``sonicmoe`` extras are installed.
 
     Found without importing them: importing ``sonicmoe`` replaces Quack's
-    tuning policy, which the shared runtime must see untouched first.
+    tuning policy, which the shared runtime must see untouched first. The
+    answer is a constant of the process, held in a module global rather
+    than an ``lru_cache`` so Dynamo, which meets this call in ``supports``
+    while tracing a model, takes the value instead of tracing the probe.
     """
-    return all(find_spec(name) is not None for name in ("quack", "sonicmoe"))
+    global _AVAILABLE
+    if _AVAILABLE is None:
+        _AVAILABLE = all(find_spec(name) is not None for name in ("quack", "sonicmoe"))
+    return _AVAILABLE
 
 
 @lru_cache(maxsize=1)
@@ -376,7 +386,7 @@ def forward(
     with torch.no_grad():
         h2_flat = h2.reshape(-1, h2.shape[-1]).contiguous()
         residual_flat = residual.reshape_as(h2_flat).contiguous()
-        logits = h2_flat.to(router_weight.dtype) @ router_weight.T
+        logits = router_logits(h2_flat, router_weight)
         route_weights, route_ids = route(
             logits,
             int(top_k),
@@ -491,7 +501,7 @@ def backward(
         grad_router = (
             router_weight_gradient(
                 grad_logits_storage,
-                h2_flat.to(router_weight.dtype),
+                h2_flat,
                 router_weight,
                 weight_grad_dtype,
             )
@@ -586,7 +596,7 @@ def residual_fakes(h2, router_weight, w13_experts, top_k, weight_precision):
     assignments = rows * int(top_k)
     route_dtype = torch.float32 if weight_precision == "float32" else h2.dtype
     return (
-        torch.empty((rows, experts), dtype=router_weight.dtype, device=h2.device),
+        torch.empty((rows, experts), dtype=torch.float32, device=h2.device),
         torch.empty((rows, int(top_k)), dtype=route_dtype, device=h2.device),
         torch.empty((rows, int(top_k)), dtype=torch.int32, device=h2.device),
         torch.empty(experts + 1, dtype=torch.int32, device=h2.device),

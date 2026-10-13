@@ -15,6 +15,7 @@ from ...dispatch import logical_costs as logical
 from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.moe_router import current_route_weight_precision, route
+from ...kernels.router import router_logits
 from ...moe import _production_shared_base
 from ..moe_common import (
     add_router_input_gradient_,
@@ -69,7 +70,7 @@ def _prepare_forward(
     experts = router_weight.shape[0]
     with torch.no_grad():
         h2_flat = h2.reshape(-1, h2.shape[-1]).contiguous()
-        logits = h2_flat.to(router_weight.dtype) @ router_weight.T
+        logits = router_logits(h2_flat, router_weight)
         route_weights, route_ids = route(
             logits,
             int(top_k),
@@ -167,7 +168,7 @@ def _prepare_backward(
         grad_router = (
             router_weight_gradient(
                 grad_logits_storage,
-                h2_flat.to(router_weight.dtype),
+                h2_flat,
                 router_weight,
                 weight_grad_dtype,
             )

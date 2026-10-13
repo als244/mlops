@@ -191,7 +191,7 @@ def _forward_fake(
         torch.empty((), dtype=torch.float32, device=h2.device),
         torch.empty(experts, dtype=torch.int64, device=h2.device),
         torch.empty(experts, dtype=torch.float32, device=h2.device),
-        torch.empty((rows, experts), dtype=router_weight.dtype, device=h2.device),
+        torch.empty((rows, experts), dtype=torch.float32, device=h2.device),
         torch.empty(
             (rows, int(top_k)),
             dtype=(

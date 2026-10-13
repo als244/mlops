@@ -2,8 +2,8 @@
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 
+from ..kernels.router import routed_logits
 from ..providers.expert_weights import bf16_compute_support, dequantize_expert_weights
 from ..swiglu import swiglu
 from .grouped import grouped_linear
@@ -110,7 +110,7 @@ def expert_lora(
         raise ValueError(f"the builtin expert LoRA composition: {refusal}")
     gate_up, down = dequantize_expert_weights(gate_up, down, dtype=hidden.dtype)
     flat = hidden.reshape(-1, hidden.shape[-1])
-    logits = F.linear(flat.to(router_weight.dtype), router_weight)
+    logits = routed_logits(flat, router_weight)
     weights, ids = routing(logits, top_k, routing_mode)
     order, offsets, slots = layout(ids, gate_up.shape[0])
     counts = (offsets[1:] - offsets[:-1]).long()
