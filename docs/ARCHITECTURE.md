@@ -96,10 +96,11 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 | `src/mlops/kernels/` | raw Torch/Triton/TileLang mechanics; no selection or fallback |
 | `src/mlops/optim/` | standard optimizers plus functional, `out=`, and in-place update entrypoints |
 | `src/mlops/kernels/kda/`, `kernels/sparse_mla/` | attributed attention kernels, imported lazily by standard registrations |
+| `src/mlops/quack_runtime/` | process-wide Quack setup shared by the expert-parallel layers and the SonicMoE provider: source-checked patches, the tuning-cache default, kernel-source fingerprint registration, and SonicMoE imports that keep Quack's tuning policy |
 | `src/mlops/bootstrap.py` | registers custom-op targets before artifact loading |
 
-`provider` is source metadata (`builtin`, `native_torch`, `liger`,
-`scattermoe`, or `fla`). Selection always uses an exact implementation ID such
+`provider` is source metadata (`builtin`, `native_torch`, `fla`, or
+`sonicmoe`). Selection always uses an exact implementation ID such
 as `builtin.rms_norm.triton`; there is no provider-wide switch.
 
 ## Implementation selection
@@ -141,9 +142,9 @@ differentiable forward region has:
 - a separately registered backward custom-op target when the VJP is opaque.
 
 Fake/meta layout is tested with model-authentic views, not only convenient
-contiguous tensors. For example, a router input commonly arrives as
-`nn.Linear.weight.T`. Its raw GEMM VJP is contiguous, but the provider
-materializes that result in the input view's stride before returning it. The
+contiguous tensors. For example, a router weight may arrive as a view of its
+parameter. Its raw GEMM VJP is contiguous, but the provider materializes that
+result in the input view's stride before returning it. The
 fake VJP advertises the same layout so AOT's inverse view restores the ordinary
 contiguous parameter-gradient ABI.
 
@@ -173,7 +174,7 @@ The ownership categories are deliberately distinct:
 | operation input | caller/module, visible in the graph | parameters, sequence metadata, RoPE cosine/sine tables |
 | autograd residual | reference retained for one forward/backward graph | input `x`, `rstd`, routing metadata |
 | public output | caller after the invocation | normalized output, loss |
-| workspace | implementation scratch that exists only during one forward or backward call | Liger's backward dweight partials |
+| workspace | implementation scratch that exists only during one forward or backward call | the builtin RMSNorm's backward dweight partials |
 
 Workspace never includes caller-owned inputs, outputs, persistent/prepared
 buffers, autograd residuals that survive the call, allocator cache, or global

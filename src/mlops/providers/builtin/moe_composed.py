@@ -14,7 +14,6 @@ from ...dispatch import logical_costs as logical
 from ...dispatch.context import weight_gradient_dtype
 from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
-from ...kernels.matmul import product_at
 from ...kernels.moe_dispatch import (
     combine,
     dispatch,
@@ -28,19 +27,20 @@ from ...kernels.moe_grouped_gemm import (
     grouped_mm_forward,
     grouped_mm_wgrad,
 )
-from ...kernels.moe_router import (
-    add_aux_gradient_,
-    add_sequence_aux_gradient_,
-    current_route_weight_precision,
-    route,
-    route_backward,
-)
+from ...kernels.moe_router import current_route_weight_precision, route
 from ...kernels.swiglu import (
     swiglu_packed_backward,
     swiglu_packed_backward_out,
     swiglu_packed_forward,
 )
 from ...moe import _production_shared_base
+from ..expert_weights import bf16_compute_support, dequantize_expert_weights
+from ..moe_common import (
+    add_router_input_gradient_,
+    router_weight_gradient,
+    routing_gradient,
+    routing_statistics,
+)
 from .moe import supports as common_support
 
 
@@ -78,7 +78,7 @@ def _prepare_forward(
 
     with torch.no_grad():
         h2_flat = h2.reshape(-1, h2.shape[-1]).contiguous()
-        logits = h2_flat.to(router_weight.dtype) @ router_weight
+        logits = h2_flat.to(router_weight.dtype) @ router_weight.T
         route_weights, route_ids = route(
             logits,
             int(top_k),
@@ -89,49 +89,17 @@ def _prepare_forward(
             routed_scaling=float(routed_scaling),
             weight_precision=str(weight_precision),
         )
-        order, offsets, slots = sort_assignments(route_ids, router_weight.shape[1])
+        order, offsets, slots = sort_assignments(route_ids, router_weight.shape[0])
         dispatched = dispatch(h2_flat, order, int(top_k))
         h13 = grouped_mm_forward(dispatched, w13_experts, offsets)
 
-        if routing_mode == "sigmoid_noaux_tc":
-            scores = torch.sigmoid(logits.float())
-            probabilities = scores / scores.sum(-1, keepdim=True)
-        else:
-            probabilities = torch.softmax(logits.float(), dim=-1)
-        probability_sum = probabilities.sum(0)
-        counts = torch.zeros(
-            router_weight.shape[1], dtype=torch.int64, device=h2.device
+        aux, counts, probability_sum = routing_statistics(
+            logits,
+            route_ids,
+            routing_mode=str(routing_mode),
+            lengths=normalized_lengths,
+            experts=router_weight.shape[0],
         )
-        counts.scatter_add_(
-            0,
-            route_ids.reshape(-1).long(),
-            torch.ones(route_ids.numel(), dtype=torch.int64, device=h2.device),
-        )
-        if routing_mode == "sigmoid_noaux_tc":
-            aux = torch.zeros((), dtype=torch.float32, device=h2.device)
-            start = 0
-            for length in normalized_lengths:
-                stop = start + length
-                segment_counts = torch.zeros_like(counts)
-                segment_ids = route_ids[start:stop].reshape(-1).long()
-                segment_counts.scatter_add_(
-                    0,
-                    segment_ids,
-                    torch.ones_like(segment_ids, dtype=torch.int64),
-                )
-                frequency = (
-                    segment_counts.float()
-                    * router_weight.shape[1]
-                    / (route_ids.shape[1] * length)
-                )
-                aux += (frequency * probabilities[start:stop].mean(0)).sum()
-                start = stop
-        else:
-            frequency = counts.float() / route_ids.numel()
-            aux = (
-                router_weight.shape[1]
-                * (frequency * (probability_sum / h2_flat.shape[0])).sum()
-            )
         return (
             aux,
             counts,
@@ -182,46 +150,24 @@ def _prepare_backward(
         grad_dispatched = grouped_mm_dgrad(grad_h13, w13_experts, offsets)
         grad_h2 = dispatch_backward(grad_dispatched, slots)
 
-        grad_logits = route_backward(
+        grad_logits = routing_gradient(
+            grad_aux,
+            grad_probability_sum,
             grad_route_weights,
             route_weights,
             route_ids,
             logits,
-            str(routing_mode),
-        )
-        normalized_lengths = [int(length) for length in lengths]
-        if routing_mode == "sigmoid_noaux_tc":
-            add_sequence_aux_gradient_(
-                grad_logits, logits, route_ids, grad_aux, normalized_lengths
-            )
-        else:
-            add_aux_gradient_(grad_logits, logits, route_ids, grad_aux)
-        probabilities = torch.softmax(logits.float(), dim=-1)
-        grad_sum = grad_probability_sum.float()
-        grad_logits.add_(
-            probabilities
-            * (grad_sum.unsqueeze(0) - (probabilities @ grad_sum).unsqueeze(1))
+            routing_mode=str(routing_mode),
+            lengths=lengths,
         )
         grad_logits_storage = grad_logits.to(logits.dtype)
-        routed = h2_flat.to(router_weight.dtype).T
-        grad_router = (
-            routed @ grad_logits_storage
-            if weight_grad_dtype is None
-            else product_at(routed, grad_logits_storage, weight_grad_dtype)
+        grad_router = router_weight_gradient(
+            grad_logits_storage,
+            h2_flat.to(router_weight.dtype),
+            router_weight,
+            weight_grad_dtype,
         )
-        if grad_router.stride() != router_weight.stride():
-            aligned_grad_router = torch.empty_strided(
-                grad_router.shape,
-                router_weight.stride(),
-                dtype=grad_router.dtype,
-                device=grad_router.device,
-            )
-            aligned_grad_router.copy_(grad_router)
-            grad_router = aligned_grad_router
-        if router_weight.dtype == grad_h2.dtype:
-            grad_h2.addmm_(grad_logits_storage, router_weight.T)
-        else:
-            grad_h2.add_((grad_logits_storage @ router_weight.T).to(grad_h2.dtype))
+        add_router_input_gradient_(grad_h2, grad_logits_storage, router_weight)
         return grad_h2.reshape(original_shape), grad_router, grad_w13
 
 
@@ -283,9 +229,7 @@ def _finish_backward(
         )
         scale_rows_(grad_activated, route_scale)
         if grad_h13_destination is None:
-            grad_h13 = swiglu_packed_backward(
-                grad_activated, h13, variant="triton"
-            )
+            grad_h13 = swiglu_packed_backward(grad_activated, h13, variant="triton")
         else:
             grad_h13 = swiglu_packed_backward_out(
                 grad_activated,
@@ -296,9 +240,7 @@ def _finish_backward(
         return grad_h13, grad_w2, grad_route_weights, grad_output.clone()
 
 
-@torch.library.custom_op(
-    "mlops::moe_builtin_grouped_gemm_prepare_fwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::moe_builtin_grouped_gemm_prepare_fwd", mutates_args=())
 def _prepare_op(
     h2: torch.Tensor,
     router_weight: torch.Tensor,
@@ -358,7 +300,7 @@ def _prepare_fake(
     del router_bias, routing_mode, n_group, topk_group, routed_scaling, lengths
     del weight_grad_dtype
     rows = h2.numel() // h2.shape[-1]
-    experts = router_weight.shape[1]
+    experts = router_weight.shape[0]
     assignments = rows * int(top_k)
     route_dtype = torch.float32 if weight_precision == "float32" else h2.dtype
     return (
@@ -372,14 +314,12 @@ def _prepare_fake(
         torch.empty(experts + 1, dtype=torch.int32, device=h2.device),
         torch.empty((rows, int(top_k)), dtype=torch.int32, device=h2.device),
         torch.empty(
-            (assignments, w13_experts.shape[2]), dtype=h2.dtype, device=h2.device
+            (assignments, w13_experts.shape[1]), dtype=h2.dtype, device=h2.device
         ),
     )
 
 
-@torch.library.custom_op(
-    "mlops::moe_builtin_grouped_gemm_prepare_bwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::moe_builtin_grouped_gemm_prepare_bwd", mutates_args=())
 def _prepare_backward_op(
     grad_aux: torch.Tensor,
     grad_probability_sum: torch.Tensor,
@@ -562,13 +502,13 @@ def _prepare_autograd_backward(
         grad_aux = torch.zeros((), dtype=torch.float32, device=h2.device)
     if grad_probability_sum is None:
         grad_probability_sum = torch.zeros(
-            router_weight.shape[1], dtype=torch.float32, device=h2.device
+            router_weight.shape[0], dtype=torch.float32, device=h2.device
         )
     if grad_route_weights is None:
         grad_route_weights = torch.zeros_like(route_weights)
     if grad_h13 is None:
         grad_h13 = torch.zeros(
-            (route_weights.numel(), w13_experts.shape[2]),
+            (route_weights.numel(), w13_experts.shape[1]),
             dtype=h2.dtype,
             device=h2.device,
         )
@@ -591,9 +531,7 @@ _prepare_op.register_autograd(
 )
 
 
-@torch.library.custom_op(
-    "mlops::moe_builtin_grouped_gemm_finish_fwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::moe_builtin_grouped_gemm_finish_fwd", mutates_args=())
 def _finish_op(
     h13: torch.Tensor,
     w2_experts: torch.Tensor,
@@ -626,9 +564,7 @@ def _finish_fake(
     return torch.empty_like(residual)
 
 
-@torch.library.custom_op(
-    "mlops::moe_builtin_grouped_gemm_finish_bwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::moe_builtin_grouped_gemm_finish_bwd", mutates_args=())
 def _finish_backward_op(
     grad_output: torch.Tensor,
     h13: torch.Tensor,
@@ -804,7 +740,14 @@ def apply(
     shared_w2=None,
     shared_gate_weight=None,
     shared_mode="add",
+    compute_precision=None,
 ):
+    refusal = bf16_compute_support(compute_precision, w13_experts, w2_experts)
+    if refusal is not None:
+        raise ValueError(refusal)
+    w13_experts, w2_experts = dequantize_expert_weights(
+        w13_experts, w2_experts, dtype=h2.dtype
+    )
     rows = h2.numel() // h2.shape[-1]
     normalized_lengths = (rows,) if lengths is None else tuple(int(x) for x in lengths)
     grad_dtype = weight_gradient_dtype()

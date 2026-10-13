@@ -7,6 +7,7 @@ import torch
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.moe_reference import native_torch_moe
 from ..builtin.moe import supports as common_support
+from ..expert_weights import bf16_compute_support, dequantize_expert_weights
 
 
 def supports(*args, surface, **kwargs):
@@ -33,7 +34,14 @@ def apply(
     shared_w2=None,
     shared_gate_weight=None,
     shared_mode="add",
+    compute_precision=None,
 ):
+    refusal = bf16_compute_support(compute_precision, w13_experts, w2_experts)
+    if refusal is not None:
+        raise ValueError(refusal)
+    w13_experts, w2_experts = dequantize_expert_weights(
+        w13_experts, w2_experts, dtype=h2.dtype
+    )
     rows = h2.numel() // h2.shape[-1]
     normalized_lengths = (rows,) if lengths is None else tuple(int(x) for x in lengths)
     bias = (

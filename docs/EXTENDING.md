@@ -56,8 +56,8 @@ The FLA-backed operations demonstrate that a library call may be an opaque
 interior region while still composing normally with surrounding operations.
 The `moe` operation demonstrates the opposite extreme: it is deliberately
 larger than one grouped GEMM because callers need one stable routed-MoE
-contract, while builtin, ScatterMoE, and a future SonicMoE implementation may
-use different sorting, scatter/gather, residual, and VJP mechanics internally.
+contract, while the builtin and a future SonicMoE implementation may use
+different sorting, scatter/gather, residual, and VJP mechanics internally.
 That semantic scope does not require one opaque dispatcher target. The
 default composed builtin keeps the single public `moe` contract while
 exposing a preparation region (routing/dispatch/`w13`) and a finish region
@@ -111,7 +111,7 @@ support contracts.
 
 ## Add an implementation for an existing operation
 
-Use this path for a new package such as Liger, a new hardware-specific kernel,
+Use this path for a new package such as SonicMoE, a new hardware-specific kernel,
 or another exact variant from an existing source.
 
 ### 1. Read and preserve the operation contract
@@ -190,7 +190,7 @@ For opaque Triton, CUDA, or third-party calls, register a functional boundary:
 The semantic `apply` calls the registered forward target and hides any private
 residual outputs. Use
 `src/mlops/providers/builtin/rms_norm.py` as the small opaque example and
-`src/mlops/providers/scattermoe/moe.py` as the composite example.
+`src/mlops/providers/builtin/moe_composed.py` as the composite example.
 
 ### 6. Expose explicit entrypoints when supported
 
@@ -271,78 +271,52 @@ constraints or numerical semantics. Add tests for:
 - registry-aware gradcheck or an explicit low-precision skip reason; and
 - representative fidelity, throughput, and allocator/workspace measurements.
 
-### Worked example: add SonicMoE to `moe`
+### Worked example: the SonicMoE implementations of `moe`
 
 SonicMoE is an implementation of the existing `moe` operation, not a new
-semantic operation. The reviewed interface can consume either fused routing or
-caller-supplied sorted routing, while the current `moe` ABI already defines
-hidden/residual inputs, logical router and expert weights, routing policy,
-top-k, packed lengths, shared-expert inputs, auxiliary statistics, and all
-required gradients.
+semantic operation. `src/mlops/providers/sonicmoe/moe.py` (one opaque
+operator pair, `sonicmoe.moe`, priority 95) and `moe_composed.py` (two opaque
+regions, `sonicmoe.moe.composed`, priority 110) show every step of the path
+above.
 
-The first mlops adapter must support **only SM90 and SM100**, represented by
-CUDA compute-capability tuples `(9, 0)` and `(10, 0)`. This is a deliberately
-conservative mlops validation boundary. It does not imply that the upstream
-project supports no other architecture; each additional architecture must be
-enabled here only after its own correctness, capture, and performance results
-are recorded.
-
-The integration would proceed as follows.
-
-1. **Keep the public ABI unchanged.** Do not add Sonic-specific offsets,
-   gather indices, transposed weights, or workspace arguments to
-   `mlops.moe(...)` or `mlops.explicit.moe`.
-2. **Add the optional dependency.** Add a pinned `sonicmoe` optional dependency
-   in `pyproject.toml`. An unavailable or incompatible build must reject only
-   `sonicmoe.moe`.
-3. **Create the provider package.** Add
-   `src/mlops/providers/sonicmoe/__init__.py` and
-   `src/mlops/providers/sonicmoe/moe.py`.
-4. **Preserve canonical routing first.** Reuse the package's existing routing
-   policy and auxiliary-statistic semantics, then adapt the resulting token-to-
-   expert assignments to SonicMoE's caller-supplied sorted-routing entrypoint.
-   Use SonicMoE's fused-router path only if it can be proven to reproduce the
-   selected routing mode, top-k weights, bias/group rules, forced decisions,
-   and auxiliary outputs exactly.
-5. **Build private routing metadata inside the adapter.** Expert-frequency
-   offsets, sorted assignment indices, gather/scatter indices, and reverse-
-   scatter metadata are provider-private forward outputs or invocation-local
-   workspace. The registry must not cache them.
-6. **Adapt logical expert weights without changing model code.** The canonical
-   `w13[E,H,2I]` and `w2[E,I,H]` tensors correspond to SonicMoE-style
-   `[2I,H,E]` and `[H,I,E]` views. Accept the provider only when those views and
-   strides are supported. If packing is required, define a separate explicit
-   caller-owned preparation contract before enabling that geometry; do not
-   hide a persistent packed copy in the provider.
-7. **Register an opaque forward target.** A private
-   `mlops::moe_sonicmoe_fwd` custom op calls the low-level SonicMoE route/expert
-   engine and returns the normal semantic results plus only the private tensors
-   needed by its VJP. Its fake function reproduces every output's metadata.
-8. **Register the VJP.** `setup_context` saves the required custom-op inputs and
-   private outputs. A functional `mlops::moe_sonicmoe_bwd` target returns hidden,
-   router, expert-weight, route-weight, and shared-expert gradients in the
-   canonical order without mutating saved values or cotangents.
-9. **Expose the existing explicit ABI if possible.** Implement the current
-   explicit MoE forward/backward signatures only if SonicMoE can consume the
-   documented residual tuple efficiently. Otherwise register it as
-   semantic/apply-only; do not weaken the explicit ABI with a generic extra.
-10. **Register exact identity and support.** Add an `Implementation` with
-    `operation="moe"`, `implementation_id="sonicmoe.moe"`, and
-    `provider="sonicmoe"`. Its architecture check must accept exactly
-    `{(9, 0), (10, 0)}` and return a specific rejection such as
-    `"sonicmoe.moe requires SM90 or SM100"` for every other capability. Also
-    gate on dependency version, dtype/layout, expert dimensions, top-k,
-    routing mode, and supported weight strides. Add the module to `_CATALOG`.
-11. **Report physical costs.** Keep the existing logical MoE estimate. The
-    SonicMoE estimator reports known gather/scatter traffic and only
-    invocation-local temporary storage as workspace; unknown fields remain
-    `None`.
-12. **Validate before changing priority.** Compare builtin and SonicMoE outputs
-    and all differentiable inputs across supported routing modes, packed
-    lengths, shared/residual experts, top-k values, and forced routing. Then run
-    opcheck, repeated backward, capture, many-step fidelity, throughput, and
-    allocator-peak tests. Keep builtin selection as the default until the
-    measured result justifies promotion.
+1. **The public ABI is unchanged.** `mlops.moe(...)` takes the same
+   arguments; SonicMoE's offsets, gather/scatter/reverse indices and the
+   saved pre-activation are private custom-op residuals.
+2. **The optional dependencies are extras.** `quack` (Quack and its CUTLASS
+   DSL pin) and `sonicmoe`, both in `providers`. The adapter finds them with
+   `importlib.util.find_spec` and declines when they are missing, so an
+   install without them keeps the builtin.
+3. **Routing is the package's.** `kernels.moe_router.route` selects the
+   experts for every routing mode and `providers.moe_common` computes the
+   auxiliary loss, counts, probability sums and their gradients, exactly as
+   the builtin does; SonicMoE's `TC_topk_router_metadata_triton` turns the
+   selections into its expert-sorted metadata.
+4. **The kernels are reached through `mlops.quack_runtime`.** `initialize()`
+   installs the source-checked Quack patches and the tuning-cache default
+   before the first compile, and `autotune.sonicmoe_functional()` imports
+   SonicMoE without adopting its global Quack tuning policy.
+5. **Weights are used as they are.** The canonical `w13 [E,2I,H]` (gate rows,
+   then up rows) and `w2 [E,H,I]` are SonicMoE's native `[E, out, in]`
+   storage with its concatenated gate/up layout; the adapter only takes
+   transposed and permuted views.
+6. **Support is conservative.** After the builtin's shape checks,
+   `supports()` accepts CUDA tensors on SM90 and SM100 devices --
+   `torch.cuda.get_device_capability()` in the `(9, 0)` and `(10, 0)`
+   families, any minor revision -- bfloat16 activations and expert weights,
+   contiguous weights and widths that are multiples of 8; every other call
+   gets a specific reason and goes to the builtin. The explicit surface is declined because the explicit
+   façade's residual tuple is the builtin's.
+7. **Opaque targets own their fakes and VJPs.** `mlops::moe_sonicmoe_fwd` /
+   `_bwd` and the region pairs `moe_sonicmoe_prepare_*` /
+   `moe_sonicmoe_finish_*` are functional custom ops with fakes for every
+   output, registered autograd, and flop formulas that delegate to the `moe`
+   logical estimates.
+8. **Validation is in the suite.** `tests/test_sonicmoe_moe.py` compares both
+   forms with the builtin and the native oracle over every routing mode,
+   sequence lengths, the shared expert and both weight-gradient dtypes,
+   checks bitwise repeatability and the dispatch preference, and checks the
+   declines on CPU; `tests/test_custom_op_contracts.py` runs `opcheck` on the
+   three forward targets where SonicMoE is supported.
 
 This pattern is the key reason the public MoE contract does not standardize one
 provider's saved routing tuple: implementations remain free to use the metadata

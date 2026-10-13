@@ -113,9 +113,6 @@ def test_normalizations_count_a_few_operations_per_element(fake):
     rstd = _f32(6)
     assert _count(ops.rms_norm_builtin_triton_fwd, x, weight, 1e-5, None) == 498
     assert _count(ops.rms_norm_builtin_triton_bwd, x, x, weight, rstd, None) == 966
-    # Another provider of the same operation reports the same logical work.
-    assert _count(ops.rms_norm_liger_fwd, x, weight, 1e-5) == 498
-    assert _count(ops.rms_norm_liger_bwd, x, x, weight, rstd) == 966
     layer_forward = ops.layer_norm_builtin_triton_fwd
     layer_backward = ops.layer_norm_builtin_triton_bwd
     assert _count(layer_forward, x, weight, weight, 1e-5, None) == 792
@@ -271,12 +268,116 @@ def test_hybrid_operators_count_their_taps_chunks_and_state(fake):
     )
 
 
+def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
+    h2, residual = _tensor(8, 32), _tensor(8, 32)
+    router, w13, w2 = _tensor(4, 32), _tensor(4, 48, 32), _tensor(4, 32, 24)
+    bias = _tensor(0)
+    rows, width, experts, top_k, packed, expert_width = 8, 32, 4, 2, 48, 24
+    assignments = rows * top_k
+    router_flops = 2 * rows * width * experts + 3 * rows * experts
+    up = 2 * assignments * width * packed
+    activation = 5 * assignments * expert_width
+    down = 2 * assignments * expert_width * width
+    combine = 2 * assignments * width
+    forward = router_flops + up + activation + down + combine
+    backward = (
+        2 * router_flops
+        - 3 * rows * experts
+        + 2 * up
+        + 2 * activation
+        + 2 * down
+        + combine
+    )
+    static = (top_k, "softmax_then_topk", 1, 1, 1.0, [8], "float32", None, "native", [])
+    fused = ops.moe_sonicmoe_fwd
+    assert _count(fused, h2, residual, router, w13, w2, bias, *static) == forward
+
+    logits, route_weights, route_ids = _tensor(8, 4), _f32(8, 2), _i32(8, 2)
+    offsets, index, h = _i32(5), _i32(16), _tensor(16, 48)
+    residuals = (logits, route_weights, route_ids, offsets, index, index, index, h)
+    assert (
+        _count(
+            ops.moe_sonicmoe_bwd,
+            h2,
+            _f32(()),
+            _f32(4),
+            h2,
+            router,
+            w13,
+            w2,
+            *residuals,
+            top_k,
+            "softmax_then_topk",
+            [8],
+            None,
+            "native",
+            [],
+        )
+        == backward
+    )
+    prepare = _count(ops.moe_sonicmoe_prepare_fwd, h2, router, w13, bias, *static)
+    finish = _count(
+        ops.moe_sonicmoe_finish_fwd,
+        h,
+        w2,
+        route_weights,
+        offsets,
+        index,
+        index,
+        index,
+        residual,
+        top_k,
+        None,
+        "native",
+        [],
+    )
+    assert prepare == router_flops + up
+    assert finish == activation + down + combine
+    prepare_backward = _count(
+        ops.moe_sonicmoe_prepare_bwd,
+        _f32(()),
+        _f32(4),
+        route_weights,
+        h,
+        h2,
+        router,
+        w13,
+        logits,
+        route_weights,
+        route_ids,
+        offsets,
+        index,
+        index,
+        top_k,
+        "softmax_then_topk",
+        [8],
+        None,
+        "native",
+        [],
+    )
+    finish_backward = _count(
+        ops.moe_sonicmoe_finish_bwd,
+        h2,
+        h,
+        w2,
+        route_weights,
+        offsets,
+        index,
+        index,
+        top_k,
+        None,
+        "native",
+        [],
+    )
+    assert prepare_backward + finish_backward == backward
+
+
 def test_mixture_of_experts_charges_every_assignment_once(fake):
     h2, residual = _tensor(8, 32), _tensor(8, 32)
-    router = _tensor(4, 32).T
-    w13, w2 = _tensor(4, 32, 64), _tensor(4, 32, 32)
+    router = _tensor(4, 32)
+    w13, w2 = _tensor(4, 48, 32), _tensor(4, 32, 24)
     bias = _tensor(0)
-    rows, width, experts, top_k, packed, expert_width = 8, 32, 4, 2, 64, 32
+    rows, width, experts, top_k, packed, expert_width = 8, 32, 4, 2, 48, 24
     assignments = rows * top_k
     router_flops = 2 * rows * width * experts + 3 * rows * experts
     up = 2 * assignments * width * packed
@@ -285,13 +386,13 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
     combine = 2 * assignments * width
     forward = router_flops + up + activation + down + combine
     static = (top_k, "softmax_then_topk", 1, 1, 1.0, [8], "float32", None)
-    for fused in (ops.moe_builtin_grouped_gemm_fwd, ops.moe_scattermoe_fwd):
-        assert _count(fused, h2, residual, router, w13, w2, bias, *static) == forward
+    fused = ops.moe_builtin_grouped_gemm_fwd
+    assert _count(fused, h2, residual, router, w13, w2, bias, *static) == forward
 
     # The composed provider splits the same work into two regions.
     logits, route_weights = _tensor(8, 4), _f32(8, 2)
     route_ids, order, offsets, slots = _i32(8, 2), _i32(16), _i32(5), _i32(8, 2)
-    h13 = _tensor(16, 64)
+    h13 = _tensor(16, 48)
     prepare_forward = ops.moe_builtin_grouped_gemm_prepare_fwd
     finish_forward = ops.moe_builtin_grouped_gemm_finish_fwd
     prepare = _count(prepare_forward, h2, router, w13, bias, *static)
@@ -320,25 +421,24 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
         + combine
     )
     residuals = (logits, route_weights, route_ids, order, offsets, slots, h13)
-    for fused in (ops.moe_builtin_grouped_gemm_bwd, ops.moe_scattermoe_bwd):
-        assert (
-            _count(
-                fused,
-                h2,
-                _f32(()),
-                _f32(4),
-                h2,
-                router,
-                w13,
-                w2,
-                *residuals,
-                top_k,
-                "softmax_then_topk",
-                [8],
-                None,
-            )
-            == backward
+    assert (
+        _count(
+            ops.moe_builtin_grouped_gemm_bwd,
+            h2,
+            _f32(()),
+            _f32(4),
+            h2,
+            router,
+            w13,
+            w2,
+            *residuals,
+            top_k,
+            "softmax_then_topk",
+            [8],
+            None,
         )
+        == backward
+    )
     prepare_backward = _count(
         ops.moe_builtin_grouped_gemm_prepare_bwd,
         _f32(()),

@@ -9,7 +9,11 @@ from ...dispatch.context import weight_gradient_dtype
 from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...kernels.moe_router import current_route_weight_precision
-from ..moe_common import _backward_with_engine, _forward_with_engine
+from ..expert_weights import bf16_compute_support, dequantize_expert_weights
+from ..moe_common import (
+    backward_routed,
+    forward_routed,
+)
 
 
 def supports(
@@ -27,19 +31,36 @@ def supports(
     topk_group=1,
     routed_scaling=1.0,
     lengths=None,
+    compute_precision=None,
     **_kwargs,
 ):
     del surface, routing_mode, router_bias, n_group, topk_group, routed_scaling
+    refusal = bf16_compute_support(compute_precision, w13_experts, w2_experts)
+    if refusal is not None:
+        return SupportResult.no(refusal)
     tensors = (h2, residual, router_weight, w13_experts, w2_experts)
     if not all(isinstance(value, torch.Tensor) for value in tensors):
         return SupportResult.no("MoE core arguments must be tensors")
     if h2.shape != residual.shape:
         return SupportResult.no("h2 and residual must have equal shape")
+    width = h2.shape[-1]
+    if router_weight.ndim != 2 or router_weight.shape[1] != width:
+        return SupportResult.no("router_weight must have shape [experts, width]")
+    experts = router_weight.shape[0]
     if w13_experts.ndim != 3 or w2_experts.ndim != 3:
-        return SupportResult.no("expert weights must have shape [experts, in, out]")
-    experts = router_weight.shape[1]
+        return SupportResult.no("expert weights must have shape [experts, out, in]")
     if w13_experts.shape[0] != experts or w2_experts.shape[0] != experts:
         return SupportResult.no("router and expert counts differ")
+    expert_width = w2_experts.shape[2]
+    if (
+        w13_experts.shape[1] != 2 * expert_width
+        or w13_experts.shape[2] != width
+        or w2_experts.shape[1] != width
+    ):
+        return SupportResult.no(
+            "expert weights must be w13 [experts, 2 * expert_width, width] and "
+            "w2 [experts, width, expert_width]"
+        )
     if not 0 < int(top_k) <= experts:
         return SupportResult.no("top_k must be within the expert count")
     rows = h2.numel() // h2.shape[-1]
@@ -67,11 +88,9 @@ def forward(
     swiglu_implementation="builtin.packed_swiglu.triton",
 ):
     swiglu_variant = (
-        "triton_legacy"
-        if swiglu_implementation.endswith("triton_legacy")
-        else "triton"
+        "triton_legacy" if swiglu_implementation.endswith("triton_legacy") else "triton"
     )
-    return _forward_with_engine(
+    return forward_routed(
         h2,
         residual,
         router_weight,
@@ -86,27 +105,17 @@ def forward(
         lengths=lengths,
         weight_precision=weight_precision,
         swiglu_variant=swiglu_variant,
-        expert_engine="builtin",
     )
 
 
 def backward(*args, swiglu_implementation="builtin.packed_swiglu.triton", **kwargs):
     swiglu_variant = (
-        "triton_legacy"
-        if swiglu_implementation.endswith("triton_legacy")
-        else "triton"
+        "triton_legacy" if swiglu_implementation.endswith("triton_legacy") else "triton"
     )
-    return _backward_with_engine(
-        *args,
-        swiglu_variant=swiglu_variant,
-        expert_engine="builtin",
-        **kwargs,
-    )
+    return backward_routed(*args, swiglu_variant=swiglu_variant, **kwargs)
 
 
-@torch.library.custom_op(
-    "mlops::moe_builtin_grouped_gemm_fwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::moe_builtin_grouped_gemm_fwd", mutates_args=())
 def _forward_op(
     h2: torch.Tensor,
     residual: torch.Tensor,
@@ -123,8 +132,16 @@ def _forward_op(
     weight_precision: str,
     weight_grad_dtype: torch.dtype | None,
 ) -> tuple[
-    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
     torch.Tensor,
 ]:
     return forward(
@@ -146,15 +163,26 @@ def _forward_op(
 
 @_forward_op.register_fake
 def _forward_fake(
-    h2, residual, router_weight, w13_experts, w2_experts, router_bias,
-    top_k, routing_mode, n_group, topk_group, routed_scaling, lengths,
-    weight_precision, weight_grad_dtype,
+    h2,
+    residual,
+    router_weight,
+    w13_experts,
+    w2_experts,
+    router_bias,
+    top_k,
+    routing_mode,
+    n_group,
+    topk_group,
+    routed_scaling,
+    lengths,
+    weight_precision,
+    weight_grad_dtype,
 ):
     del weight_grad_dtype
     del residual, w2_experts, router_bias, routing_mode, n_group, topk_group
     del routed_scaling, lengths
     rows = h2.numel() // h2.shape[-1]
-    experts = router_weight.shape[1]
+    experts = router_weight.shape[0]
     assignments = rows * int(top_k)
     return (
         torch.empty_like(h2),
@@ -165,9 +193,7 @@ def _forward_fake(
         torch.empty(
             (rows, int(top_k)),
             dtype=(
-                torch.float32
-                if weight_precision == "float32"
-                else router_weight.dtype
+                torch.float32 if weight_precision == "float32" else router_weight.dtype
             ),
             device=h2.device,
         ),
@@ -176,14 +202,12 @@ def _forward_fake(
         torch.empty(experts + 1, dtype=torch.int32, device=h2.device),
         torch.empty((rows, int(top_k)), dtype=torch.int32, device=h2.device),
         torch.empty(
-            (assignments, w13_experts.shape[2]), dtype=h2.dtype, device=h2.device
+            (assignments, w13_experts.shape[1]), dtype=h2.dtype, device=h2.device
         ),
     )
 
 
-@torch.library.custom_op(
-    "mlops::moe_builtin_grouped_gemm_bwd", mutates_args=()
-)
+@torch.library.custom_op("mlops::moe_builtin_grouped_gemm_bwd", mutates_args=())
 def _backward_op(
     grad_output: torch.Tensor,
     grad_aux: torch.Tensor,
@@ -229,9 +253,24 @@ def _backward_op(
 
 @_backward_op.register_fake
 def _backward_fake(
-    grad_output, grad_aux, grad_probability_sum, h2, router_weight,
-    w13_experts, w2_experts, logits, route_weights, route_ids, order,
-    offsets, slots, h13, top_k, routing_mode, lengths, weight_grad_dtype,
+    grad_output,
+    grad_aux,
+    grad_probability_sum,
+    h2,
+    router_weight,
+    w13_experts,
+    w2_experts,
+    logits,
+    route_weights,
+    route_ids,
+    order,
+    offsets,
+    slots,
+    h13,
+    top_k,
+    routing_mode,
+    lengths,
+    weight_grad_dtype,
 ):
     del grad_aux, grad_probability_sum, logits, route_weights, route_ids
     del order, offsets, slots, h13, top_k, routing_mode, lengths
@@ -246,43 +285,105 @@ def _backward_fake(
 
 @flop_formula(_forward_op)
 def _forward_flops(
-    h2, residual, router_weight, w13_experts, w2_experts, router_bias, top_k,
-    *_rest, out_val=None, **_kwargs,
+    h2,
+    residual,
+    router_weight,
+    w13_experts,
+    w2_experts,
+    router_bias,
+    top_k,
+    *_rest,
+    out_val=None,
+    **_kwargs,
 ):
     del router_bias, out_val
     return logical.moe(
-        h2, residual, router_weight, w13_experts, w2_experts,
-        top_k=top_k, entrypoint="forward",
+        h2,
+        residual,
+        router_weight,
+        w13_experts,
+        w2_experts,
+        top_k=top_k,
+        entrypoint="forward",
     ).logical_flops
 
 
 @flop_formula(_backward_op)
 def _backward_flops(
-    grad_output, grad_aux, grad_probability_sum, h2, router_weight, w13_experts,
-    w2_experts, logits, route_weights, route_ids, order, offsets, slots, h13, top_k,
-    *_rest, out_val=None, **_kwargs,
+    grad_output,
+    grad_aux,
+    grad_probability_sum,
+    h2,
+    router_weight,
+    w13_experts,
+    w2_experts,
+    logits,
+    route_weights,
+    route_ids,
+    order,
+    offsets,
+    slots,
+    h13,
+    top_k,
+    *_rest,
+    out_val=None,
+    **_kwargs,
 ):
     del grad_aux, grad_probability_sum, logits, route_weights, route_ids
     del order, offsets, slots, h13, out_val
     return logical.moe(
-        h2, grad_output, router_weight, w13_experts, w2_experts,
-        top_k=top_k, entrypoint="backward",
+        h2,
+        grad_output,
+        router_weight,
+        w13_experts,
+        w2_experts,
+        top_k=top_k,
+        entrypoint="backward",
     ).logical_flops
 
 
 def _setup_context(ctx, inputs, output):
     (
-        h2, _residual, router_weight, w13_experts, w2_experts, _router_bias,
-        top_k, routing_mode, _n_group, _topk_group, _routed_scaling, lengths,
-        _weight_precision, weight_grad_dtype,
+        h2,
+        _residual,
+        router_weight,
+        w13_experts,
+        w2_experts,
+        _router_bias,
+        top_k,
+        routing_mode,
+        _n_group,
+        _topk_group,
+        _routed_scaling,
+        lengths,
+        _weight_precision,
+        weight_grad_dtype,
     ) = inputs
     (
-        _result, _aux, counts, _probability_sum, logits, route_weights,
-        route_ids, order, offsets, slots, h13,
+        _result,
+        _aux,
+        counts,
+        _probability_sum,
+        logits,
+        route_weights,
+        route_ids,
+        order,
+        offsets,
+        slots,
+        h13,
     ) = output
     ctx.save_for_backward(
-        h2, router_weight, w13_experts, w2_experts, logits, route_weights,
-        route_ids, order, offsets, slots, h13,
+        h2,
+        router_weight,
+        w13_experts,
+        w2_experts,
+        logits,
+        route_weights,
+        route_ids,
+        order,
+        offsets,
+        slots,
+        h13,
     )
     ctx.top_k = int(top_k)
     ctx.routing_mode = routing_mode
@@ -294,16 +395,25 @@ def _setup_context(ctx, inputs, output):
 
 
 def _autograd_backward(
-    ctx, grad_output, grad_aux, _grad_counts, grad_probability_sum,
-    _grad_logits, _grad_route_weights, _grad_route_ids, _grad_order,
-    _grad_offsets, _grad_slots, _grad_h13,
+    ctx,
+    grad_output,
+    grad_aux,
+    _grad_counts,
+    grad_probability_sum,
+    _grad_logits,
+    _grad_route_weights,
+    _grad_route_ids,
+    _grad_order,
+    _grad_offsets,
+    _grad_slots,
+    _grad_h13,
 ):
     h2, router_weight = ctx.saved_tensors[:2]
     if grad_aux is None:
         grad_aux = torch.zeros((), dtype=torch.float32, device=h2.device)
     if grad_probability_sum is None:
         grad_probability_sum = torch.zeros(
-            router_weight.shape[1], dtype=torch.float32, device=h2.device
+            router_weight.shape[0], dtype=torch.float32, device=h2.device
         )
     gradients = _backward_op(
         grad_output,
@@ -339,7 +449,14 @@ def apply(
     shared_w2=None,
     shared_gate_weight=None,
     shared_mode="add",
+    compute_precision=None,
 ):
+    refusal = bf16_compute_support(compute_precision, w13_experts, w2_experts)
+    if refusal is not None:
+        raise ValueError(refusal)
+    w13_experts, w2_experts = dequantize_expert_weights(
+        w13_experts, w2_experts, dtype=h2.dtype
+    )
     from ...moe import _production_shared_base
 
     rows = h2.numel() // h2.shape[-1]

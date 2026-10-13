@@ -134,7 +134,7 @@ def test_extension_guide_covers_supported_workflows():
     required_sections = (
         "## What mlops considers an operation",
         "## Add an implementation for an existing operation",
-        "### Worked example: add SonicMoE to `moe`",
+        "### Worked example: the SonicMoE implementations of `moe`",
         "### Worked example: one QuACK provider for RMSNorm and cross entropy",
         "## Add a new semantic operation",
         "## Other supported extensions",
@@ -144,9 +144,9 @@ def test_extension_guide_covers_supported_workflows():
     for section in required_sections:
         assert section in reference
 
-    sonic_example = reference.split("### Worked example: add SonicMoE to `moe`", 1)[
-        1
-    ].split("### Worked example: one QuACK", 1)[0]
+    sonic_example = reference.split(
+        "### Worked example: the SonicMoE implementations of `moe`", 1
+    )[1].split("### Worked example: one QuACK", 1)[0]
     quack_example = reference.split(
         "### Worked example: one QuACK provider for RMSNorm and cross entropy", 1
     )[1].split("## Add a new semantic operation", 1)[0]
