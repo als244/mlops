@@ -113,6 +113,7 @@ def test_planning_moe_vjp_donates_only_the_declared_activation(weight_grad_dtype
         slots,
         top_k,
         weight_grad_dtype,
+        None,
         True,
     )
     assert actual_tail[0].dtype == (weight_grad_dtype or w2.dtype)

@@ -192,10 +192,11 @@ def _finish_forward(
     offsets,
     slots,
     residual,
+    swiglu_limit=None,
 ):
     """Apply expert activation/down projection and combine with the residual."""
     with torch.no_grad():
-        activated = swiglu_packed_forward(h13)
+        activated = swiglu_packed_forward(h13, limit=swiglu_limit)
         expert_output = grouped_mm_forward(activated, w2_experts, offsets)
         return combine(
             expert_output,
@@ -218,6 +219,7 @@ def _finish_backward(
     grad_h13_destination=None,
     weight_grad_dtype=None,
     need_w2=True,
+    swiglu_limit=None,
 ):
     """Return VJPs for ``h13``, expert-down weights, routes, and residual, the
     weights' at ``weight_grad_dtype`` (their own when ``None``); ``w2`` gets a
@@ -225,7 +227,7 @@ def _finish_backward(
     with torch.no_grad():
         grad_output_flat = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
         dispatched_grad = dispatch(grad_output_flat, order, int(top_k))
-        activated = swiglu_packed_forward(h13)
+        activated = swiglu_packed_forward(h13, limit=swiglu_limit)
         grad_activated = grouped_mm_dgrad(dispatched_grad, w2_experts, offsets)
         grad_weight_slot = row_dot(grad_activated, activated)
         grad_route_weights = (
@@ -248,13 +250,16 @@ def _finish_backward(
             grad_w2 = skipped_gradient(w2_experts, weight_grad_dtype)
         scale_rows_(grad_activated, route_scale)
         if grad_h13_destination is None:
-            grad_h13 = swiglu_packed_backward(grad_activated, h13, variant="triton")
+            grad_h13 = swiglu_packed_backward(
+                grad_activated, h13, variant="triton", limit=swiglu_limit
+            )
         else:
             grad_h13 = swiglu_packed_backward_out(
                 grad_activated,
                 h13,
                 grad_h13_destination,
                 variant="triton",
+                limit=swiglu_limit,
             )
         return grad_h13, grad_w2, grad_route_weights, grad_output.clone()
 
@@ -580,9 +585,12 @@ def _finish_op(
     residual: torch.Tensor,
     top_k: int,
     weight_grad_dtype: torch.dtype | None,
+    swiglu_limit: float | None,
 ) -> torch.Tensor:
     del order, top_k, weight_grad_dtype
-    return _finish_forward(h13, w2_experts, route_weights, offsets, slots, residual)
+    return _finish_forward(
+        h13, w2_experts, route_weights, offsets, slots, residual, swiglu_limit
+    )
 
 
 @_finish_op.register_fake
@@ -596,9 +604,10 @@ def _finish_fake(
     residual,
     top_k,
     weight_grad_dtype,
+    swiglu_limit,
 ):
     del h13, w2_experts, route_weights, order, offsets, slots, top_k
-    del weight_grad_dtype
+    del weight_grad_dtype, swiglu_limit
     return torch.empty_like(residual)
 
 
@@ -613,6 +622,7 @@ def _finish_backward_op(
     slots: torch.Tensor,
     top_k: int,
     weight_grad_dtype: torch.dtype | None,
+    swiglu_limit: float | None,
     need_w2: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     return _finish_backward(
@@ -626,6 +636,7 @@ def _finish_backward_op(
         top_k=top_k,
         weight_grad_dtype=weight_grad_dtype,
         need_w2=need_w2,
+        swiglu_limit=swiglu_limit,
     )
 
 
@@ -640,9 +651,10 @@ def _finish_backward_fake(
     slots,
     top_k,
     weight_grad_dtype,
+    swiglu_limit,
     need_w2,
 ):
-    del order, offsets, slots, top_k
+    del order, offsets, slots, top_k, swiglu_limit
     return (
         torch.empty_like(h13),
         torch.empty_like(w2_experts, dtype=weight_grad_dtype)
@@ -667,6 +679,7 @@ def _finish_backward_donate_h13_op(
     slots: torch.Tensor,
     top_k: int,
     weight_grad_dtype: torch.dtype | None,
+    swiglu_limit: float | None,
     need_w2: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Deployment-only VJP that donates a proven-dead ``h13`` allocation.
@@ -689,6 +702,7 @@ def _finish_backward_donate_h13_op(
         grad_h13_destination=h13,
         weight_grad_dtype=weight_grad_dtype,
         need_w2=need_w2,
+        swiglu_limit=swiglu_limit,
     )
     return grad_w2, grad_route_weights, grad_residual
 
@@ -704,9 +718,10 @@ def _finish_backward_donate_h13_fake(
     slots,
     top_k,
     weight_grad_dtype,
+    swiglu_limit,
     need_w2,
 ):
-    del h13, order, offsets, slots, top_k
+    del h13, order, offsets, slots, top_k, swiglu_limit
     return (
         torch.empty_like(w2_experts, dtype=weight_grad_dtype)
         if need_w2
@@ -743,10 +758,12 @@ def _finish_context(ctx, inputs, output):
         _residual,
         top_k,
         weight_grad_dtype,
+        swiglu_limit,
     ) = inputs
     ctx.save_for_backward(h13, w2_experts, route_weights, order, offsets, slots)
     ctx.top_k = int(top_k)
     ctx.weight_grad_dtype = weight_grad_dtype
+    ctx.swiglu_limit = swiglu_limit
 
 
 def _finish_autograd_backward(ctx, grad_output):
@@ -757,6 +774,7 @@ def _finish_autograd_backward(ctx, grad_output):
         *ctx.saved_tensors,
         ctx.top_k,
         ctx.weight_grad_dtype,
+        ctx.swiglu_limit,
         bool(needs[1]),
     )
     grad_h13, grad_w2, grad_route_weights, grad_residual = gradients
@@ -768,6 +786,7 @@ def _finish_autograd_backward(ctx, grad_output):
         None,
         None,
         grad_residual,
+        None,
         None,
         None,
     )
@@ -795,6 +814,7 @@ def apply(
     shared_gate_weight=None,
     shared_mode="add",
     compute_precision=None,
+    swiglu_limit=None,
 ):
     refusal = bf16_compute_support(compute_precision, w13_experts, w2_experts)
     if refusal is not None:
@@ -811,7 +831,13 @@ def apply(
         else router_bias
     )
     base = _production_shared_base(
-        h2, residual, shared_w13, shared_w2, shared_gate_weight, shared_mode
+        h2,
+        residual,
+        shared_w13,
+        shared_w2,
+        shared_gate_weight,
+        shared_mode,
+        swiglu_limit,
     )
     (
         aux,
@@ -848,6 +874,7 @@ def apply(
         base,
         int(top_k),
         grad_dtype,
+        None if swiglu_limit is None else float(swiglu_limit),
     )
     return output, aux, counts, probability_sum
 

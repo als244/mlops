@@ -9,6 +9,14 @@ from .moe_router import route_torch
 from .router import routed_logits
 
 
+def _clamped(gate, up, limit):
+    """GLM's SwiGLU clamp: the gate capped at ``limit``, the up projection
+    clipped to ``[-limit, limit]``; no gradient through a clipped value."""
+    if limit is None:
+        return gate, up
+    return gate.clamp(max=limit), up.clamp(-limit, limit)
+
+
 def native_torch_moe(
     h2,
     residual,
@@ -27,12 +35,15 @@ def native_torch_moe(
     routed_scaling,
     lengths,
     shared_mode,
+    swiglu_limit=None,
 ):
     """Return the native-Torch output and load-balance statistics.
 
     Every weight is in nn.Linear orientation: ``router_weight [E, D]``,
     ``w13_experts [E, 2F, D]`` with gate rows then up rows, ``w2_experts
     [E, D, F]``, and the shared weights ``[2Fs, D]``, ``[D, Fs]``, ``[1, D]``.
+    ``swiglu_limit`` clamps every SwiGLU: the gate capped at the limit, the up
+    projection clipped to ``[-limit, limit]``.
     """
     original_shape = h2.shape
     h2_flat = h2.reshape(-1, h2.shape[-1])
@@ -75,7 +86,7 @@ def native_torch_moe(
     for expert in range(expert_count):
         coefficient = (route_weights * (route_ids == expert)).sum(-1)
         h13 = functional.linear(h2_flat, w13_experts[expert])
-        gate, up = h13[:, :width], h13[:, width:]
+        gate, up = _clamped(h13[:, :width], h13[:, width:], swiglu_limit)
         activated = functional.silu(gate.float()).to(gate.dtype) * up
         expert_output = functional.linear(activated, w2_experts[expert])
         routed = routed + coefficient[:, None] * expert_output.float()
@@ -83,9 +94,8 @@ def native_torch_moe(
     if shared_w13 is not None:
         shared_h13 = functional.linear(h2_flat, shared_w13)
         shared_width = shared_w2.shape[1]
-        shared_gate, shared_up = (
-            shared_h13[:, :shared_width],
-            shared_h13[:, shared_width:],
+        shared_gate, shared_up = _clamped(
+            shared_h13[:, :shared_width], shared_h13[:, shared_width:], swiglu_limit
         )
         shared_activated = (
             functional.silu(shared_gate.float()).to(shared_gate.dtype) * shared_up
