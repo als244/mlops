@@ -1531,6 +1531,7 @@ moe(
     shared_gate_weight: Tensor | None = None,
     shared_mode: str = "add",
     compute_precision: str | None = None,
+    swiglu_limit: float | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]
 ```
 
@@ -1560,7 +1561,8 @@ diagnostics.
 | `shared_w2` | `Optional[Tensor[D,Fs]]` | optional shared down projection |
 | `shared_gate_weight` | tensor compatible with `[1,D]` | required by sigmoid-gated shared mode |
 | `shared_mode` | `Literal["add", "sigmoid"]` | shared-expert combination |
-| `compute_precision` | `Optional[str]` | the precision of the experts' GEMMs, apart from how the weights are stored. `None`: the weights' own -- FP8 when `w13_experts`/`w2_experts` are `QuackFP8Weight` containers (`expert_parallel/quack/parameters/fp8.py`: each weight's E4M3 rows and transpose with a descale per row, built once by `QuackFP8Weight.quantize(weight, interleaved=True)` for `w13` and `.quantize(weight)` for `w2`, or published from a master with `copy_`), bf16 otherwise. `"fp8_current"`: E4M3 GEMMs with current per-row scaling of the routed rows and cotangents, served by the SonicMoE implementations on SM90; bf16 weights are quantized per call. `"bf16"`: bf16 GEMMs, FP8 containers dequantized per call (every implementation). Weight gradients come at the weights' logical dtype in `nn.Linear` row order; implementations that cannot honor a request decline, and dispatch fails when none can |
+| `compute_precision` | `Optional[str]` | the precision of the experts' GEMMs, apart from how the weights are stored. `None`: the weights' own -- `"fp8_current"` when `w13_experts`/`w2_experts` are `QuackFP8Weight` containers (`expert_parallel/quack/parameters/fp8.py`: each weight's E4M3 rows and transpose with a descale per row, built once by `QuackFP8Weight.quantize(weight, interleaved=True)` for `w13` and `.quantize(weight)` for `w2`, or published from a master with `copy_`), `"fp8_block"` when they are `BlockFP8Weight` containers (`mlops/block_fp8.py`: E4M3 stored once with an FP32 scale per 128x128 block, rows in `nn.Linear` order, built by `BlockFP8Weight.quantize(weight)` or taken from an FP8 checkpoint's blocks), bf16 otherwise. `"fp8_current"`: E4M3 GEMMs with current per-row scaling of the routed rows and cotangents, served by the SonicMoE implementations on SM90; bf16 weights are quantized per call. `"fp8_block"`: the same rows against the weights' block scales, one stored copy serving both the projections and the input gradients (SonicMoE, SM90); bf16 weights are quantized per call. `"bf16"`: bf16 GEMMs, FP8 containers dequantized per call (every implementation). Weight gradients come at the weights' logical dtype in `nn.Linear` row order; implementations that cannot honor a request decline, and dispatch fails when none can |
+| `swiglu_limit` | `Optional[float]`, positive | clamps every expert's SwiGLU, routed and shared, as GLM's experts do: `silu(min(gate, limit)) * clamp(up, -limit, limit)`, with no gradient through a clipped value (`packed_swiglu(limit=)`'s semantics, a value exactly at the limit passing its gradient); `None` leaves SwiGLU unclamped. Every implementation serves it |
 
 **Returns**
 
@@ -2600,6 +2602,7 @@ forward(
     routed_scaling: float = 1.0, lengths=None,
     weight_precision: str = "float32",
     swiglu_implementation: str = "builtin.packed_swiglu.triton",
+    swiglu_limit: float | None = None,
 ) -> tuple[
     output, aux, counts, probability_sum, logits, route_weights,
     route_ids, order, offsets, slots, h13,
@@ -2615,6 +2618,7 @@ backward(
     logits, route_weights, route_ids, order, offsets, slots, h13,
     *, top_k: int, routing_mode: str, lengths: Sequence[int],
     swiglu_implementation: str = "builtin.packed_swiglu.triton",
+    swiglu_limit: float | None = None,
 ) -> tuple[grad_h2, grad_residual, grad_router, grad_w13, grad_w2]
 ```
 
@@ -2624,7 +2628,8 @@ backward(
 Backward requires cotangents for the differentiable public `output`, `aux`, and
 `probability_sum` roots. `counts` and discrete routing/dispatch metadata have
 no VJP. Forward and backward must use the same `top_k`, `routing_mode`, packed
-lengths, and builtin routed-SwiGLU implementation.
+lengths, builtin routed-SwiGLU implementation and `swiglu_limit` (the
+semantic `moe`'s clamp).
 
 This atomic operation covers the routed expert path only. Shared-expert
 composition remains ordinary block/model computation and is not reproduced in

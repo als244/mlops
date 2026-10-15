@@ -67,6 +67,7 @@ FORWARD_OPERATORS = {
     "lora_sonicmoe_up_fwd": sonicmoe_lora._up_forward,
     "lora_sonicmoe_down_fwd": sonicmoe_lora._down_forward,
     "lora_route": lora_routing._route,
+    "lora_router_logits": lora_routing._router_logits,
     "lora_dispatch": lora_routing._dispatch,
     "lora_combine": lora_routing._combine,
     "causal_conv_silu_fla_fwd": fla_hybrid._causal_forward_op,
@@ -104,6 +105,7 @@ BACKWARD_OPERATORS = {
     "lora_sonicmoe_up_bwd",
     "lora_sonicmoe_down_bwd",
     "lora_route_bwd",
+    "lora_router_logits_bwd",
     "lora_dispatch_bwd",
     "lora_combine_bwd",
     "causal_conv_silu_fla_bwd",
@@ -134,6 +136,7 @@ BACKWARD_OPERATORS = {
 
 AUXILIARY_OPERATORS = {
     "lora_assignment_layout": lora_routing.layout,
+    "sonicmoe_routing_metadata": sonicmoe_moe.routing_metadata,
     "prepare_packed_sequence_metadata": _prepare_op,
     "adamw": _functional_op,
     "adamw_out": _out_op,
@@ -307,7 +310,7 @@ def _linear_attention_args():
     )
 
 
-def _moe_args(weight_grad_dtype=None):
+def _moe_args(weight_grad_dtype=None, swiglu_limit=None):
     return (
         _parameter(8, 32),
         _parameter(8, 32),
@@ -325,6 +328,7 @@ def _moe_args(weight_grad_dtype=None):
         [8],
         "float32",
         weight_grad_dtype,
+        swiglu_limit,
     )
 
 
@@ -346,7 +350,7 @@ def _moe_prepare_args(weight_grad_dtype=None):
     )
 
 
-def _moe_finish_args(weight_grad_dtype=None):
+def _moe_finish_args(weight_grad_dtype=None, swiglu_limit=None):
     arguments = _moe_args(weight_grad_dtype)
     prepared = moe_composed._prepare_op(*_moe_prepare_args(weight_grad_dtype))
     return (
@@ -359,16 +363,17 @@ def _moe_finish_args(weight_grad_dtype=None):
         arguments[1],
         arguments[6],
         weight_grad_dtype,
+        swiglu_limit,
     )
 
 
-def _fp8_moe_args(weight_grad_dtype=None):
+def _fp8_moe_args(weight_grad_dtype=None, swiglu_limit=None):
     """The MoE arguments with every width a multiple of 16 (E4M3 row pitch),
     the expert weights as the operators see FP8 containers: their E4M3 rows
     in place and the other components in the trailing list."""
     from mlops.expert_parallel.quack.parameters.fp8 import QuackFP8Weight
 
-    arguments = list(_moe_args(weight_grad_dtype))
+    arguments = list(_moe_args(weight_grad_dtype, swiglu_limit))
     w13 = QuackFP8Weight.quantize(_parameter(4, 96, 32).detach(), interleaved=True)
     w2 = QuackFP8Weight.quantize(_parameter(4, 32, 48).detach())  # w2 [E, D, F]
     arguments[3], arguments[4] = w13._data, w2._data
@@ -384,11 +389,32 @@ def _fp8_moe_args(weight_grad_dtype=None):
     return tuple(arguments), components
 
 
-def _sonicmoe_moe_args(weight_grad_dtype=None, compute_precision="native"):
+def _block_moe_args(weight_grad_dtype=None, swiglu_limit=None):
+    """The FP8 arguments with `BlockFP8Weight` containers: E4M3 data in place,
+    each weight's block scales in the trailing list."""
+    from mlops.block_fp8 import BlockFP8Weight
+
+    arguments = list(_moe_args(weight_grad_dtype, swiglu_limit))
+    w13 = BlockFP8Weight.quantize(_parameter(4, 96, 32).detach())
+    w2 = BlockFP8Weight.quantize(_parameter(4, 32, 48).detach())
+    arguments[3], arguments[4] = w13._data, w2._data
+    arguments[13] = weight_grad_dtype or torch.bfloat16  # resolved for FP8 math
+    return tuple(arguments), [w13._scale, w2._scale]
+
+
+def _components_per_weight(compute_precision):
+    return 1 if compute_precision == "fp8_block" else 3
+
+
+def _sonicmoe_moe_args(
+    weight_grad_dtype=None, compute_precision="native", swiglu_limit=None
+):
     if compute_precision == "native":
-        arguments, components = _moe_args(weight_grad_dtype), []
+        arguments, components = _moe_args(weight_grad_dtype, swiglu_limit), []
+    elif compute_precision == "fp8_block":
+        arguments, components = _block_moe_args(weight_grad_dtype, swiglu_limit)
     else:
-        arguments, components = _fp8_moe_args(weight_grad_dtype)
+        arguments, components = _fp8_moe_args(weight_grad_dtype, swiglu_limit)
     probe = list(arguments[:5])
     if compute_precision != "native":
         probe[3] = _parameter(4, 96, 32)
@@ -403,21 +429,29 @@ def _sonicmoe_moe_args(weight_grad_dtype=None, compute_precision="native"):
     ):
         pytest.skip(
             "SonicMoE needs a Hopper or Blackwell GPU with its extras"
-            + (" (SM90 for fp8_current)" if compute_precision != "native" else "")
+            + (
+                f" (SM90 for {compute_precision})"
+                if compute_precision != "native"
+                else ""
+            )
         )
-    return (*arguments, compute_precision, components)
+    # The builtin operator's arguments end ``weight_grad_dtype, swiglu_limit``;
+    # SonicMoE's take the compute precision between them.
+    return (*arguments[:14], compute_precision, arguments[14], components)
 
 
 def _sonicmoe_prepare_args(weight_grad_dtype=None, compute_precision="native"):
     arguments = _sonicmoe_moe_args(weight_grad_dtype, compute_precision)
     return (
         *(arguments[index] for index in (0, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)),
-        arguments[15][:3],
+        arguments[16][: _components_per_weight(compute_precision)],
     )
 
 
-def _sonicmoe_finish_args(weight_grad_dtype=None, compute_precision="native"):
-    arguments = _sonicmoe_moe_args(weight_grad_dtype, compute_precision)
+def _sonicmoe_finish_args(
+    weight_grad_dtype=None, compute_precision="native", swiglu_limit=None
+):
+    arguments = _sonicmoe_moe_args(weight_grad_dtype, compute_precision, swiglu_limit)
     prepared = sonicmoe_moe_composed._prepare_op(
         *_sonicmoe_prepare_args(weight_grad_dtype, compute_precision)
     )
@@ -433,7 +467,8 @@ def _sonicmoe_finish_args(weight_grad_dtype=None, compute_precision="native"):
         arguments[6],
         arguments[13],
         compute_precision,
-        arguments[15][3:],
+        arguments[15],
+        arguments[16][_components_per_weight(compute_precision) :],
     )
 
 
@@ -471,7 +506,21 @@ def _sonicmoe_lora_skip():
         pytest.skip("SonicMoE needs a Hopper or Blackwell GPU with its extras")
 
 
-def _sonicmoe_lora_up_args(weight_grad_dtype=None):
+def _router_logits_args():
+    return _parameter(8, 32), _parameter(4, 32, dtype=torch.float32)
+
+
+def _sonicmoe_metadata_args():
+    _sonicmoe_lora_skip()
+    route_ids = torch.tensor(
+        [[0, 2], [1, 3], [3, 0], [2, 1], [0, 1], [3, 2], [1, 0], [2, 3]],
+        device="cuda",
+        dtype=torch.int32,
+    )
+    return route_ids, 4
+
+
+def _sonicmoe_lora_up_args(weight_grad_dtype=None, swiglu_limit=None):
     _sonicmoe_lora_skip()
     offsets, gather, _scatter, reverse = _sonicmoe_lora_routing()
     return (
@@ -487,11 +536,12 @@ def _sonicmoe_lora_up_args(weight_grad_dtype=None):
         True,
         True,
         True,
+        swiglu_limit,
         [],
     )
 
 
-def _sonicmoe_lora_down_args(weight_grad_dtype=None):
+def _sonicmoe_lora_down_args(weight_grad_dtype=None, swiglu_limit=None):
     _sonicmoe_lora_skip()
     offsets, gather, scatter, reverse = _sonicmoe_lora_routing()
     return (
@@ -511,9 +561,13 @@ def _sonicmoe_lora_down_args(weight_grad_dtype=None):
         True,
         True,
         True,
+        swiglu_limit,
         [],
     )
 
+
+# Small enough that the test parameters' pre-activations cross it.
+_LIMIT = 2.0
 
 OPCHECK_CASES = (
     ("cross_entropy", cross_entropy._forward_op, _cross_entropy_args),
@@ -557,8 +611,71 @@ OPCHECK_CASES = (
         sonicmoe_moe_composed._finish_op,
         _sonicmoe_fp8_finish_args,
     ),
+    # One-copy block-scaled containers (the names carry "fp8": no schema
+    # check, as for the two-copy containers).
+    (
+        "moe_sonicmoe_fp8_block",
+        sonicmoe_moe._forward_op,
+        partial(_sonicmoe_moe_args, compute_precision="fp8_block"),
+    ),
+    (
+        "moe_sonicmoe_fp8_block_prepare",
+        sonicmoe_moe_composed._prepare_op,
+        partial(_sonicmoe_prepare_args, compute_precision="fp8_block"),
+    ),
+    (
+        "moe_sonicmoe_fp8_block_finish",
+        sonicmoe_moe_composed._finish_op,
+        partial(_sonicmoe_finish_args, compute_precision="fp8_block"),
+    ),
     ("lora_sonicmoe_up", sonicmoe_lora._up_forward, _sonicmoe_lora_up_args),
     ("lora_sonicmoe_down", sonicmoe_lora._down_forward, _sonicmoe_lora_down_args),
+    (
+        "sonicmoe_routing_metadata",
+        sonicmoe_moe.routing_metadata,
+        _sonicmoe_metadata_args,
+    ),
+    ("lora_router_logits", lora_routing._router_logits, _router_logits_args),
+    # The operators that carry a SwiGLU limit, with one that clips.
+    *(
+        (f"{name}_swiglu_limit", operator, partial(make, swiglu_limit=_LIMIT))
+        for name, operator, make in (
+            ("moe", moe._forward_op, _moe_args),
+            ("moe_finish", moe_composed._finish_op, _moe_finish_args),
+            ("moe_sonicmoe", sonicmoe_moe._forward_op, _sonicmoe_moe_args),
+            (
+                "moe_sonicmoe_finish",
+                sonicmoe_moe_composed._finish_op,
+                _sonicmoe_finish_args,
+            ),
+            (
+                "moe_sonicmoe_fp8",
+                sonicmoe_moe._forward_op,
+                partial(_sonicmoe_moe_args, compute_precision="fp8_current"),
+            ),
+            (
+                "moe_sonicmoe_fp8_finish",
+                sonicmoe_moe_composed._finish_op,
+                partial(_sonicmoe_finish_args, compute_precision="fp8_current"),
+            ),
+            (
+                "moe_sonicmoe_fp8_block",
+                sonicmoe_moe._forward_op,
+                partial(_sonicmoe_moe_args, compute_precision="fp8_block"),
+            ),
+            (
+                "moe_sonicmoe_fp8_block_finish",
+                sonicmoe_moe_composed._finish_op,
+                partial(_sonicmoe_finish_args, compute_precision="fp8_block"),
+            ),
+            ("lora_sonicmoe_up", sonicmoe_lora._up_forward, _sonicmoe_lora_up_args),
+            (
+                "lora_sonicmoe_down",
+                sonicmoe_lora._down_forward,
+                _sonicmoe_lora_down_args,
+            ),
+        )
+    ),
     # The operations that return weight gradients, asked for them at fp32.
     *(
         (f"{name}_fp32_weight_gradients", operator, partial(make, torch.float32))

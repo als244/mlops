@@ -180,14 +180,22 @@ def _prepare_backward(
 
 
 def _finish_forward(
-    h, w2_experts, route_weights, offsets, reverse, residual, compute_precision="native"
+    h,
+    w2_experts,
+    route_weights,
+    offsets,
+    reverse,
+    residual,
+    compute_precision="native",
+    swiglu_limit=None,
 ):
-    """Activate, project down, weight and combine with the residual."""
+    """Activate (clamped at ``swiglu_limit`` when given), project down, weight
+    and combine with the residual."""
     with torch.no_grad():
         residual_flat = residual.reshape(-1, residual.shape[-1]).contiguous()
-        in_fp8 = compute_precision == "fp8_current"
+        in_fp8 = compute_precision in fp8.PRECISIONS
         output = down_projection(
-            h if in_fp8 else activation(h),
+            h if in_fp8 else activation(h, swiglu_limit),
             w2_experts,
             route_weights,
             offsets,
@@ -195,6 +203,7 @@ def _finish_forward(
             residual_flat,
             compute_precision,
             from_preactivation=in_fp8,
+            limit=swiglu_limit,
         )
         return output.reshape_as(residual)
 
@@ -211,6 +220,7 @@ def _finish_backward(
     weight_grad_dtype=None,
     compute_precision="native",
     need_w2=True,
+    swiglu_limit=None,
 ):
     """Return VJPs for ``h``, the expert-down weights, the route weights and
     the residual, the weights' at ``weight_grad_dtype`` (their own when
@@ -228,6 +238,7 @@ def _finish_backward(
             weight_grad_dtype,
             compute_precision,
             need_weight=need_w2,
+            limit=swiglu_limit,
         )
         if grad_w2 is None:
             grad_w2 = skipped_gradient(
@@ -561,12 +572,20 @@ def _finish_op(
     top_k: int,
     weight_grad_dtype: torch.dtype | None,
     compute_precision: str,
+    swiglu_limit: float | None,
     weight_components: list[torch.Tensor],
 ) -> torch.Tensor:
     del gather, scatter, top_k, weight_grad_dtype
     (w2_experts,) = fp8.weights(compute_precision, weight_components, w2_experts)
     return _finish_forward(
-        h, w2_experts, route_weights, offsets, reverse, residual, compute_precision
+        h,
+        w2_experts,
+        route_weights,
+        offsets,
+        reverse,
+        residual,
+        compute_precision,
+        swiglu_limit,
     )
 
 
@@ -583,10 +602,11 @@ def _finish_fake(
     top_k,
     weight_grad_dtype,
     compute_precision,
+    swiglu_limit,
     weight_components,
 ):
     del h, w2_experts, route_weights, offsets, gather, scatter, reverse, top_k
-    del weight_grad_dtype, compute_precision, weight_components
+    del weight_grad_dtype, compute_precision, swiglu_limit, weight_components
     return torch.empty_like(residual)
 
 
@@ -602,6 +622,7 @@ def _finish_backward_op(
     top_k: int,
     weight_grad_dtype: torch.dtype | None,
     compute_precision: str,
+    swiglu_limit: float | None,
     weight_components: list[torch.Tensor],
     need_w2: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -618,6 +639,7 @@ def _finish_backward_op(
         weight_grad_dtype=weight_grad_dtype,
         compute_precision=compute_precision,
         need_w2=need_w2,
+        swiglu_limit=swiglu_limit,
     )
 
 
@@ -633,10 +655,12 @@ def _finish_backward_fake(
     top_k,
     weight_grad_dtype,
     compute_precision,
+    swiglu_limit,
     weight_components,
     need_w2,
 ):
-    del offsets, gather, scatter, top_k, compute_precision, weight_components
+    del offsets, gather, scatter, top_k, compute_precision, swiglu_limit
+    del weight_components
     return (
         torch.empty_like(h),
         torch.empty_like(w2_experts, dtype=weight_grad_dtype)
@@ -673,6 +697,7 @@ def _finish_context(ctx, inputs, output):
         top_k,
         weight_grad_dtype,
         compute_precision,
+        swiglu_limit,
         weight_components,
     ) = inputs
     ctx.save_for_backward(
@@ -681,6 +706,7 @@ def _finish_context(ctx, inputs, output):
     ctx.top_k = int(top_k)
     ctx.weight_grad_dtype = weight_grad_dtype
     ctx.compute_precision = compute_precision
+    ctx.swiglu_limit = swiglu_limit
 
 
 def _finish_autograd_backward(ctx, grad_output):
@@ -693,6 +719,7 @@ def _finish_autograd_backward(ctx, grad_output):
         ctx.top_k,
         ctx.weight_grad_dtype,
         ctx.compute_precision,
+        ctx.swiglu_limit,
         list(components),
         bool(needs[1]),
     )
@@ -705,6 +732,7 @@ def _finish_autograd_backward(ctx, grad_output):
         None,
         None,
         grad_residual,
+        None,
         None,
         None,
         None,
@@ -737,6 +765,7 @@ def apply(
     shared_gate_weight=None,
     shared_mode="add",
     compute_precision=None,
+    swiglu_limit=None,
 ):
     rows = h2.numel() // h2.shape[-1]
     normalized_lengths = (rows,) if lengths is None else tuple(int(x) for x in lengths)
@@ -749,7 +778,13 @@ def apply(
         else router_bias
     )
     base = _production_shared_base(
-        h2, residual, shared_w13, shared_w2, shared_gate_weight, shared_mode
+        h2,
+        residual,
+        shared_w13,
+        shared_w2,
+        shared_gate_weight,
+        shared_mode,
+        swiglu_limit,
     )
     (
         aux,
@@ -791,6 +826,7 @@ def apply(
         int(top_k),
         grad_dtype,
         precision,
+        None if swiglu_limit is None else float(swiglu_limit),
         [],
     )
     return output, aux, counts, probability_sum
