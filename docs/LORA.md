@@ -63,7 +63,13 @@ activation and factor gradients remain necessary.
 
 Both compositions form the router's logits through `mlops.kernels.router`,
 as every `moe` implementation does: operands at the activation's dtype, fp32
-sums and logits, the router weight's gradient at its own dtype.
+sums and logits, the router weight's gradient at its own dtype. Routing and
+its statistics are `mlops.moe`'s too: `routing_mode` is a softmax mode or
+`sigmoid_noaux_tc` with its correction `router_bias` (selection only, no
+gradient), `n_group`/`topk_group` and `routed_scaling`, the latter's balance
+statistic taken per sequence of `lengths`; `swiglu_limit` clamps every
+expert's SwiGLU as `mlops.moe`'s does (see [OPS.md](OPS.md#moe)). With zero
+`B` factors, `expert_lora` computes what `mlops.moe` computes.
 `expert_lora(..., implementation=)` takes the SonicMoE path
 (`providers/sonicmoe/lora.py`) where it applies -- a Hopper or Blackwell GPU
 with the `quack` and `sonicmoe` extras -- and the builtin grouped GEMMs
@@ -77,8 +83,8 @@ the score gradient, the pre-activation gradient and the scaled activation,
 the activation itself is not saved, and the LoRA scale is folded into the
 small `B` factors. `compute_precision` means what it means
 for `mlops.moe` (see [OPS.md](OPS.md)): a frozen base held as
-`QuackFP8Weight` containers, as loaded from an FP8 checkpoint, runs both
-projections and their row gradients in FP8.
+`QuackFP8Weight` or `BlockFP8Weight` containers, as loaded from an FP8
+checkpoint, runs both projections and their row gradients in FP8.
 
 The separate [expert-parallel modules](EXPERT_PARALLEL.md) provide
 `QuackMoELoRA` and `TEMoELoRA` with their own communication and factor-precision

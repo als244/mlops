@@ -12,17 +12,111 @@ from ..kernels.moe_dispatch import (
     sort_assignments,
 )
 from ..kernels.moe_router import current_route_weight_precision, route, route_backward
+from ..kernels.router import (
+    router_input_gradient,
+    router_logits,
+    router_weight_gradient,
+)
+
+
+# The router's logits as an operator with its own backward: `routed_logits`'s
+# autograd.Function is lost to torch.export, and the multiply it wraps (bf16
+# operands, fp32 sums and output) has no derivative of its own.
+@torch.library.custom_op("mlops::lora_router_logits", mutates_args=())
+def _router_logits(hidden: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    return router_logits(hidden, weight)
+
+
+@_router_logits.register_fake
+def _router_logits_fake(hidden, weight):
+    return hidden.new_empty((hidden.shape[0], weight.shape[0]), dtype=torch.float32)
+
+
+@torch.library.custom_op("mlops::lora_router_logits_bwd", mutates_args=())
+def _router_logits_backward(
+    grad: torch.Tensor,
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+    need_hidden: bool,
+    need_weight: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    grad = grad.contiguous()
+    return (
+        router_input_gradient(grad, weight, hidden)
+        if need_hidden
+        else hidden.new_empty(0),
+        router_weight_gradient(grad, hidden, weight.dtype)
+        if need_weight
+        else weight.new_empty(0),
+    )
+
+
+@_router_logits_backward.register_fake
+def _router_logits_backward_fake(grad, hidden, weight, need_hidden, need_weight):
+    del grad
+    return (
+        torch.empty_like(hidden) if need_hidden else hidden.new_empty(0),
+        torch.empty_like(weight) if need_weight else weight.new_empty(0),
+    )
+
+
+def _router_logits_context(ctx, inputs, output):
+    del output
+    ctx.save_for_backward(*inputs)
+
+
+def _router_logits_autograd(ctx, grad):
+    hidden, weight = ctx.saved_tensors
+    need_hidden, need_weight = ctx.needs_input_grad
+    grad_hidden, grad_weight = _router_logits_backward(
+        grad, hidden, weight, bool(need_hidden), bool(need_weight)
+    )
+    return (
+        grad_hidden if need_hidden else None,
+        grad_weight if need_weight else None,
+    )
+
+
+_router_logits.register_autograd(
+    _router_logits_autograd, setup_context=_router_logits_context
+)
+
+
+def routing_logits(hidden, weight):
+    """`mlops.kernels.router`'s logits ``[rows, E]`` (operands at the
+    activation's dtype, fp32 sums and output) as a traced graph keeps them:
+    one operator, its backward registered."""
+    return _router_logits(hidden, weight)
 
 
 @torch.library.custom_op("mlops::lora_route", mutates_args=())
 def _route(
-    logits: torch.Tensor, top_k: int, mode: str, precision: str
+    logits: torch.Tensor,
+    bias: torch.Tensor,
+    top_k: int,
+    mode: str,
+    n_group: int,
+    topk_group: int,
+    routed_scaling: float,
+    precision: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return route(logits, top_k, mode, weight_precision=precision)
+    return route(
+        logits,
+        top_k,
+        mode,
+        bias=None if bias.numel() == 0 else bias,
+        n_group=n_group,
+        topk_group=topk_group,
+        routed_scaling=routed_scaling,
+        weight_precision=precision,
+    )
 
 
 @_route.register_fake
-def _route_fake(logits, top_k, mode, precision):
+def _route_fake(
+    logits, bias, top_k, mode, n_group, topk_group, routed_scaling, precision
+):
+    del bias, mode, n_group, topk_group, routed_scaling
     shape = (logits.shape[0], top_k)
     return (
         logits.new_empty(
@@ -49,7 +143,7 @@ def _route_backward_fake(grad, weights, ids, logits, mode):
 
 
 def _route_context(ctx, inputs, output):
-    logits, _, mode, _ = inputs
+    logits, _bias, _top_k, mode, *_ = inputs
     weights, ids = output
     ctx.save_for_backward(weights, ids, logits)
     ctx.mode = mode
@@ -57,7 +151,11 @@ def _route_context(ctx, inputs, output):
 
 
 def _route_autograd(ctx, grad, _ids):
-    return _route_backward(grad, *ctx.saved_tensors, ctx.mode), None, None, None
+    # The correction bias only selects; no gradient reaches it.
+    return (
+        _route_backward(grad, *ctx.saved_tensors, ctx.mode),
+        *([None] * 7),
+    )
 
 
 _route.register_autograd(_route_autograd, setup_context=_route_context)
@@ -164,8 +262,48 @@ def _combine_autograd(ctx, grad):
 _combine.register_autograd(_combine_autograd, setup_context=_combine_context)
 
 
-def routing(logits, top_k, mode):
-    return _route(logits, top_k, mode, current_route_weight_precision())
+def routing(
+    logits, top_k, mode, *, bias=None, n_group=1, topk_group=1, routed_scaling=1.0
+):
+    """``(weights, ids)`` of `mlops.moe`'s routing: a softmax mode, or
+    ``"sigmoid_noaux_tc"`` with its correction ``bias`` (selection only),
+    expert groups and ``routed_scaling``."""
+    return _route(
+        logits,
+        logits.new_empty(0) if bias is None else bias,
+        int(top_k),
+        mode,
+        int(n_group),
+        int(topk_group),
+        float(routed_scaling),
+        current_route_weight_precision(),
+    )
+
+
+def statistics(logits, ids, offsets, *, routing_mode, lengths=None):
+    """``(aux, counts, probability_sum)`` as `mlops.moe` reports them, in
+    differentiable operations on ``logits``: the softmax modes balance the
+    whole batch, ``"sigmoid_noaux_tc"`` every sequence of ``lengths`` (all
+    rows one sequence when ``None``) on its own."""
+    experts = logits.shape[1]
+    counts = (offsets[1:] - offsets[:-1]).long()
+    if routing_mode != "sigmoid_noaux_tc":
+        probabilities = logits.float().softmax(-1)
+        auxiliary = (
+            experts * ((counts.float() / ids.numel()) * probabilities.mean(0)).sum()
+        )
+        return auxiliary, counts, probabilities.sum(0)
+    from ..providers.moe_common import routing_statistics
+
+    rows = logits.shape[0]
+    auxiliary, _counts, probability_sum = routing_statistics(
+        logits,
+        ids,
+        routing_mode=routing_mode,
+        lengths=(rows,) if lengths is None else tuple(int(n) for n in lengths),
+        experts=experts,
+    )
+    return auxiliary, counts, probability_sum
 
 
 def dispatch_rows(x, order, slots):
@@ -196,8 +334,25 @@ def _combine_backward_flops(grad, y, order, slots, weights, out_val=None):
     return 3 * y.numel()
 
 
+@flop_formula(_router_logits)
+def _router_logits_flops(hidden, weight, out_val=None):
+    del out_val
+    return 2 * hidden.shape[0] * hidden.shape[1] * weight.shape[0]
+
+
+@flop_formula(_router_logits_backward)
+def _router_logits_backward_flops(
+    grad, hidden, weight, need_hidden, need_weight, out_val=None
+):
+    del grad, out_val
+    # The weight's gradient takes two products (the cotangent's bf16 pieces).
+    product = 2 * hidden.shape[0] * hidden.shape[1] * weight.shape[0]
+    return product * (int(need_hidden) + 2 * int(need_weight))
+
+
 @flop_formula(_route)
-def _route_flops(logits, top_k, mode, precision, out_val=None):
+def _route_flops(logits, bias, top_k, mode, *_rest, out_val=None):
+    del bias, out_val
     return (
         6
         * logits.shape[0]
