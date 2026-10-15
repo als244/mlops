@@ -92,6 +92,8 @@ class TEMoE(nn.Module):
         if c.compute_precision == "bf16":
             for name, bank in zip(self._expert_names(), runtime.banks):
                 data = bank.weight_state.parameter_data
+                if c.share_expert_banks:
+                    data = data.clone()
                 with torch.no_grad():
                     data.normal_(0, c.init_std)
                 value = (

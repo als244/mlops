@@ -50,8 +50,11 @@ class MoEConfig:
     init_std: float = 0.02
     profile_ranges: bool = True
     retain_intermediates: bool = False
+    share_expert_banks: bool = False
 
     def __post_init__(self):
+        if self.share_expert_banks and self.compute_precision != "bf16":
+            raise ValueError("Shared TE expert banks currently require BF16 compute")
         for name in (
             "ep_size",
             "num_experts",
@@ -96,6 +99,7 @@ class MoEConfig:
         if type(self.gemm_sm_margin) is not int or self.gemm_sm_margin < 0:
             raise ValueError("gemm_sm_margin must be a nonnegative integer")
         for name in (
+            "share_expert_banks",
             "overlap",
             "renormalize_topk",
             "profile_ranges",
