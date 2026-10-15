@@ -93,7 +93,6 @@ mlops/
 │   ├── optim/              PyTorch optimizers and functional/out=/in-place updates
 │   └── providers/          exact implementation adapters
 ├── tests/                  standalone contract and numerical tests
-├── benchmarks/             reproducible performance experiments and data
 └── docs/                   API and contributor documentation
 ```
 
