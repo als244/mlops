@@ -334,3 +334,11 @@ individual checks. FP8 tolerances compare against BF16 reference math; a passing
 check does not imply bitwise equality. CPU isolation checks block optional
 backend and legacy standalone imports so validation cannot silently use an
 experimental checkout.
+
+### Shared Transformer Engine scratch
+
+For BF16 `TEMoE`, `share_expert_banks=True` reuses the three projection
+communication banks across matching layers supplied with the same MoonEP buffer.
+Model parameters remain independent allocations. Each forward/backward publishes
+its own weights before expert work; the banks are weakly cached by the buffer
+and owned by live layers. FP8 sharing is not yet qualified and is rejected.

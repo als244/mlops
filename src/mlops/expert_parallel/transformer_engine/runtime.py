@@ -346,10 +346,9 @@ class _MoonRuntime(_ScheduledMath):
             raise RuntimeError(
                 "MoonEP static receive shape no longer matches this MoE integration"
             )
-        self.banks = [
-            self._make_bank(out_features, in_features)
-            for out_features, in_features in self._bank_shapes(c)
-        ]
+        from .bank_pool import projection_banks
+
+        self.banks = projection_banks(self, self._make_bank)
         external = [self.buffer.hidden_nvsh_buffer_view]
         external.extend(t for bank in self.banks for t in bank.external_tensors())
         self.external_storage_extents = tuple(
