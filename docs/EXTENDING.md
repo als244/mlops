@@ -294,7 +294,13 @@ above.
 4. **The kernels are reached through `mlops.quack_runtime`.** `initialize()`
    installs the source-checked Quack patches and the tuning-cache default
    before the first compile, and `autotune.sonicmoe_functional()` imports
-   SonicMoE without adopting its global Quack tuning policy.
+   SonicMoE without adopting its global Quack tuning policy. One patch,
+   `sweeps`, fits Quack's tuning sweeps to a bounded allocator such as a
+   ShadowSpill execution pool: the call's tensors are copied only as far as
+   L2 rotation needs -- not at all once one set moves three L2s, when the
+   sweep times the call's own tensors and restores them from a host copy
+   after each candidate -- and a sweep in which every candidate failed is
+   neither cached nor read back.
 5. **Weights are used as they are.** The canonical `w13 [E,2I,H]` (gate rows,
    then up rows) and `w2 [E,H,I]` are SonicMoE's native `[E, out, in]`
    storage with its concatenated gate/up layout; the adapter only takes
