@@ -4,8 +4,8 @@ SonicMoE provider.
 :func:`initialize` runs once per process before Quack compiles anything, and
 again inside each of Quack's compile workers: it turns Quack's tuning-results
 cache on, installs the source-checked patches (:mod:`.pipeline`,
-:mod:`.autotune`) and registers every extra kernel-source directory in Quack's
-cache fingerprint. :func:`autotune.sonicmoe_functional` imports SonicMoE's
+:mod:`.autotune`, :mod:`.sweeps`) and registers every extra kernel-source
+directory in Quack's cache fingerprint. :func:`autotune.sonicmoe_functional` imports SonicMoE's
 kernels without adopting its global tuning policy.
 """
 
@@ -48,10 +48,11 @@ def initialize() -> None:
     # asks, so separate processes pick the same configurations; QUACK_CACHE_DIR
     # says where (Quack's default is ~/.quack/cache).
     os.environ.setdefault("QUACK_CACHE_AUTOTUNING", "1")
-    from . import autotune, pipeline
+    from . import autotune, pipeline, sweeps
 
     pipeline.apply()
     autotune.apply()
+    sweeps.apply()
     # The patched kernel source lives here, so it is part of the fingerprint.
     register_source_dir(Path(__file__).resolve().parent)
     for item in os.environ.get(SOURCE_DIRS_VARIABLE, "").split(os.pathsep):
