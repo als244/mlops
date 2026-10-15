@@ -17,6 +17,7 @@ from mlops.dispatch.context import use_implementation
 from mlops.kernels import router
 from mlops.kernels.moe_reference import native_torch_moe
 from mlops.lora.experts import expert_lora
+from mlops.lora.routing import routing_logits
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
 ROWS, WIDTH, EXPERTS = 4096, 256, 32
@@ -121,6 +122,49 @@ def test_autograd_form_returns_the_same_gradients():
         weight.detach().requires_grad_(),
         weight_grad_dtype=torch.bfloat16,
     )
+
+
+@pytest.mark.gpu
+@cuda
+def test_an_exported_lora_router_keeps_its_backward():
+    """Export keeps the expert-LoRA router as one operator with its backward.
+
+    An autograd.Function's forward is inlined by export, leaving the
+    fp32-output multiply -- it has no derivative -- for the trace to
+    differentiate. The router is frozen, as under LoRA, and the activation's
+    gradient through the exported graph equals eager's.
+    """
+
+    class Router(torch.nn.Module):
+        def __init__(self, weight):
+            super().__init__()
+            self.weight = torch.nn.Parameter(weight, requires_grad=False)
+
+        def forward(self, hidden):
+            return routing_logits(hidden, self.weight)
+
+    generator = torch.Generator(device="cuda").manual_seed(4)
+    hidden = torch.randn(ROWS, WIDTH, device="cuda", generator=generator).to(
+        torch.bfloat16
+    )
+    weight = (
+        torch.randn(EXPERTS, WIDTH, device="cuda", generator=generator) * WIDTH**-0.5
+    ).to(torch.bfloat16)
+    grad_logits = torch.randn(ROWS, EXPERTS, device="cuda", generator=generator)
+    module = Router(weight)
+    exported = torch.export.export(
+        module, (hidden.clone().requires_grad_(),), strict=False
+    )
+    targets = {
+        str(node.target) for node in exported.graph.nodes if node.op == "call_function"
+    }
+    assert "mlops.lora_router_logits.default" in targets
+    assert "aten.mm.dtype" not in targets
+    traced = hidden.clone().requires_grad_()
+    exported.module()(traced).backward(grad_logits)
+    eager = hidden.clone().requires_grad_()
+    module(eager).backward(grad_logits)
+    assert torch.equal(traced.grad, eager.grad)
 
 
 def test_off_cuda_the_products_are_fp32():
