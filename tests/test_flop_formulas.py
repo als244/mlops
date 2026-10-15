@@ -288,9 +288,11 @@ def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
         + 2 * down
         + combine
     )
-    static = (top_k, "softmax_then_topk", 1, 1, 1.0, [8], "float32", None, "native", [])
+    static = (top_k, "softmax_then_topk", 1, 1, 1.0, [8], "float32", None, "native")
     fused = ops.moe_sonicmoe_fwd
-    assert _count(fused, h2, residual, router, w13, w2, bias, *static) == forward
+    assert _count(fused, h2, residual, router, w13, w2, bias, *static, None, []) == (
+        forward
+    )
 
     logits, route_weights, route_ids = _tensor(8, 4), _f32(8, 2), _i32(8, 2)
     offsets, index, h = _i32(5), _i32(16), _tensor(16, 48)
@@ -311,6 +313,7 @@ def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
             [8],
             None,
             "native",
+            None,
             [],
             True,
             True,
@@ -318,7 +321,7 @@ def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
         )
         == backward
     )
-    prepare = _count(ops.moe_sonicmoe_prepare_fwd, h2, router, w13, bias, *static)
+    prepare = _count(ops.moe_sonicmoe_prepare_fwd, h2, router, w13, bias, *static, [])
     finish = _count(
         ops.moe_sonicmoe_finish_fwd,
         h,
@@ -332,6 +335,7 @@ def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
         top_k,
         None,
         "native",
+        None,
         [],
     )
     assert prepare == router_flops + up
@@ -372,6 +376,7 @@ def test_sonicmoe_charges_the_same_work_as_the_builtin(fake):
         top_k,
         None,
         "native",
+        None,
         [],
         True,
     )
@@ -393,7 +398,7 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
     forward = router_flops + up + activation + down + combine
     static = (top_k, "softmax_then_topk", 1, 1, 1.0, [8], "float32", None)
     fused = ops.moe_builtin_grouped_gemm_fwd
-    assert _count(fused, h2, residual, router, w13, w2, bias, *static) == forward
+    assert _count(fused, h2, residual, router, w13, w2, bias, *static, None) == forward
 
     # The composed provider splits the same work into two regions.
     logits, route_weights = _tensor(8, 4), _f32(8, 2)
@@ -412,6 +417,7 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
         slots,
         residual,
         top_k,
+        None,
         None,
     )
     assert prepare == router_flops + up
@@ -441,6 +447,7 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
             top_k,
             "softmax_then_topk",
             [8],
+            None,
             None,
             True,
             True,
@@ -476,6 +483,7 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
         slots,
         top_k,
         None,
+        None,
         True,
     )
     donated = _count(
@@ -488,6 +496,7 @@ def test_mixture_of_experts_charges_every_assignment_once(fake):
         offsets,
         slots,
         top_k,
+        None,
         None,
         True,
     )

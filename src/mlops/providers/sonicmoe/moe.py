@@ -8,12 +8,13 @@ and the fused backward kernels, all on Quack's CuTe DSL GEMMs. The package's
 nn.Linear weight layout -- ``w13 [E, 2I, H]`` with gate rows then up rows,
 ``w2 [E, H, I]`` -- is SonicMoE's native storage, so no weight is copied.
 
-The experts' GEMMs run in FP8 on request (``compute_precision="fp8_current"``)
-or by default for weights that arrive as ``QuackFP8Weight`` containers
-(``fp8.py``). The operators take containers as the expert-parallel operators
-do: a dispatch rule turns each into its E4M3 rows and the trailing
-``weight_components`` list; with ``"bf16"`` asked of container weights, they
-are dequantized per call instead.
+The experts' GEMMs run in FP8 on request (``compute_precision="fp8_current"``
+or ``"fp8_block"``) or by default for weights that arrive as FP8 containers:
+two-copy ``QuackFP8Weight``s (``fp8.py``) or one-copy block-scaled
+``BlockFP8Weight``s (``block_fp8.py``). The operators take containers as the
+expert-parallel operators do: a dispatch rule turns each into its E4M3 data
+and the trailing ``weight_components`` list; with ``"bf16"`` asked of
+container weights, they are dequantized per call instead.
 """
 
 from __future__ import annotations
@@ -107,10 +108,11 @@ def supports(
         return SupportResult.no("the model and expert widths must be multiples of 8")
     if not (w13_experts.is_contiguous() and w2_experts.is_contiguous()):
         return SupportResult.no("expert weights must be contiguous")
-    if compute_precision not in (None, "bf16", "fp8_current"):
+    if compute_precision not in (None, "bf16", *fp8.PRECISIONS):
         return SupportResult.no(f"unknown compute precision {compute_precision!r}")
-    if fp8.resolve(compute_precision, w13_experts, w2_experts) == "fp8_current":
-        return fp8.supports(h2, w13_experts, w2_experts)
+    precision = fp8.resolve(compute_precision, w13_experts, w2_experts)
+    if precision in fp8.PRECISIONS:
+        return fp8.supports(h2, w13_experts, w2_experts, precision)
     return SupportResult.yes()
 
 
@@ -135,18 +137,61 @@ def metadata(route_ids, experts):
     return offsets, gather, scatter, reverse
 
 
-def up_projection(h2_flat, w13_experts, offsets, gather, compute_precision="native"):
+@torch.library.custom_op("mlops::sonicmoe_routing_metadata", mutates_args=())
+def routing_metadata(
+    route_ids: torch.Tensor, experts: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """`metadata` as a functional operator, for compositions that route in
+    the traced graph (expert LoRA): SonicMoE's kernel writes into the
+    buffers it is handed, which a traced graph would carry as a mutating
+    operator."""
+    return metadata(route_ids, int(experts))
+
+
+@routing_metadata.register_fake
+def _routing_metadata_fake(route_ids, experts):
+    count = route_ids.numel()
+    return (
+        route_ids.new_empty((experts + 1,), dtype=torch.int32),
+        *(route_ids.new_empty((count,), dtype=torch.int32) for _ in range(3)),
+    )
+
+
+@flop_formula(routing_metadata)
+def _routing_metadata_flops(route_ids, experts, out_val=None):
+    del route_ids, experts, out_val
+    return 0
+
+
+def up_projection(
+    h2_flat, w13_experts, offsets, gather, compute_precision="native", limit=None
+):
     """Gather the routed rows, project through ``w13`` and apply SwiGLU in one
     kernel: returns ``(h, a)``, the saved pre-activation -- whose gate/up
-    columns Quack keeps interleaved -- and the activation."""
+    columns Quack keeps interleaved -- and the activation, clamped at
+    ``limit`` when given."""
     from quack.gemm_interface import gemm_act
 
-    if compute_precision == "fp8_current":
-        return fp8.up_projection(h2_flat, w13_experts, offsets, gather)
+    if compute_precision in fp8.PRECISIONS:
+        return fp8.up_projection(h2_flat, w13_experts, offsets, gather, limit=limit)
 
     assignments, width = gather.shape[0], w13_experts.shape[1] // 2
     h = torch.empty(assignments, 2 * width, dtype=h2_flat.dtype, device=h2_flat.device)
     a = torch.empty(assignments, width, dtype=h2_flat.dtype, device=h2_flat.device)
+    if limit is not None:
+        from ...expert_parallel.quack.experts.swiglu_limit import swiglu_limit
+
+        swiglu_limit(
+            h2_flat,
+            w13_experts.transpose(1, 2),
+            None,
+            out={"D": h, "postact": a},
+            cu_seqlens_m=offsets,
+            A_idx=gather,
+            concat_layout=("B",),
+            limit=float(limit),
+        )
+        return h, a
     gemm_act(
         h2_flat,
         w13_experts.transpose(1, 2),
@@ -161,14 +206,17 @@ def up_projection(h2_flat, w13_experts, offsets, gather, compute_precision="nati
     return h, a
 
 
-def activation(h):
-    """SwiGLU of the interleaved pre-activation, as the down projection reads it."""
+def activation(h, limit=None):
+    """SwiGLU of the interleaved pre-activation, as the down projection reads
+    it, clamped at ``limit`` when given."""
     if h.is_cuda:
         from ...expert_parallel.quack.kernels.swiglu_rows import swiglu_rows
 
-        return swiglu_rows(h)
+        return swiglu_rows(h, limit=limit)
     pairs = h.view(h.shape[0], h.shape[1] // 2, 2)
     gate, up = pairs[..., 0].float(), pairs[..., 1].float()
+    if limit is not None:
+        gate, up = gate.clamp(max=limit), up.clamp(-limit, limit)
     return (functional.silu(gate) * up).to(h.dtype)
 
 
@@ -181,18 +229,19 @@ def down_projection(
     residual_flat,
     compute_precision="native",
     from_preactivation=False,
+    limit=None,
 ):
     """Project through ``w2``, weight each row by its route weight, sum the
     rows of every token and add the base. ``a`` is the activation, or with
-    ``from_preactivation`` the interleaved ``h`` the FP8 path activates and
-    quantizes in one pass."""
+    ``from_preactivation`` the interleaved ``h`` the FP8 path activates
+    (clamped at ``limit``) and quantizes in one pass."""
     from quack.gemm_interface import gemm
 
     functional_kernels = kernels()
     width = residual_flat.shape[1]
-    if compute_precision == "fp8_current":
+    if compute_precision in fp8.PRECISIONS:
         y = (
-            fp8.project_down_from_preactivation(a, w2_experts, offsets)
+            fp8.project_down_from_preactivation(a, w2_experts, offsets, limit=limit)
             if from_preactivation
             else fp8.project_down(a, w2_experts, offsets)
         )
@@ -224,9 +273,11 @@ def down_backward(
     grad_dtype,
     compute_precision="native",
     need_weight=True,
+    limit=None,
 ):
     """Return ``(dh, grad_route_weights, dw2)`` from the output cotangent
-    (``dw2`` ``None`` unless ``need_weight``).
+    (``dw2`` ``None`` unless ``need_weight``), the SwiGLU clamped at
+    ``limit`` when given.
 
     One SonicMoE kernel takes the cotangent back through ``w2`` and SwiGLU to
     the pre-activation gradient, the route-weight gradient and the
@@ -238,14 +289,40 @@ def down_backward(
     functional_kernels = kernels()
     rows, top_k = route_weights.shape
     scores = route_weights.reshape(-1).float().contiguous()
-    if compute_precision == "fp8_current":
+    if compute_precision in fp8.PRECISIONS:
         # scatter names each sorted row's (token, slot) entry.
         slots = scatter.long()
         dh, a_prime, dscore = fp8.down_backward_activations(
-            grad_output_flat, h, w2_experts, scores[slots], offsets, gather
+            grad_output_flat, h, w2_experts, scores[slots], offsets, gather, limit=limit
         )
         ds = torch.empty_like(scores)
         ds[slots] = dscore.to(ds.dtype)
+    elif limit is not None:
+        # SonicMoE's gated backward with the clamped SwiGLU: the same GEMM
+        # (the cotangent gathered through ``A_idx``, ``w2`` as stored), the
+        # route score per sorted row, its gradient reduced in the epilogue.
+        from ...expert_parallel.quack.experts.swiglu_limit import (
+            dswiglu_limit_scored,
+        )
+
+        slots = scatter.long()
+        dh = torch.empty_like(h)
+        a_prime = torch.empty(
+            h.shape[0], w2_experts.shape[2], dtype=h.dtype, device=h.device
+        )
+        result = dswiglu_limit_scored(
+            grad_output_flat,
+            w2_experts,
+            h,
+            out={"D": dh, "postact": a_prime},
+            score=scores[slots].contiguous(),
+            limit=float(limit),
+            cu_seqlens_m=offsets,
+            A_idx=gather,
+            dynamic_scheduler=False,
+        )
+        ds = torch.empty_like(scores)
+        ds[slots] = result["dscore"].to(ds.dtype)
     else:
         dh = torch.empty_like(h)
         ds = torch.empty_like(scores)
@@ -307,8 +384,8 @@ def up_backward(
     functional_kernels = kernels()
     width = h2_flat.shape[1]
     dh = dh.contiguous()  # an autograd cotangent need not be; the GEMM needs it so
-    if compute_precision == "fp8_current":
-        dx_expanded = fp8.input_gradient_rows(dh, w13_experts, offsets)
+    if compute_precision in fp8.PRECISIONS:
+        dx_expanded = fp8.input_gradient_rows(dh, w13_experts, offsets, gate_up=True)
     else:
         dx_expanded = torch.empty(dh.shape[0], width, dtype=dh.dtype, device=dh.device)
         functional_kernels.backward._up_projection_backward_act(
@@ -374,6 +451,7 @@ def forward(
     lengths,
     weight_precision,
     compute_precision="native",
+    swiglu_limit=None,
 ):
     """Return output, auxiliary values and the VJP residuals.
 
@@ -398,7 +476,9 @@ def forward(
             weight_precision=str(weight_precision),
         )
         offsets, gather, scatter, reverse = metadata(route_ids, experts)
-        h, a = up_projection(h2_flat, w13_experts, offsets, gather, compute_precision)
+        h, a = up_projection(
+            h2_flat, w13_experts, offsets, gather, compute_precision, swiglu_limit
+        )
         output = down_projection(
             a,
             w2_experts,
@@ -456,6 +536,7 @@ def backward(
     need_router=True,
     need_w13=True,
     need_w2=True,
+    swiglu_limit=None,
 ):
     """Return VJPs for ``h2, residual, router_weight, w13, w2`` in order, the
     weights' at ``weight_grad_dtype`` (their own when ``None``); a weight
@@ -474,6 +555,7 @@ def backward(
             weight_grad_dtype,
             compute_precision,
             need_weight=need_w2,
+            limit=swiglu_limit,
         )
         grad_h2, grad_w13 = up_backward(
             h2_flat,
@@ -551,6 +633,7 @@ def _forward_op(
     weight_precision: str,
     weight_grad_dtype: torch.dtype | None,
     compute_precision: str,
+    swiglu_limit: float | None,
     weight_components: list[torch.Tensor],
 ) -> tuple[
     torch.Tensor,
@@ -585,6 +668,7 @@ def _forward_op(
         lengths=lengths,
         weight_precision=weight_precision,
         compute_precision=compute_precision,
+        swiglu_limit=swiglu_limit,
     )
 
 
@@ -636,11 +720,12 @@ def _forward_fake(
     weight_precision,
     weight_grad_dtype,
     compute_precision,
+    swiglu_limit,
     weight_components,
 ):
     del residual, w2_experts, router_bias, routing_mode, n_group, topk_group
     del routed_scaling, lengths, weight_grad_dtype, compute_precision
-    del weight_components
+    del swiglu_limit, weight_components
     return (
         torch.empty_like(h2),
         *statistic_fakes(h2, router_weight),
@@ -670,6 +755,7 @@ def _backward_op(
     lengths: list[int],
     weight_grad_dtype: torch.dtype | None,
     compute_precision: str,
+    swiglu_limit: float | None,
     weight_components: list[torch.Tensor],
     need_router: bool,
     need_w13: bool,
@@ -702,6 +788,7 @@ def _backward_op(
         need_router=need_router,
         need_w13=need_w13,
         need_w2=need_w2,
+        swiglu_limit=swiglu_limit,
     )
 
 
@@ -727,6 +814,7 @@ def _backward_fake(
     lengths,
     weight_grad_dtype,
     compute_precision,
+    swiglu_limit,
     weight_components,
     need_router,
     need_w13,
@@ -734,7 +822,7 @@ def _backward_fake(
 ):
     del grad_aux, grad_probability_sum, logits, route_weights, route_ids
     del offsets, gather, scatter, reverse, h, top_k, routing_mode, lengths
-    del compute_precision, weight_components
+    del compute_precision, swiglu_limit, weight_components
     return (
         torch.empty_like(h2),
         torch.empty_like(grad_output),
@@ -827,6 +915,7 @@ def _setup_context(ctx, inputs, output):
         _weight_precision,
         weight_grad_dtype,
         compute_precision,
+        swiglu_limit,
         weight_components,
     ) = inputs
     (
@@ -863,6 +952,7 @@ def _setup_context(ctx, inputs, output):
     ctx.lengths = list(lengths)
     ctx.weight_grad_dtype = weight_grad_dtype
     ctx.compute_precision = compute_precision
+    ctx.swiglu_limit = swiglu_limit
     ctx.mark_non_differentiable(
         counts, logits, route_weights, route_ids, offsets, gather, scatter, reverse, h
     )
@@ -903,6 +993,7 @@ def _autograd_backward(
         ctx.lengths,
         ctx.weight_grad_dtype,
         ctx.compute_precision,
+        ctx.swiglu_limit,
         list(components),
         bool(needs[2]),
         bool(needs[3]),
@@ -914,7 +1005,7 @@ def _autograd_backward(
         requested(grad_router, needs[2]),
         requested(grad_w13, needs[3]),
         requested(grad_w2, needs[4]),
-        *([None] * 10),
+        *([None] * 11),
         [None] * len(components),
     )
 
@@ -942,6 +1033,7 @@ def apply(
     shared_gate_weight=None,
     shared_mode="add",
     compute_precision=None,
+    swiglu_limit=None,
 ):
     from ...moe import _production_shared_base
 
@@ -953,7 +1045,13 @@ def apply(
         else router_bias
     )
     base = _production_shared_base(
-        h2, residual, shared_w13, shared_w2, shared_gate_weight, shared_mode
+        h2,
+        residual,
+        shared_w13,
+        shared_w2,
+        shared_gate_weight,
+        shared_mode,
+        swiglu_limit,
     )
     precision, w13_experts, w2_experts, grad_dtype = fp8.prepare(
         compute_precision, w13_experts, w2_experts, h2.dtype
@@ -974,6 +1072,7 @@ def apply(
         current_route_weight_precision(),
         grad_dtype,
         precision,
+        None if swiglu_limit is None else float(swiglu_limit),
         [],
     )
     return outputs[:4]

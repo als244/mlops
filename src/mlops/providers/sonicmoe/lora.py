@@ -34,10 +34,11 @@ projection with its gate/up rows interleaved, the order of ``h``. Base
 weights get weight gradients only when they require them; frozen factors
 cost no factor-gradient GEMM.
 
-FP8 base weights (``QuackFP8Weight`` containers, or ``compute_precision=
-"fp8_current"``) run the two heavy projections and their row gradients as
-``fp8.py``'s scale-aware GEMMs, the rows gathered by the quantizers and the
-LoRA terms added in the epilogues the same way, the operators taking the
+FP8 base weights (``QuackFP8Weight`` or ``BlockFP8Weight`` containers, or
+``compute_precision="fp8_current"`` / ``"fp8_block"``) run the two heavy
+projections and their row gradients as ``fp8.py``'s scale-aware GEMMs (or
+``block_fp8.py``'s block-scaled ones), the rows gathered by the quantizers
+and the LoRA terms added in the GEMMs the same way, the operators taking the
 containers as the ``moe`` operators do.
 """
 
@@ -49,10 +50,9 @@ from ...dispatch.context import weight_gradient_dtype
 from ...dispatch.costs import flop_formula
 from ...dispatch.registry import SupportResult
 from ...expert_parallel.quack.kernels.swiglu_rows import routed_swiglu_rows_backward
-from ...kernels.router import routed_logits
-from ...lora.routing import routing
+from ...lora.routing import routing, routing_logits, statistics
 from . import fp8
-from .moe import CAPABILITIES, ROW_ALIGNMENT, available, kernels, metadata
+from .moe import CAPABILITIES, ROW_ALIGNMENT, available, kernels, routing_metadata
 
 
 def supports(hidden, gate_up, down, *, compute_precision=None) -> SupportResult:
@@ -71,19 +71,18 @@ def supports(hidden, gate_up, down, *, compute_precision=None) -> SupportResult:
         return SupportResult.no("the model and expert widths must be multiples of 8")
     if not (gate_up.is_contiguous() and down.is_contiguous()):
         return SupportResult.no("expert weights must be contiguous")
-    if compute_precision not in (None, "bf16", "fp8_current"):
+    if compute_precision not in (None, "bf16", *fp8.PRECISIONS):
         return SupportResult.no(f"unknown compute precision {compute_precision!r}")
-    if fp8.resolve(compute_precision, gate_up, down) == "fp8_current":
-        return fp8.supports(hidden, gate_up, down)
+    precision = fp8.resolve(compute_precision, gate_up, down)
+    if precision in fp8.PRECISIONS:
+        return fp8.supports(hidden, gate_up, down, precision)
     return SupportResult.yes()
 
 
 def _weight(components, weight):
-    """The operator's weight: a `fp8.Weight` when components came along."""
-    (weight,) = fp8.weights(
-        "fp8_current" if components else "native", components, weight
-    )
-    return weight
+    """The operator's weight: an FP8 form (`fp8.Weight` or `BlockWeight`)
+    when components came along."""
+    return fp8.weight_of(components, weight)
 
 
 def interleaved_rows(b):
@@ -159,12 +158,14 @@ def _up_forward(
     need_x: bool,
     need_weight: bool,
     need_factors: bool,
+    swiglu_limit: float | None,
     weight_components: list[torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Over the expert-sorted rows ``x[gather]``: ``z = x @ a13ᵀ``,
-    ``h = x @ gate_upᵀ + z @ b13ᵀ`` and ``a = swiglu(h)``, as ``(h, a, z)``;
-    ``h`` in Quack's interleaved gate/up column order (``b13``'s rows come
-    interleaved and scaled). ``reverse`` and ``top_k`` serve the backward."""
+    ``h = x @ gate_upᵀ + z @ b13ᵀ`` and ``a = swiglu(h)`` (clamped at
+    ``swiglu_limit`` when given), as ``(h, a, z)``; ``h`` in Quack's
+    interleaved gate/up column order (``b13``'s rows come interleaved and
+    scaled). ``reverse`` and ``top_k`` serve the backward."""
     from quack.gemm_interface import gemm_act
 
     kernels()
@@ -172,12 +173,31 @@ def _up_forward(
     c = _low(z, b13, offsets)
     if weight_components:
         h, a = fp8.lora_up_projection(
-            x, _weight(weight_components, gate_up), c, offsets, gather=gather
+            x,
+            _weight(weight_components, gate_up),
+            c,
+            offsets,
+            gather=gather,
+            limit=swiglu_limit,
         )
         return h, a, z
     rows, width = gather.shape[0], gate_up.shape[1] // 2
     h = torch.empty(rows, 2 * width, dtype=x.dtype, device=x.device)
     a = torch.empty(rows, width, dtype=x.dtype, device=x.device)
+    if swiglu_limit is not None:
+        from ...expert_parallel.quack.experts.swiglu_limit import swiglu_limit_add
+
+        swiglu_limit_add(
+            x,
+            gate_up.transpose(1, 2),
+            c,
+            out={"D": h, "postact": a},
+            cu_seqlens_m=offsets,
+            A_idx=gather,
+            concat_layout=("B",),
+            limit=float(swiglu_limit),
+        )
+        return h, a, z
     gemm_act(
         x,
         gate_up.transpose(1, 2),
@@ -207,8 +227,10 @@ def _up_fake(
     need_x,
     need_weight,
     need_factors,
+    swiglu_limit,
     weight_components,
 ):
+    del swiglu_limit
     rows, width = gather.shape[0], gate_up.shape[1] // 2
     return (
         x.new_empty((rows, 2 * width)),
@@ -260,7 +282,7 @@ def _up_backward(
     if gate_up is not None:
         if weight_components:
             expanded = fp8.input_gradient_rows(
-                dh, _weight(weight_components, gate_up), offsets
+                dh, _weight(weight_components, gate_up), offsets, gate_up=True
             )
         else:
             expanded = torch.empty(rows, width, dtype=dh.dtype, device=dh.device)
@@ -340,6 +362,7 @@ def _up_context(ctx, inputs, output):
         need_x,
         need_weight,
         need_factors,
+        _swiglu_limit,
         components,
     ) = inputs
     _h, a, z = output
@@ -397,6 +420,7 @@ def _up_autograd(ctx, grad_h, _grad_a, _grad_z):
         None,
         None,
         None,
+        None,
         [None] * len(components),
     )
 
@@ -422,14 +446,16 @@ def _down_forward(
     need_h: bool,
     need_weight: bool,
     need_factors: bool,
+    swiglu_limit: float | None,
     weight_components: list[torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """``z = a @ a2ᵀ``, ``y = a @ downᵀ + z @ b2ᵀ`` over expert-sorted rows,
     then every token's rows summed with their ``scores`` (``[tokens * top_k]``
     in token-slot order) onto ``residual``: ``(output, z)``; ``b2`` comes
     scaled. ``a`` is ``swiglu(h)``, ``h`` the interleaved pre-activation the
-    backward differentiates through (``a`` itself is not saved);
-    ``gather`` and ``scatter`` serve the backward."""
+    backward differentiates through (``a`` itself is not saved) with the
+    clamp at ``swiglu_limit`` the activation had; ``gather`` and ``scatter``
+    serve the backward."""
     from quack.gemm_interface import gemm_add
 
     functional = kernels()
@@ -472,6 +498,7 @@ def _down_fake(
     need_h,
     need_weight,
     need_factors,
+    swiglu_limit,
     weight_components,
 ):
     return torch.empty_like(residual), a.new_empty((a.shape[0], a2.shape[1]))
@@ -484,7 +511,7 @@ def _down_fake(
         "(Tensor grad_output, Tensor h, Tensor down, Tensor a2, Tensor b2,"
         " Tensor? z, Tensor offsets, Tensor gather, Tensor scatter, Tensor scores,"
         " SymInt[] weight_shape, SymInt[] a_shape, SymInt[] b_shape,"
-        " ScalarType? grad_dtype, Tensor[] weight_components)"
+        " ScalarType? grad_dtype, float? swiglu_limit, Tensor[] weight_components)"
         " -> (Tensor, Tensor?, Tensor?, Tensor?, Tensor)"
     ),
 )
@@ -503,6 +530,7 @@ def _down_backward(
     a_shape: list[int],
     b_shape: list[int],
     grad_dtype: torch.dtype | None,
+    swiglu_limit: float | None,
     weight_components: list[torch.Tensor],
 ) -> tuple[
     torch.Tensor,
@@ -534,7 +562,11 @@ def _down_backward(
     _accumulate_through(dz, a2, r, offsets)
     score_rows = scores[scatter.long()].contiguous()
     ds, dh, a_prime = routed_swiglu_rows_backward(
-        r, h, score_rows, scaled_activation=weight_shape[0] > 0 or z is not None
+        r,
+        h,
+        score_rows,
+        scaled_activation=weight_shape[0] > 0 or z is not None,
+        limit=swiglu_limit,
     )
     dscores = torch.empty_like(scores)
     dscores[scatter.long()] = ds.to(scores.dtype)
@@ -570,8 +602,10 @@ def _down_backward_fake(
     a_shape,
     b_shape,
     grad_dtype,
+    swiglu_limit,
     weight_components,
 ):
+    del swiglu_limit
     dtype = grad_dtype or h.dtype
     return (
         torch.empty_like(h),
@@ -600,6 +634,7 @@ def _down_context(ctx, inputs, output):
         _need_h,
         need_weight,
         need_factors,
+        swiglu_limit,
         components,
     ) = inputs
     _out, z = output
@@ -620,6 +655,7 @@ def _down_context(ctx, inputs, output):
     ctx.weight_shape = tuple(down.shape) if need_weight else (0, 0, 0)
     ctx.a_shape, ctx.b_shape = tuple(a2.shape), tuple(b2.shape)
     ctx.grad_dtype = grad_dtype
+    ctx.swiglu_limit = swiglu_limit
     ctx.set_materialize_grads(False)
     ctx.mark_non_differentiable(z)
 
@@ -643,6 +679,7 @@ def _down_autograd(ctx, grad_output, _grad_z):
         list(ctx.a_shape),
         list(ctx.b_shape),
         ctx.grad_dtype,
+        ctx.swiglu_limit,
         list(components),
     )
     return (
@@ -657,6 +694,7 @@ def _down_autograd(ctx, grad_output, _grad_z):
         None,
         dscores,
         grad_output,
+        None,
         None,
         None,
         None,
@@ -753,12 +791,23 @@ def _down_backward_flops(
 
 
 def sonicmoe_up(
-    x, gather, reverse, gate_up, a13, b13, offsets, top_k, *, grad_dtype=None
+    x,
+    gather,
+    reverse,
+    gate_up,
+    a13,
+    b13,
+    offsets,
+    top_k,
+    *,
+    grad_dtype=None,
+    swiglu_limit=None,
 ):
     """``(h, a, z)`` of the up projection with its LoRA term over the rows
-    ``x[gather]``, ``h`` the differentiable output; ``gate_up`` plain or a
-    container, ``a13 [E, r, H]`` and ``b13 [E, 2I, r]`` (rows interleaved,
-    scaled) at the rows' dtype."""
+    ``x[gather]``, ``h`` the differentiable output, ``a`` clamped at
+    ``swiglu_limit`` when given; ``gate_up`` plain or a container,
+    ``a13 [E, r, H]`` and ``b13 [E, 2I, r]`` (rows interleaved, scaled) at
+    the rows' dtype."""
     grad = torch.is_grad_enabled()
     return _up_forward(
         x,
@@ -773,6 +822,7 @@ def sonicmoe_up(
         grad and x.requires_grad,
         grad and gate_up.requires_grad,
         grad and (a13.requires_grad or b13.requires_grad),
+        None if swiglu_limit is None else float(swiglu_limit),
         [],
     )
 
@@ -792,10 +842,12 @@ def sonicmoe_down(
     top_k,
     *,
     grad_dtype=None,
+    swiglu_limit=None,
 ):
     """``(output, z)`` of the down projection with its LoRA term from the
-    activation ``a = swiglu(h)``, combined onto the tokens with ``scores``
-    and ``residual``; the gradient flows to ``h``. ``down`` plain or a
+    activation ``a = swiglu(h)`` (clamped at ``swiglu_limit``, as the up
+    projection made it), combined onto the tokens with ``scores`` and
+    ``residual``; the gradient flows to ``h``. ``down`` plain or a
     container, ``a2 [E, r, I]`` and ``b2 [E, H, r]`` (scaled)."""
     grad = torch.is_grad_enabled()
     return _down_forward(
@@ -815,6 +867,7 @@ def sonicmoe_down(
         grad and h.requires_grad,
         grad and down.requires_grad,
         grad and (a2.requires_grad or b2.requires_grad),
+        None if swiglu_limit is None else float(swiglu_limit),
         [],
     )
 
@@ -833,23 +886,36 @@ def expert_lora(
     top_k,
     routing_mode,
     scale,
+    router_bias=None,
+    n_group=1,
+    topk_group=1,
+    routed_scaling=1.0,
+    lengths=None,
+    swiglu_limit=None,
     compute_precision=None,
 ):
     """The SonicMoE form of :func:`mlops.lora.experts.expert_lora`: same
     contract, same results within bf16 rounding (FP8 rounding at
-    ``"fp8_current"`` or on container weights)."""
+    an FP8 precision or on container weights)."""
     _precision, gate_up, down, grad_dtype = fp8.prepare(
         compute_precision, gate_up, down, hidden.dtype
     )
     flat = hidden.reshape(-1, hidden.shape[-1]).contiguous()
-    logits = routed_logits(flat, router_weight)
-    weights, ids = routing(logits, top_k, routing_mode)
+    logits = routing_logits(flat, router_weight)
+    weights, ids = routing(
+        logits,
+        top_k,
+        routing_mode,
+        bias=router_bias,
+        n_group=n_group,
+        topk_group=topk_group,
+        routed_scaling=routed_scaling,
+    )
     experts = gate_up.shape[0]
-    offsets, gather, scatter, reverse = metadata(ids.to(torch.int32), experts)
-    counts = (offsets[1:] - offsets[:-1]).long()
-    probabilities = logits.float().softmax(-1)
-    probability_sum = probabilities.sum(0)
-    auxiliary = experts * ((counts.float() / ids.numel()) * probabilities.mean(0)).sum()
+    offsets, gather, scatter, reverse = routing_metadata(ids.to(torch.int32), experts)
+    auxiliary, counts, probability_sum = statistics(
+        logits, ids, offsets, routing_mode=routing_mode, lengths=lengths
+    )
     dtype = flat.dtype
     h, activated, _z = sonicmoe_up(
         flat,
@@ -861,6 +927,7 @@ def expert_lora(
         offsets,
         top_k,
         grad_dtype=grad_dtype,
+        swiglu_limit=swiglu_limit,
     )
     output, _z2 = sonicmoe_down(
         activated,
@@ -876,6 +943,7 @@ def expert_lora(
         residual.reshape_as(flat).contiguous(),
         top_k,
         grad_dtype=grad_dtype,
+        swiglu_limit=swiglu_limit,
     )
     return output.reshape_as(hidden), auxiliary, counts, probability_sum
 

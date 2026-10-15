@@ -269,6 +269,14 @@ auxiliary loss and the probability sums are the package's own
 (`kernels/moe_router.py`, `providers/moe_common.py`), so every routing mode
 behaves exactly as with the builtin.
 
+A `swiglu_limit` (GLM's clamped SwiGLU, `moe`'s option) runs in the same
+kernels: the gated forward and backward GEMMs use the package's own Quack
+epilogues (`expert_parallel/quack/experts/swiglu_limit.py`, bf16 and FP8,
+with and without a LoRA term entering before the activation), which take the
+limit as a run-time scalar operand, and the row kernels
+(`expert_parallel/quack/kernels/swiglu_rows.py`) take it as a run-time
+argument, so one compiled kernel serves every limit.
+
 The adapters accept CUDA tensors on compute capability 9.x and 10.x, bfloat16
 activations and expert weights, contiguous weights, and widths that are
 multiples of 8; there `sonicmoe.moe.composed` (priority 110) is the semantic
@@ -323,6 +331,31 @@ through for their gradients), `"bf16"` on containers dequantizes them per
 call -- in every implementation, which is how the builtin and native
 implementations take FP8 weights. SM100 is declined for FP8 math until the
 kernels are validated there.
+
+Block-scaled FP8 weights are `BlockFP8Weight` containers (`mlops/block_fp8.py`):
+E4M3 stored once, in `nn.Linear` row order, with an FP32 scale per 128x128
+block -- the layout of DeepSeek-style FP8 checkpoints. A block covers both
+axes, so one copy serves the projections, which reduce over a weight's input
+axis, and the input gradients, which reduce over its output axis; no
+transposed copy is kept. They compute at `"fp8_block"` (their default) on
+SM90 through Quack `GemmSm90` subclasses with their own producers and
+mainloop (`expert_parallel/quack/experts/block_fp8_gemm.py`): 128x128x128
+tiles over the same routing metadata, each K tile one scale block, its
+wgmmas accumulated from zero and folded into the FP32 sum at the block's
+scale. The rows are E4M3, quantized per row per call and gathered in the
+same pass as for `"fp8_current"`, their scales applied in the epilogue.
+Projections read the weight K-major, as stored; the up projection reads
+`w13`'s gate and up rows as interleaved column pairs and writes `h` with gate
+and up interleaved and the SwiGLU in its epilogue, as the two-copy form does.
+Input gradients read it MN-major, which Hopper's E4M3 tensor cores do not
+take, so a transposing warpgroup rewrites each tile in shared memory after
+TMA loads it (FlashAttention-3's ldmatrix/prmt/stmatrix sequence) and the
+cotangent rows are quantized in that transposition's K order -- the
+interleaved `dh` read gate columns first; the down projection's input
+gradient runs the SwiGLU backward in its epilogue. An up projection whose
+gate and up halves are not whole 64-row groups runs on a grouped Triton
+kernel (`kernels/block_fp8.py`) and the SwiGLU row kernel instead. Weight
+gradients are the bf16 varlen-K GEMMs, as for the two-copy containers.
 
 ## Future QuACK compatibility
 

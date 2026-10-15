@@ -20,6 +20,10 @@ MODES = {
 }
 SINGLE, COMPOSED = "sonicmoe.moe", "sonicmoe.moe.composed"
 BUILTIN, ORACLE = "builtin.moe.grouped_gemm_composed", "native_torch.moe"
+# GLM's clamped SwiGLU at a limit the unit-scale pre-activations cross often.
+# The paths compute bitwise-equal pre-activations almost everywhere, so the
+# gradient's jumps at the limit land on the same elements.
+LIMIT = 0.75
 
 
 def _supported() -> bool:
@@ -48,7 +52,7 @@ hopper = pytest.mark.skipif(
 )
 
 
-def _inputs(seed, mode, *, lengths=None, shared=False):
+def _inputs(seed, mode, *, lengths=None, shared=False, swiglu_limit=None):
     """Primals (requiring gradients) and the keyword options of one case."""
     generator = torch.Generator(device="cuda").manual_seed(seed)
 
@@ -71,12 +75,25 @@ def _inputs(seed, mode, *, lengths=None, shared=False):
         options["shared_w2"] = randn(WIDTH, 16, scale=16**-0.5)
         options["shared_gate_weight"] = randn(1, WIDTH, scale=WIDTH**-0.5)
         options["shared_mode"] = "sigmoid"
+    if swiglu_limit is not None:
+        options["swiglu_limit"] = swiglu_limit
     return primals, options
 
 
-def _run(implementation, seed, mode, *, lengths=None, shared=False, grad_dtype=None):
+def _run(
+    implementation,
+    seed,
+    mode,
+    *,
+    lengths=None,
+    shared=False,
+    grad_dtype=None,
+    swiglu_limit=None,
+):
     """Outputs and the gradients of a loss touching output, aux and the sums."""
-    primals, options = _inputs(seed, mode, lengths=lengths, shared=shared)
+    primals, options = _inputs(
+        seed, mode, lengths=lengths, shared=shared, swiglu_limit=swiglu_limit
+    )
     with use_implementation("moe", implementation), weight_gradients_at(grad_dtype):
         output, aux, counts, probability_sum = mlops.moe(*primals, **options)
     torch.manual_seed(seed)
@@ -135,6 +152,44 @@ def test_sequence_lengths_and_the_shared_expert_match_the_builtin():
         expected = _run(BUILTIN, 5, "sigmoid_noaux_tc", lengths=(32, 64), shared=True)
         for value, reference in zip(actual, expected, strict=True):
             _assert_close(value, reference)
+
+
+# GLM's MoE: sigmoid routing with the correction bias, the shared expert,
+# per-sequence balance statistics and the clamped SwiGLU.
+GLM = {"lengths": (32, 64), "shared": True, "swiglu_limit": LIMIT}
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("implementation", [COMPOSED, SINGLE])
+@pytest.mark.parametrize("grad_dtype", [None, torch.float32])
+def test_glm_moe_matches_the_builtin(implementation, grad_dtype):
+    actual = _run(implementation, 17, "sigmoid_noaux_tc", grad_dtype=grad_dtype, **GLM)
+    expected = _run(BUILTIN, 17, "sigmoid_noaux_tc", grad_dtype=grad_dtype, **GLM)
+    for value, reference in zip(actual, expected, strict=True):
+        _assert_close(value, reference)
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("implementation", [COMPOSED, SINGLE, BUILTIN])
+def test_glm_moe_matches_the_oracle(implementation):
+    actual = _run(implementation, 19, "sigmoid_noaux_tc", **GLM)
+    expected = _run(ORACLE, 19, "sigmoid_noaux_tc", **GLM)
+    for value, reference in zip(actual, expected, strict=True):
+        _assert_close(value, reference)
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("implementation", [COMPOSED, SINGLE, BUILTIN, ORACLE])
+def test_the_limit_changes_the_result(implementation):
+    clamped = _run(implementation, 19, "softmax_then_topk", swiglu_limit=LIMIT)
+    plain = _run(implementation, 19, "softmax_then_topk")
+    # output and the gradients of h2 and of the expert weights
+    for index in (0, 4, 7, 8):
+        difference = (clamped[index].float() - plain[index].float()).norm()
+        assert float(difference / plain[index].float().norm()) > 5e-2, index
 
 
 @pytest.mark.gpu

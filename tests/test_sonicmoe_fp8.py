@@ -82,6 +82,7 @@ def _run(
     compute_precision=None,
     grad_dtype=None,
     fp8_weights=False,
+    swiglu_limit=None,
 ):
     primals = _inputs(seed, fp8_weights=fp8_weights)
     with use_implementation("moe", implementation), weight_gradients_at(grad_dtype):
@@ -90,6 +91,7 @@ def _run(
             top_k=TOP_K,
             routing_mode=mode,
             compute_precision=compute_precision,
+            swiglu_limit=swiglu_limit,
         )
     torch.manual_seed(seed)
     upstream = torch.randn_like(output)
@@ -146,6 +148,32 @@ def test_fp8_weights_agree_with_the_bf16_form(implementation, mode, grad_dtype):
     # The containers' gradients are plain tensors in nn.Linear order at the
     # logical (or the policy's) dtype, like the bf16 weights' own.
     assert actual[7].dtype is expected[7].dtype and actual[8].dtype is expected[8].dtype
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("implementation", [COMPOSED, SINGLE])
+def test_the_limit_reaches_the_fp8_kernels(implementation):
+    """FP8 moves pre-activations by a few percent, enough to cross a limit the
+    bf16 run did not, so the comparison with bf16 uses a limit far out;
+    `test_sonicmoe_swiglu_limit.py` checks the FP8 epilogues' clamp on
+    shared pre-activations."""
+    actual = _run(
+        implementation, 7, "softmax_then_topk", fp8_weights=True, swiglu_limit=3.5
+    )
+    expected = _run(implementation, 7, "softmax_then_topk", swiglu_limit=3.5)
+    for name, value, reference in zip(NAMES, actual, expected, strict=True):
+        _assert_close(name, value, reference)
+    clamped = _run(
+        implementation, 7, "softmax_then_topk", fp8_weights=True, swiglu_limit=0.75
+    )
+    plain = _run(implementation, 7, "softmax_then_topk", fp8_weights=True)
+    for index in (0, 4, 7, 8):  # output and the gradients of h2, w13, w2
+        value, reference = (
+            clamped[index].detach().float(),
+            plain[index].detach().float(),
+        )
+        assert float((value - reference).norm() / reference.norm()) > 5e-2, NAMES[index]
 
 
 @pytest.mark.gpu
@@ -264,8 +292,8 @@ def test_the_containers_components_are_the_operators_operands():
 @pytest.mark.gpu
 @hopper
 def test_row_kernels_compile_once_per_width():
-    """Token counts, gathers and pitches are runtime arguments: no launch
-    dimension compiles another kernel."""
+    """Token counts, gathers, pitches and SwiGLU limits are runtime arguments:
+    no launch dimension or limit compiles another kernel."""
     from mlops.expert_parallel.quack.kernels import quantize_rows, swiglu_rows
     from mlops.expert_parallel.quack.kernels.quantize_transpose import (
         _batched_transpose_quantize,
@@ -277,15 +305,19 @@ def test_row_kernels_compile_once_per_width():
     def variants(kernel):
         return len(kernel.device_caches[device][0])
 
-    def _backwards(h):
+    def _activations(h, limit):
+        swiglu_rows.swiglu_rows(h, limit=limit)
+        swiglu_rows.swiglu_quantize_rows_fp8(h, limit=limit)
+
+    def _backwards(h, limit=None):
         cotangent = torch.randn(
             h.shape[0], h.shape[1] // 2, device="cuda", dtype=h.dtype
         )
-        swiglu_rows.swiglu_rows_backward(cotangent, h)
+        swiglu_rows.swiglu_rows_backward(cotangent, h, limit=limit)
         score = torch.rand(h.shape[0], device="cuda")
-        swiglu_rows.routed_swiglu_rows_backward(cotangent, h, score)
+        swiglu_rows.routed_swiglu_rows_backward(cotangent, h, score, limit=limit)
         swiglu_rows.routed_swiglu_rows_backward(
-            cotangent, h, score, scaled_activation=True
+            cotangent, h, score, scaled_activation=True, limit=limit
         )
 
     kernels = (
@@ -300,9 +332,9 @@ def test_row_kernels_compile_once_per_width():
     quantize_rows.quantize_rows_fp8(
         reference, gather=torch.arange(ROWS, device="cuda", dtype=torch.int32)
     )
-    swiglu_rows.swiglu_rows(reference)
-    swiglu_rows.swiglu_quantize_rows_fp8(reference)
-    _backwards(reference)
+    for limit in (None, 10.0):  # one variant without a limit, one with
+        _activations(reference, limit)
+        _backwards(reference, limit)
     quantize_weights_fp8(torch.randn(2, 16, WIDTH, device="cuda", dtype=torch.bfloat16))
     before = tuple(variants(kernel) for kernel in kernels)
     for rows in (1, 5, ROWS + 7, 3 * ROWS):
@@ -311,9 +343,9 @@ def test_row_kernels_compile_once_per_width():
         gather = torch.randint(0, rows, (rows + 3,), device="cuda", dtype=torch.int64)
         quantize_rows.quantize_rows_fp8(value, gather=gather)
         quantize_rows.quantize_rows_fp8(value[:, : WIDTH // 2])  # another pitch
-        swiglu_rows.swiglu_rows(value)
-        swiglu_rows.swiglu_quantize_rows_fp8(value)
-        _backwards(value)
+        for limit in (None, 10.0, 0.75, 7):
+            _activations(value, limit)
+            _backwards(value, limit)
     for experts, out in ((1, 32), (3, 48), (2, 64)):
         quantize_weights_fp8(
             torch.randn(experts, out, WIDTH, device="cuda", dtype=torch.bfloat16),
