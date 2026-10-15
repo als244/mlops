@@ -35,6 +35,7 @@ def apply(
     shared_gate_weight=None,
     shared_mode="add",
     compute_precision=None,
+    swiglu_limit=None,
 ):
     refusal = bf16_compute_support(compute_precision, w13_experts, w2_experts)
     if refusal is not None:
@@ -66,6 +67,7 @@ def apply(
         routed_scaling=float(routed_scaling),
         lengths=normalized_lengths,
         shared_mode=shared_mode,
+        swiglu_limit=swiglu_limit,
     )
 
 

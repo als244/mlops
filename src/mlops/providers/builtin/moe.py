@@ -88,6 +88,7 @@ def forward(
     lengths=None,
     weight_precision="float32",
     swiglu_implementation="builtin.packed_swiglu.triton",
+    swiglu_limit=None,
 ):
     swiglu_variant = (
         "triton_legacy" if swiglu_implementation.endswith("triton_legacy") else "triton"
@@ -107,6 +108,7 @@ def forward(
         lengths=lengths,
         weight_precision=weight_precision,
         swiglu_variant=swiglu_variant,
+        swiglu_limit=swiglu_limit,
     )
 
 
@@ -133,6 +135,7 @@ def _forward_op(
     lengths: list[int],
     weight_precision: str,
     weight_grad_dtype: torch.dtype | None,
+    swiglu_limit: float | None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -160,6 +163,7 @@ def _forward_op(
         routed_scaling=routed_scaling,
         lengths=lengths,
         weight_precision=weight_precision,
+        swiglu_limit=swiglu_limit,
     )
 
 
@@ -179,8 +183,9 @@ def _forward_fake(
     lengths,
     weight_precision,
     weight_grad_dtype,
+    swiglu_limit,
 ):
-    del weight_grad_dtype
+    del weight_grad_dtype, swiglu_limit
     del residual, w2_experts, router_bias, routing_mode, n_group, topk_group
     del routed_scaling, lengths
     rows = h2.numel() // h2.shape[-1]
@@ -229,6 +234,7 @@ def _backward_op(
     routing_mode: str,
     lengths: list[int],
     weight_grad_dtype: torch.dtype | None,
+    swiglu_limit: float | None,
     need_router: bool,
     need_w13: bool,
     need_w2: bool,
@@ -253,6 +259,7 @@ def _backward_op(
         lengths=lengths,
         weight_grad_dtype=weight_grad_dtype,
         swiglu_implementation="builtin.packed_swiglu.triton",
+        swiglu_limit=swiglu_limit,
         need_router=need_router,
         need_w13=need_w13,
         need_w2=need_w2,
@@ -279,12 +286,13 @@ def _backward_fake(
     routing_mode,
     lengths,
     weight_grad_dtype,
+    swiglu_limit,
     need_router,
     need_w13,
     need_w2,
 ):
     del grad_aux, grad_probability_sum, logits, route_weights, route_ids
-    del order, offsets, slots, h13, top_k, routing_mode, lengths
+    del order, offsets, slots, h13, top_k, routing_mode, lengths, swiglu_limit
     return (
         torch.empty_like(h2),
         torch.empty_like(grad_output),
@@ -375,6 +383,7 @@ def _setup_context(ctx, inputs, output):
         lengths,
         _weight_precision,
         weight_grad_dtype,
+        swiglu_limit,
     ) = inputs
     (
         _result,
@@ -406,6 +415,7 @@ def _setup_context(ctx, inputs, output):
     ctx.routing_mode = routing_mode
     ctx.lengths = list(lengths)
     ctx.weight_grad_dtype = weight_grad_dtype
+    ctx.swiglu_limit = swiglu_limit
     ctx.mark_non_differentiable(
         counts, logits, route_weights, route_ids, order, offsets, slots, h13
     )
@@ -443,6 +453,7 @@ def _autograd_backward(
         ctx.routing_mode,
         ctx.lengths,
         ctx.weight_grad_dtype,
+        ctx.swiglu_limit,
         bool(needs[2]),
         bool(needs[3]),
         bool(needs[4]),
@@ -453,7 +464,7 @@ def _autograd_backward(
         requested(grad_router, needs[2]),
         requested(grad_w13, needs[3]),
         requested(grad_w2, needs[4]),
-        *([None] * 9),
+        *([None] * 10),
     )
 
 
@@ -479,6 +490,7 @@ def apply(
     shared_gate_weight=None,
     shared_mode="add",
     compute_precision=None,
+    swiglu_limit=None,
 ):
     refusal = bf16_compute_support(compute_precision, w13_experts, w2_experts)
     if refusal is not None:
@@ -496,7 +508,13 @@ def apply(
         else router_bias
     )
     base = _production_shared_base(
-        h2, residual, shared_w13, shared_w2, shared_gate_weight, shared_mode
+        h2,
+        residual,
+        shared_w13,
+        shared_w2,
+        shared_gate_weight,
+        shared_mode,
+        swiglu_limit,
     )
     outputs = _forward_op(
         h2,
@@ -513,6 +531,7 @@ def apply(
         list(normalized_lengths),
         current_route_weight_precision(),
         weight_gradient_dtype(),
+        None if swiglu_limit is None else float(swiglu_limit),
     )
     return outputs[:4]
 

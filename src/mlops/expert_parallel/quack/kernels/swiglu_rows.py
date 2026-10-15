@@ -9,7 +9,10 @@ quantization. The backward writes the interleaved pre-activation gradient
 the same way, from ``h`` and the activation's cotangent, without splitting
 ``h`` into gate and up copies; its routed form takes the cotangent before
 the route score, and folds the score's gradient ``<r, a>``, the scaling and
-the backward into one pass over ``h`` and ``r``. Widths are runtime
+the backward into one pass over ``h`` and ``r``. A ``limit`` clamps as GLM's
+experts do -- the gate capped at ``limit``, the up projection clipped to
+``[-limit, limit]``, no gradient through a clipped value -- the builtin
+``packed_swiglu(limit=)`` semantics. Widths and the limit are runtime
 arguments; only the block size and the flags are compiled in.
 """
 
@@ -21,13 +24,41 @@ from .quantize_rows import quantize_row, warps
 
 
 @triton.jit
-def _swiglu_rows(H, OUT, S, HALF, QS, QUANTIZE: tl.constexpr, BLOCK: tl.constexpr):
+def _clamped(gate, up, limit, LIMITED: tl.constexpr):
+    if LIMITED:
+        gate = tl.minimum(gate, limit)
+        up = tl.minimum(tl.maximum(up, -limit), limit)
+    return gate, up
+
+
+@triton.jit
+def _passed(dgate, dup, raw_gate, raw_up, limit, LIMITED: tl.constexpr):
+    # No gradient flows through a clipped value.
+    if LIMITED:
+        dgate = tl.where(raw_gate <= limit, dgate, 0.0)
+        dup = tl.where((raw_up >= -limit) & (raw_up <= limit), dup, 0.0)
+    return dgate, dup
+
+
+@triton.jit
+def _swiglu_rows(
+    H,
+    OUT,
+    S,
+    HALF,
+    QS,
+    limit,
+    QUANTIZE: tl.constexpr,
+    LIMITED: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
     row = tl.program_id(0).to(tl.int64)
     col = tl.arange(0, BLOCK)
     mask = col < HALF
     pair = H + row * (2 * HALF) + 2 * col
     gate = tl.load(pair, mask, other=0).to(tl.float32)
     up = tl.load(pair + 1, mask, other=0).to(tl.float32)
+    gate, up = _clamped(gate, up, limit, LIMITED)
     value = gate * tl.sigmoid(gate) * up
     if QUANTIZE:
         quantized, scale = quantize_row(value)
@@ -38,7 +69,9 @@ def _swiglu_rows(H, OUT, S, HALF, QS, QUANTIZE: tl.constexpr, BLOCK: tl.constexp
 
 
 @triton.jit
-def _swiglu_rows_backward(H, G, OUT, HALF, BLOCK: tl.constexpr):
+def _swiglu_rows_backward(
+    H, G, OUT, HALF, limit, LIMITED: tl.constexpr, BLOCK: tl.constexpr
+):
     # dgate = g * up * silu'(gate), dup = g * silu(gate), stored interleaved
     # like ``h``: the pre-activation gradient the up projection's backward
     # reads, in one pass over ``h`` and ``g`` without splitting ``h``.
@@ -46,13 +79,15 @@ def _swiglu_rows_backward(H, G, OUT, HALF, BLOCK: tl.constexpr):
     col = tl.arange(0, BLOCK)
     mask = col < HALF
     pair = H + row * (2 * HALF) + 2 * col
-    gate = tl.load(pair, mask, other=0).to(tl.float32)
-    up = tl.load(pair + 1, mask, other=0).to(tl.float32)
+    raw_gate = tl.load(pair, mask, other=0).to(tl.float32)
+    raw_up = tl.load(pair + 1, mask, other=0).to(tl.float32)
+    gate, up = _clamped(raw_gate, raw_up, limit, LIMITED)
     g = tl.load(G + row * HALF + col, mask, other=0).to(tl.float32)
     sig = tl.sigmoid(gate)
     silu = gate * sig
     dgate = g * up * (sig + silu * (1.0 - sig))
     dup = g * silu
+    dgate, dup = _passed(dgate, dup, raw_gate, raw_up, limit, LIMITED)
     out = OUT + row * (2 * HALF) + 2 * col
     tl.store(out, dgate.to(OUT.dtype.element_ty), mask)
     tl.store(out + 1, dup.to(OUT.dtype.element_ty), mask)
@@ -60,7 +95,17 @@ def _swiglu_rows_backward(H, G, OUT, HALF, BLOCK: tl.constexpr):
 
 @triton.jit
 def _routed_swiglu_rows_backward(
-    H, R, S, DS, OUT, AP, HALF, WRITE_AP: tl.constexpr, BLOCK: tl.constexpr
+    H,
+    R,
+    S,
+    DS,
+    OUT,
+    AP,
+    HALF,
+    limit,
+    WRITE_AP: tl.constexpr,
+    LIMITED: tl.constexpr,
+    BLOCK: tl.constexpr,
 ):
     # A routed row's output is ``score * y`` with ``y`` linear in ``a``, so
     # with ``r`` the cotangent of the unscaled row (``dy @ W``, any LoRA
@@ -72,8 +117,9 @@ def _routed_swiglu_rows_backward(
     col = tl.arange(0, BLOCK)
     mask = col < HALF
     pair = H + row * (2 * HALF) + 2 * col
-    gate = tl.load(pair, mask, other=0).to(tl.float32)
-    up = tl.load(pair + 1, mask, other=0).to(tl.float32)
+    raw_gate = tl.load(pair, mask, other=0).to(tl.float32)
+    raw_up = tl.load(pair + 1, mask, other=0).to(tl.float32)
+    gate, up = _clamped(raw_gate, raw_up, limit, LIMITED)
     r = tl.load(R + row * HALF + col, mask, other=0).to(tl.float32)
     score = tl.load(S + row).to(tl.float32)
     sig = tl.sigmoid(gate)
@@ -83,6 +129,7 @@ def _routed_swiglu_rows_backward(
     g = r * score
     dgate = g * up * (sig + silu * (1.0 - sig))
     dup = g * silu
+    dgate, dup = _passed(dgate, dup, raw_gate, raw_up, limit, LIMITED)
     out = OUT + row * (2 * HALF) + 2 * col
     tl.store(out, dgate.to(OUT.dtype.element_ty), mask)
     tl.store(out + 1, dup.to(OUT.dtype.element_ty), mask)
@@ -99,9 +146,19 @@ def _check(h):
         raise ValueError("An interleaved pre-activation has an even, nonzero width")
 
 
-def _launch(h, out, scales, quantize):
+def _limit(limit):
+    """``(limit, LIMITED)``: the runtime value and the compiled-in flag."""
+    if limit is None:
+        return 0.0, False
+    if not limit > 0:
+        raise ValueError("a SwiGLU limit must be positive")
+    return float(limit), True
+
+
+def _launch(h, out, scales, quantize, limit):
     rows, doubled = h.shape
     if rows:
+        value, limited = _limit(limit)
         block = triton.next_power_of_2(doubled // 2)
         _swiglu_rows[(rows,)](
             h,
@@ -109,21 +166,24 @@ def _launch(h, out, scales, quantize):
             scales,
             doubled // 2,
             out.stride(0),
+            value,
             quantize,
+            limited,
             block,
             num_warps=warps(block),
         )
 
 
-def swiglu_rows(h):
-    """``silu(gate) * up`` at ``h``'s dtype from the interleaved ``h [rows, 2I]``."""
+def swiglu_rows(h, *, limit=None):
+    """``silu(gate) * up`` at ``h``'s dtype from the interleaved ``h [rows, 2I]``,
+    clamped at ``limit`` when given."""
     _check(h)
     out = torch.empty(h.shape[0], h.shape[1] // 2, dtype=h.dtype, device=h.device)
-    _launch(h, out, out, False)
+    _launch(h, out, out, False, limit)
     return out
 
 
-def swiglu_quantize_rows_fp8(h):
+def swiglu_quantize_rows_fp8(h, *, limit=None):
     """E4M3 rows and FP32 descales of ``silu(gate) * up`` from the interleaved
     ``h [rows, 2I]``, pitched as `quantize_rows_fp8` pitches its rows."""
     _check(h)
@@ -132,11 +192,11 @@ def swiglu_quantize_rows_fp8(h):
     pitch = triton.cdiv(half, 16) * 16
     data = torch.empty((rows, pitch), dtype=torch.float8_e4m3fn, device=h.device)
     scales = torch.empty(rows, dtype=torch.float32, device=h.device)
-    _launch(h, data, scales, True)
+    _launch(h, data, scales, True, limit)
     return data[:, :half], scales
 
 
-def swiglu_rows_backward(grad_a, h):
+def swiglu_rows_backward(grad_a, h, *, limit=None):
     """``dh [rows, 2I]``, interleaved like ``h``, from the activation's
     cotangent ``grad_a [rows, I]`` and the interleaved pre-activation."""
     _check(h)
@@ -147,14 +207,15 @@ def swiglu_rows_backward(grad_a, h):
     source = grad_a.contiguous()
     dh = torch.empty_like(h)
     if rows:
+        value, limited = _limit(limit)
         block = triton.next_power_of_2(half)
         _swiglu_rows_backward[(rows,)](
-            h, source, dh, half, block, num_warps=warps(block)
+            h, source, dh, half, value, limited, block, num_warps=warps(block)
         )
     return dh
 
 
-def routed_swiglu_rows_backward(r, h, score, *, scaled_activation=False):
+def routed_swiglu_rows_backward(r, h, score, *, scaled_activation=False, limit=None):
     """``(dscore, dh, a')`` from the cotangent ``r [rows, I]`` of each routed
     row's unscaled output, the interleaved ``h [rows, 2I]`` and the rows'
     ``score [rows]``: the score gradient ``<r, a>`` in FP32, the interleaved
@@ -176,6 +237,7 @@ def routed_swiglu_rows_backward(r, h, score, *, scaled_activation=False):
         else dh
     )
     if rows:
+        value, limited = _limit(limit)
         block = triton.next_power_of_2(half)
         _routed_swiglu_rows_backward[(rows,)](
             h,
@@ -185,7 +247,9 @@ def routed_swiglu_rows_backward(r, h, score, *, scaled_activation=False):
             dh,
             a_prime,
             half,
+            value,
             scaled_activation,
+            limited,
             block,
             num_warps=warps(block),
         )

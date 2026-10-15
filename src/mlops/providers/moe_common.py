@@ -188,6 +188,7 @@ def forward_routed(
     weight_precision: str = "float32",
     swiglu_variant: str = "triton",
     use_routing_override: bool = True,
+    swiglu_limit: float | None = None,
 ) -> tuple[torch.Tensor, ...]:
     """Return output, auxiliary values, and the complete routed VJP residuals.
 
@@ -235,7 +236,7 @@ def forward_routed(
         order, offsets, slots = sort_assignments(route_ids, experts)
         dispatched = dispatch(h2_flat, order, int(top_k))
         h13 = grouped_mm_forward(dispatched, w13_experts, offsets)
-        activated = swiglu_packed_forward(h13)
+        activated = swiglu_packed_forward(h13, limit=swiglu_limit)
         expert_output = grouped_mm_forward(activated, w2_experts, offsets)
         output = combine(
             expert_output,
@@ -286,6 +287,7 @@ def backward_routed(
     lengths: Sequence[int],
     swiglu_variant: str = "triton",
     weight_grad_dtype: torch.dtype | None = None,
+    swiglu_limit: float | None = None,
     need_router: bool = True,
     need_w13: bool = True,
     need_w2: bool = True,
@@ -307,7 +309,7 @@ def backward_routed(
         grad_output_flat = grad_output.reshape_as(h2_flat).contiguous()
         dispatched = dispatch(h2_flat, order, int(top_k))
         dispatched_grad = dispatch(grad_output_flat, order, int(top_k))
-        activated = swiglu_packed_forward(h13)
+        activated = swiglu_packed_forward(h13, limit=swiglu_limit)
         grad_activated = grouped_mm_dgrad(dispatched_grad, w2_experts, offsets)
         grad_weight_slot = row_dot(grad_activated, activated)
         grad_route_weights = (
@@ -333,6 +335,7 @@ def backward_routed(
             grad_activated,
             h13,
             variant=str(swiglu_variant),
+            limit=swiglu_limit,
         )
         if need_w13:
             grad_w13 = grouped_mm_wgrad(
