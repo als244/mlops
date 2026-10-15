@@ -3,11 +3,17 @@
 import torch
 from torch import nn
 
-from ..kernels.router import routed_logits
 from ..providers.expert_weights import bf16_compute_support, dequantize_expert_weights
 from ..swiglu import swiglu
 from .grouped import grouped_linear
-from .routing import combine_rows, dispatch_rows, layout, routing
+from .routing import (
+    combine_rows,
+    dispatch_rows,
+    layout,
+    routing,
+    routing_logits,
+    statistics,
+)
 
 
 def initialize_factors(module, gate_up, down, config):
@@ -58,6 +64,12 @@ def expert_lora(
     top_k,
     routing_mode,
     scale,
+    router_bias=None,
+    n_group=1,
+    topk_group=1,
+    routed_scaling=1.0,
+    lengths=None,
+    swiglu_limit=None,
     implementation="auto",
     compute_precision=None,
 ):
@@ -67,17 +79,36 @@ def expert_lora(
     [E,R,H], [E,D,R]; router_weight is [E,D]. No dense B@A update or frozen
     base weight gradient is constructed.
 
+    Routing and its statistics are `mlops.moe`'s: ``routing_mode`` a softmax
+    mode, or ``"sigmoid_noaux_tc"`` with the correction ``router_bias``
+    (selection only), ``n_group``/``topk_group`` and ``routed_scaling``, its
+    balance statistic taken per sequence of ``lengths``. ``swiglu_limit``
+    clamps every expert's SwiGLU as `mlops.moe`'s does.
+
     ``implementation`` is ``"auto"`` (SonicMoE's kernels where they apply --
     compute capability 9.x/10.x, bfloat16, the ``quack`` and ``sonicmoe``
     extras -- else the builtin grouped GEMMs), ``"builtin"``, or
     ``"sonicmoe"``, which fails with the reason where it does not apply.
     ``compute_precision`` is `mlops.moe`'s: ``None`` for the base weights'
-    own precision (FP8 for ``QuackFP8Weight`` containers, which a frozen base
-    loaded from an FP8 checkpoint is), ``"bf16"`` or ``"fp8_current"``; the
-    builtin composition dequantizes containers and computes in bf16.
+    own precision (FP8 for ``QuackFP8Weight`` or ``BlockFP8Weight``
+    containers, which a frozen base loaded from an FP8 checkpoint is),
+    ``"bf16"``, ``"fp8_current"`` or ``"fp8_block"``; the builtin composition
+    dequantizes containers and computes in bf16.
     """
     if implementation not in ("auto", "builtin", "sonicmoe"):
         raise ValueError(f"unknown expert LoRA implementation {implementation!r}")
+    if swiglu_limit is not None:
+        swiglu_limit = float(swiglu_limit)
+        if not swiglu_limit > 0:
+            raise ValueError("swiglu_limit must be positive")
+    options = {
+        "router_bias": router_bias,
+        "n_group": n_group,
+        "topk_group": topk_group,
+        "routed_scaling": routed_scaling,
+        "lengths": lengths,
+        "swiglu_limit": swiglu_limit,
+    }
     if implementation != "builtin":
         from ..providers.sonicmoe import lora as sonicmoe_lora
 
@@ -103,6 +134,7 @@ def expert_lora(
                 routing_mode=routing_mode,
                 scale=scale,
                 compute_precision=compute_precision,
+                **options,
             )
 
     refusal = bf16_compute_support(compute_precision, gate_up, down)
@@ -110,20 +142,24 @@ def expert_lora(
         raise ValueError(f"the builtin expert LoRA composition: {refusal}")
     gate_up, down = dequantize_expert_weights(gate_up, down, dtype=hidden.dtype)
     flat = hidden.reshape(-1, hidden.shape[-1])
-    logits = routed_logits(flat, router_weight)
-    weights, ids = routing(logits, top_k, routing_mode)
+    logits = routing_logits(flat, router_weight)
+    weights, ids = routing(
+        logits,
+        top_k,
+        routing_mode,
+        bias=router_bias,
+        n_group=n_group,
+        topk_group=topk_group,
+        routed_scaling=routed_scaling,
+    )
     order, offsets, slots = layout(ids, gate_up.shape[0])
-    counts = (offsets[1:] - offsets[:-1]).long()
-    probabilities = logits.float().softmax(-1)
-    probability_sum = probabilities.sum(0)
-    auxiliary = (
-        gate_up.shape[0]
-        * ((counts.float() / ids.numel()) * probabilities.mean(0)).sum()
+    auxiliary, counts, probability_sum = statistics(
+        logits, ids, offsets, routing_mode=routing_mode, lengths=lengths
     )
     x = dispatch_rows(flat, order, slots)
     h13 = _project(x, gate_up, a13, b13, offsets, scale)
     gate, up = h13.chunk(2, -1)
-    activated = swiglu(gate, up)
+    activated = swiglu(gate, up, limit=swiglu_limit)
     y = _project(activated, down, a2, b2, offsets, scale)
     output = combine_rows(
         y, order, slots, weights, residual.reshape_as(flat).contiguous()

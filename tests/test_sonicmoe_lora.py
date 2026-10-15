@@ -10,7 +10,19 @@ from mlops.lora.experts import expert_lora
 from mlops.providers.sonicmoe import lora as sonicmoe_lora
 
 ROWS, WIDTH, EXPERTS, EXPERT_WIDTH, RANK, TOP_K = 96, 64, 8, 40, 8, 2
-MODES = ("softmax_then_topk", "topk_then_softmax")
+MODES = {
+    "softmax_then_topk": {},
+    "topk_then_softmax": {},
+    # GLM's: sigmoid scores, a correction bias (drawn per case), expert
+    # groups and the routed scaling.
+    "sigmoid_noaux_tc": {"n_group": 2, "topk_group": 1, "routed_scaling": 1.5},
+}
+# GLM's clamped SwiGLU, about 2.5 standard deviations out. The builtin rounds
+# the pre-activation twice (the base and the LoRA term apart), SonicMoE once,
+# so a value within a rounding step of the limit can be clipped on one path
+# only, which moves its gradient by a whole element; this far out such
+# values are rare while a few percent still clip.
+LIMIT = 2.75
 
 
 def _supported() -> bool:
@@ -58,6 +70,18 @@ def _inputs(seed, *, train_base, expert_width=EXPERT_WIDTH):
     return (hidden, residual, router, gate_up, down, a13, b13, a2, b2)
 
 
+def _routing(seed, mode):
+    """The routing options of ``mode``, the sigmoid mode's correction bias
+    drawn from a generator of its own."""
+    options = dict(MODES[mode])
+    if mode == "sigmoid_noaux_tc":
+        generator = torch.Generator(device="cuda").manual_seed(seed + 1000)
+        options["router_bias"] = (
+            torch.randn(EXPERTS, device="cuda", generator=generator) * 0.1
+        )
+    return options
+
+
 def _run(
     implementation,
     seed,
@@ -66,6 +90,8 @@ def _run(
     train_base,
     grad_dtype=None,
     expert_width=EXPERT_WIDTH,
+    lengths=None,
+    swiglu_limit=None,
 ):
     primals = _inputs(seed, train_base=train_base, expert_width=expert_width)
     with weight_gradients_at(grad_dtype):
@@ -75,6 +101,9 @@ def _run(
             routing_mode=mode,
             scale=0.5,
             implementation=implementation,
+            lengths=lengths,
+            swiglu_limit=swiglu_limit,
+            **_routing(seed, mode),
         )
     torch.manual_seed(seed)
     upstream = torch.randn_like(output)
@@ -108,6 +137,70 @@ def test_sonicmoe_expert_lora_matches_the_builtin(mode, train_base, grad_dtype):
     expected = _run("builtin", 3, mode, train_base=train_base, grad_dtype=grad_dtype)
     for value, reference in zip(actual, expected, strict=True):
         _assert_close(value, reference)
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("train_base", [False, True])
+@pytest.mark.parametrize("grad_dtype", [None, torch.float32])
+def test_glm_expert_lora_matches_the_builtin(train_base, grad_dtype):
+    """GLM's routing, two sequences' balance statistics and the clamp."""
+    options = {"lengths": (32, 64), "swiglu_limit": LIMIT, "grad_dtype": grad_dtype}
+    actual = _run("sonicmoe", 9, "sigmoid_noaux_tc", train_base=train_base, **options)
+    expected = _run("builtin", 9, "sigmoid_noaux_tc", train_base=train_base, **options)
+    for value, reference in zip(actual, expected, strict=True):
+        _assert_close(value, reference)
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("implementation", ["builtin", "sonicmoe"])
+def test_zero_factors_are_mlops_moe(implementation):
+    """With zero B factors expert LoRA is `mlops.moe`, GLM's routing, its
+    per-sequence statistics and the clamp included."""
+    import mlops
+
+    options = {
+        **_routing(13, "sigmoid_noaux_tc"),
+        "lengths": (32, 64),
+        "swiglu_limit": LIMIT,
+    }
+
+    def run(lora):
+        primals = _inputs(13, train_base=True)
+        hidden, residual, router, gate_up, down, _a13, b13, _a2, b2 = primals
+        with torch.no_grad():
+            b13.zero_()
+            b2.zero_()
+        common = {"top_k": TOP_K, "routing_mode": "sigmoid_noaux_tc", **options}
+        if lora:
+            outputs = expert_lora(
+                *primals, scale=0.5, implementation=implementation, **common
+            )
+        else:
+            outputs = mlops.moe(hidden, residual, router, gate_up, down, **common)
+        torch.manual_seed(13)
+        upstream = torch.randn_like(outputs[0])
+        loss = (outputs[0].float() * upstream).sum() + 0.3 * outputs[1]
+        bases = (hidden, residual, router, gate_up, down)
+        return (*outputs, *torch.autograd.grad(loss, bases))
+
+    for value, reference in zip(run(True), run(False), strict=True):
+        _assert_close(value, reference)
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("implementation", ["builtin", "sonicmoe"])
+def test_the_limit_changes_the_result(implementation):
+    clamped = _run(
+        implementation, 7, "softmax_then_topk", train_base=True, swiglu_limit=0.75
+    )
+    plain = _run(implementation, 7, "softmax_then_topk", train_base=True)
+    # output and the gradients of the hidden rows and the base weights
+    for index in (0, 4, 7, 8):
+        difference = (clamped[index].float() - plain[index].float()).norm()
+        assert float(difference / plain[index].float().norm()) > 5e-2, index
 
 
 @pytest.mark.gpu
@@ -206,7 +299,15 @@ def _fp8_inputs(seed, *, train_base):
     return (hidden, residual, router, gate_up, down, *factors)
 
 
-def _run_fp8(implementation, seed, mode, *, train_base, compute_precision=None):
+def _run_fp8(
+    implementation,
+    seed,
+    mode,
+    *,
+    train_base,
+    compute_precision=None,
+    swiglu_limit=None,
+):
     primals = _fp8_inputs(seed, train_base=train_base)
     output, aux, counts, probability_sum = expert_lora(
         *primals,
@@ -215,6 +316,8 @@ def _run_fp8(implementation, seed, mode, *, train_base, compute_precision=None):
         scale=0.5,
         implementation=implementation,
         compute_precision=compute_precision,
+        swiglu_limit=swiglu_limit,
+        **_routing(seed, mode),
     )
     torch.manual_seed(seed)
     upstream = torch.randn_like(output)
@@ -265,6 +368,36 @@ def test_an_fp8_base_matches_the_bf16_base(mode, train_base):
         assert grad_gate_up.dtype is grad_down.dtype is torch.bfloat16
         assert grad_gate_up.shape == (EXPERTS, 2 * FP8_EXPERT_WIDTH, WIDTH)
         assert grad_down.shape == (EXPERTS, WIDTH, FP8_EXPERT_WIDTH)
+
+
+@pytest.mark.gpu
+@fp8_hopper
+@pytest.mark.parametrize("train_base", [False, True])
+def test_glm_on_an_fp8_base(train_base):
+    """The clamp reaches the FP8 kernels. FP8 moves pre-activations by a few
+    percent, enough to cross a limit the bf16 run did not, so the comparison
+    with bf16 uses a limit far out; `test_sonicmoe_swiglu_limit.py` checks
+    the FP8 epilogues' clamp on shared pre-activations."""
+    actual = _run_fp8(
+        "sonicmoe", 5, "sigmoid_noaux_tc", train_base=train_base, swiglu_limit=4.0
+    )
+    expected = _run(
+        "builtin",
+        5,
+        "sigmoid_noaux_tc",
+        train_base=train_base,
+        expert_width=FP8_EXPERT_WIDTH,
+        swiglu_limit=4.0,
+    )
+    for value, reference in zip(actual, expected, strict=True):
+        _assert_close(value, reference, **FP8_BOUNDS)
+    clamped = _run_fp8(
+        "sonicmoe", 5, "sigmoid_noaux_tc", train_base=train_base, swiglu_limit=0.75
+    )
+    plain = _run_fp8("sonicmoe", 5, "sigmoid_noaux_tc", train_base=train_base)
+    for index in (0, 4):  # output and the hidden rows' gradient
+        difference = (clamped[index].float() - plain[index].float()).norm()
+        assert float(difference / plain[index].float().norm()) > 5e-2, index
 
 
 @pytest.mark.gpu
