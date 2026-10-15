@@ -7,3 +7,5 @@ build/
 dist/
 /tests/expert_parallel/results/
 /docs/plans/
+/benchmarks/
+/experimental/
