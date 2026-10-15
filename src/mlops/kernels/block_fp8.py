@@ -63,11 +63,16 @@ if triton is not None:
 def quantize_blocks(weight):
     """``(data, scale)`` of ``weight [E, out, in]`` (bf16 or fp32): E4M3 values
     and the FP32 scale of each 128x128 block, ``amax / 448`` (at least
-    1e-12); on CUDA by a kernel, elsewhere by the same equations."""
+    1e-12); by a kernel on CUDA from compute capability 8.9, where Triton has
+    E4M3, elsewhere by the same equations."""
     if weight.ndim != 3:
         raise ValueError("Expected an [experts, out, in] weight")
     experts, out, inner = weight.shape
-    if weight.is_cuda and triton is not None:
+    if (
+        weight.is_cuda
+        and triton is not None
+        and torch.cuda.get_device_capability(weight.device) >= (8, 9)
+    ):
         source = weight.contiguous()
         data = torch.empty(
             source.shape, dtype=torch.float8_e4m3fn, device=source.device
