@@ -1,7 +1,9 @@
 """FP8 expert weight containers as the bf16 implementations meet them.
 
 `QuackFP8Weight` (``expert_parallel/quack/parameters/fp8.py``) holds an
-expert weight's E4M3 rows and transpose with their descales. Implementations
+expert weight's E4M3 rows and transpose with their descales; `BlockFP8Weight`
+(``mlops/block_fp8.py``) its E4M3 values once with a scale per 128x128 block.
+Implementations
 that compute in the weights' dtype take such weights only when asked for
 ``compute_precision="bf16"``, dequantizing them per call; by default FP8
 weights mean FP8 math, which only the SonicMoE implementations serve.
@@ -10,11 +12,17 @@ weights mean FP8 math, which only the SonicMoE implementations serve.
 from __future__ import annotations
 
 
-def fp8_expert_weights(*weights) -> bool:
-    """Whether any expert weight is an FP8 container (`QuackFP8Weight`)."""
+def _containers():
+    from ..block_fp8 import BlockFP8Weight
     from ..expert_parallel.quack.parameters.fp8 import QuackFP8Weight
 
-    return any(isinstance(weight, QuackFP8Weight) for weight in weights)
+    return QuackFP8Weight, BlockFP8Weight
+
+
+def fp8_expert_weights(*weights) -> bool:
+    """Whether any expert weight is an FP8 container (`QuackFP8Weight` or
+    `BlockFP8Weight`)."""
+    return any(isinstance(weight, _containers()) for weight in weights)
 
 
 def bf16_compute_support(compute_precision, w13_experts, w2_experts):
@@ -38,9 +46,7 @@ def bf16_compute_support(compute_precision, w13_experts, w2_experts):
 def dequantize_expert_weights(w13_experts, w2_experts, *, dtype):
     """The expert weights as plain tensors at ``dtype``: FP8 containers
     dequantized (straight through for their gradients), others unchanged."""
-    from ..expert_parallel.quack.parameters.fp8 import QuackFP8Weight
-
     return tuple(
-        weight.dequantize(dtype=dtype) if isinstance(weight, QuackFP8Weight) else weight
+        weight.dequantize(dtype=dtype) if isinstance(weight, _containers()) else weight
         for weight in (w13_experts, w2_experts)
     )
