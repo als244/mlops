@@ -181,11 +181,18 @@ def _decode(
 
 
 def materialize(components, spec, dtype):
-    """Decode one matrix; execution keeps this workspace within one expert."""
+    """Decode one matrix; execution keeps this workspace within one expert.
+
+    On CUDA a kernel decodes it, except E4M3 parts (FP8 data, NVFP4 scales)
+    below compute capability 8.9, where Triton has no E4M3 type: those, like
+    every other device, take the same equations in PyTorch."""
     if spec.format in DENSE:
         return components[0].to(dtype)
     data, scale, *extra = components
-    if data.is_cuda:
+    if data.is_cuda and (
+        torch.cuda.get_device_capability(data.device) >= (8, 9)
+        or all(part.dtype != torch.float8_e4m3fn for part in components)
+    ):
         out = torch.empty(spec.rows, spec.cols, device=data.device, dtype=dtype)
         _decode[(triton.cdiv(out.numel(), 512),)](
             data,
