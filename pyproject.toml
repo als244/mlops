@@ -19,6 +19,10 @@ fa3 = [
   "flash-attn-3 @ https://download.pytorch.org/whl/cu130/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
   "flash-attn-3 @ https://download.pytorch.org/whl/cu130/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_34_aarch64.whl ; sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
+# cuDNN Frontend's CuTe DSL kernels: its DeepSeek-sparse-attention backward is
+# the Hopper sparse latent attention provider's backward. The pin matches the
+# Transformer Engine step's; the DSL it needs comes with Quack.
+cudnn = ["nvidia-cudnn-frontend==1.30.0"]
 # KDA calls tested private FLA kernel interfaces.
 fla = ["flash-linear-attention==0.5.2", "fla-core==0.5.2"]
 # TileLang backs fla's gated-delta-rule backward on Hopper (fla enables it by
@@ -34,7 +38,7 @@ sonicmoe = [
   "mlops[quack]",
   "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@7396f3e604827d8186c2e16e64b28ee33d3defd0 ; sys_platform == 'linux'",
 ]
-providers = ["mlops[fa3,fla,quack,sonicmoe,tilelang]"]
+providers = ["mlops[cudnn,fa3,fla,quack,sonicmoe,tilelang]"]
 dev = ["pytest", "ruff"]
 # MoonEP is installed separately by scripts/setup_expert_parallel.sh: its
 # upstream metadata pins an older Cutlass DSL than the supported Quack stack.
