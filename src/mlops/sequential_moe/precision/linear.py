@@ -43,14 +43,23 @@ class FrozenLinear(nn.Module):
             nn.Parameter(value, requires_grad=False) for value in parts
         )
 
+    def materialize_weight(self):
+        """Decode temporary compute storage for projection-absorption callers.
+
+        The decoded tensor is an ordinary traced operation result; no dense
+        copy is registered or retained as module state.
+        """
+        return decode_weight(
+            list(self.components), self.spec.encode(), DENSE[self.gemm_precision]
+        )
+
     def forward(self, x):
         dtype = DENSE[self.gemm_precision]
         if x.dtype != dtype:
             raise ValueError(
                 f"Expected {dtype} activations for {self.gemm_precision} GEMMs"
             )
-        weight = decode_weight(list(self.components), self.spec.encode(), dtype)
-        return F.linear(x, weight)
+        return F.linear(x, self.materialize_weight())
 
 
 class FrozenLoRALinear(FrozenLinear):

@@ -11,11 +11,13 @@ from ...dispatch.registry import Implementation, SupportResult, register_impleme
 from ...dsa import _validate_sparse_latent
 
 
-def _physical(q, kv, indices):
+def _physical(q, kv, indices, q_rope=None, k_rope=None):
     # The reused upstream kernels have separate value and RoPE-tail operands.
     # A zero tail preserves the non-positional latent attention math; it is temporary kernel workspace.
-    query = F.pad(q, (0, 64)).unsqueeze(0).contiguous()
-    values = F.pad(kv, (0, 64)).unsqueeze(0).unsqueeze(2).contiguous()
+    query = F.pad(q, (0, 64)) if q_rope is None else torch.cat((q, q_rope), -1)
+    values = F.pad(kv, (0, 64)) if k_rope is None else torch.cat((kv, k_rope), -1)
+    query = query.unsqueeze(0).contiguous()
+    values = values.unsqueeze(0).unsqueeze(2).contiguous()
     ids = F.pad(indices, (0, (-indices.shape[-1]) % 32), value=-1)
     ids = torch.where(ids >= 0, ids, q.shape[0]).to(torch.int32)
     return query, values, ids[None, :, None, :].contiguous()
@@ -25,9 +27,13 @@ def _physical(q, kv, indices):
 def _forward(
     q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, scale: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    return _run_forward(q, kv, indices, scale)
+
+
+def _run_forward(q, kv, indices, scale, q_rope=None, k_rope=None):
     from ...kernels.sparse_mla.forward import sparse_mla_fwd
 
-    query, values, ids = _physical(q, kv, indices)
+    query, values, ids = _physical(q, kv, indices, q_rope, k_rope)
     output, lse = sparse_mla_fwd(
         query,
         values,
@@ -59,9 +65,14 @@ def _backward(
     lse: torch.Tensor,
     scale: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    dq, dkv = _run_backward(dy, q, kv, indices, output, lse, scale)
+    return dq[..., : q.shape[-1]].contiguous(), dkv[..., : kv.shape[-1]].contiguous()
+
+
+def _run_backward(dy, q, kv, indices, output, lse, scale, q_rope=None, k_rope=None):
     from ...kernels.sparse_mla.backward import bwd, postprocess, preprocess
 
-    query, values, ids = _physical(q, kv, indices)
+    query, values, ids = _physical(q, kv, indices, q_rope, k_rope)
     delta = preprocess(output.unsqueeze(0), dy.contiguous().unsqueeze(0))
     # Contributions from different queries/heads share KV; accumulate in FP32.
     dkv = torch.zeros_like(values, dtype=torch.float32)
@@ -81,9 +92,7 @@ def _backward(
         head_tile=16,
     )
     dkv = postprocess(dkv, q.shape[-1], 64)
-    return dq[0, :, :, : q.shape[-1]].contiguous(), dkv[
-        0, :, 0, : kv.shape[-1]
-    ].contiguous()
+    return dq[0], dkv[0, :, 0]
 
 
 @_backward.register_fake
@@ -105,7 +114,9 @@ def _autograd(ctx, dy, _):
 _forward.register_autograd(_autograd, setup_context=_setup)
 
 
-def _supports(q, kv, indices, *, scale, surface, **_kwargs):
+def _supports(q, kv, indices, *, scale, surface, q_rope=None, k_rope=None, **_kwargs):
+    if q_rope is not None or k_rope is not None:
+        return SupportResult.no("Use the positional-tail implementation for RoPE")
     try:
         _validate_sparse_latent(q, kv, indices)
     except ValueError as error:

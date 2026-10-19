@@ -46,3 +46,6 @@ and explicit sequence metadata. `explicit.sparse_latent_attention.forward`
 returns output and log-sum-exp; its backward combines key and value contributions
 into one gradient for the shared latent bank. These paths share the ordinary
 registry and artifact bootstrap. See [the attention guide](ATTENTION.md).
+The sparse latent operation also accepts matching `q_rope`/`k_rope` tails in
+forward and backward. Its explicit backward then returns four gradients:
+query, combined latent KV, positional query, and positional key.

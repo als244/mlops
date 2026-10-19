@@ -93,6 +93,19 @@ def test_every_registered_operator_has_a_flop_formula():
     assert not missing, missing
 
 
+def test_sparse_positional_tails_count_scores_and_gradients_but_not_values(fake):
+    q, kv = _tensor(47, 16, 64), _tensor(47, 64)
+    qp, kp = _tensor(47, 16, 64), _tensor(47, 64)
+    ids, lse = _i32(47, 33), _f32(47, 16)
+    pairs = 47 * 16 * 33
+    assert _count(
+        ops.sparse_latent_rope_tilelang_fwd, q, kv, qp, kp, ids, 0.125
+    ) == pairs * (4 * 64 + 2 * 64)
+    assert _count(
+        ops.sparse_latent_rope_tilelang_bwd, q, q, kv, qp, kp, ids, q, lse, 0.125
+    ) == pairs * (10 * 64 + 6 * 64)
+
+
 def test_every_opaque_operation_has_a_canonical_estimator():
     estimators = operation_estimators()
     assert OPAQUE_OPERATIONS <= set(estimators)

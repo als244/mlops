@@ -149,13 +149,20 @@ selected indices, padded with -1.
 
 ## Sparse attention and MLA
 
-`sparse_latent_attention(q, kv, indices, *, scale)` expects
+`sparse_latent_attention(q, kv, indices, *, scale, q_rope=None, k_rope=None)` expects
 BF16 `q[T,H,L]`, shared `kv[T,L]`, and integer `indices[T,K]`.
 Heads must be divisible by 16; supported latent widths are 64/128/256/512.
 Each row must contain at least one valid key. Valid indices must be unique,
 causal, and confined to the query's sequence; padding is -1. The indexer
 provides these content guarantees. Static shape/dtype errors fail at the
 entrypoint; inspecting GPU index contents would require additional validation.
+
+Supplying both already-rotated positional tails, `q_rope[T,H,64]` and
+`k_rope[T,64]`, adds their dot product to the scores before applying `scale`.
+They must share Q's BF16 dtype and device. Values and outputs keep latent width
+L. Autograd returns gradients for Q, the combined latent KV, and both positional
+tails. This variant uses `builtin.sparse_latent_attention.rope.tilelang` and the
+same selected-key constraints; the caller owns RoPE angles and packed positions.
 
 `sparse_mla(query, latent, key_projection, value_projection, indices,
 *, scale)` composes MLA projection absorption with the sparse core. Projections remain

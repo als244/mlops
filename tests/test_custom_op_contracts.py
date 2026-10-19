@@ -57,11 +57,13 @@ PACKAGE_ROOT = Path(mlops.__file__).resolve().parent
 
 kda = importlib.import_module("mlops.providers.fla.kda")
 sparse_latent = importlib.import_module("mlops.providers.builtin.sparse_latent")
+sparse_latent_rope = importlib.import_module("mlops.providers.builtin.sparse_latent_rope")
 pooled_indexer = importlib.import_module("mlops.providers.builtin.pooled_indexer")
 
 FORWARD_OPERATORS = {
     "kimi_delta_attention_fla_fwd": kda._forward,
     "sparse_latent_attention_tilelang_fwd": sparse_latent._forward,
+    "sparse_latent_rope_tilelang_fwd": sparse_latent_rope._forward,
     "pooled_topk_builtin_triton": pooled_indexer._select,
     "lora_grouped_linear_fwd": lora_grouped._forward,
     "lora_sonicmoe_up_fwd": sonicmoe_lora._up_forward,
@@ -101,6 +103,7 @@ FORWARD_OPERATORS = {
 BACKWARD_OPERATORS = {
     "kimi_delta_attention_fla_bwd",
     "sparse_latent_attention_tilelang_bwd",
+    "sparse_latent_rope_tilelang_bwd",
     "lora_grouped_linear_bwd",
     "lora_sonicmoe_up_bwd",
     "lora_sonicmoe_down_bwd",

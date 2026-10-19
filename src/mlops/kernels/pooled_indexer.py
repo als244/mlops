@@ -225,6 +225,10 @@ def _pooled_keys(key, gates, position_bias, start, n_pools):
     """Pool each complete group of keys under its gated softmax, in the key dtype."""
     pool, width = position_bias.shape
     count = n_pools * pool
+    if pool == 1:
+        # A singleton's normalized weight is exactly one. This is ordinary
+        # causal token selection, including positional GLM-5.3 indexers.
+        return key[start : start + count]
     logits = (
         gates[start : start + count].reshape(n_pools, pool, width).float()
         + position_bias.float()

@@ -37,6 +37,7 @@ _CATALOG = (
     "mlops.providers.fla.hybrid",
     "mlops.providers.fla.kda",
     "mlops.providers.builtin.sparse_latent",
+    "mlops.providers.builtin.sparse_latent_rope",
     "mlops.providers.builtin.pooled_indexer",
     "mlops.providers.native_torch.hybrid",
     "mlops.providers.builtin.linear_mixer",
