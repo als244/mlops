@@ -14,6 +14,12 @@
       "url": "https://raw.githubusercontent.com/tile-ai/tilelang/194c1b897aa5269e9a89d44c88efdf578a3df620/LICENSE",
       "sha256": "f70e5cdc24c3797af741930440086f9a0ad36930b05a3dfc25b420936dc2cfa1",
       "bytes": 1283
+    },
+    "tilelang/sparse_mla_fwd_pipelined.py": {
+      "url": "https://raw.githubusercontent.com/tile-ai/tilelang/194c1b897aa5269e9a89d44c88efdf578a3df620/examples/deepseek_v32/sparse_mla_fwd_pipelined.py",
+      "sha256": "0dbbb27eb6f4202847b855a2c65f1be8a3d0cbfb036e8b7a492dfb175f7f7b5c",
+      "bytes": 17501,
+      "local_changes": "masked rows gather row 0; LSE stored; zero tail width accepted (marked PATCH in forward_pipelined.py)"
     }
   }
 }
