@@ -18,7 +18,8 @@ Create a complete mlops development environment.  By default the script
 creates .venv with Python 3.12 and automatically selects the installed GPU's
 PyTorch backend.  --python installs into an existing virtual or Conda
 environment instead.  Every optional implementation provider is installed:
-FlashAttention-3, flash-linear-attention, Quack, SonicMoE, and tilelang.
+cuDNN Frontend, FlashAttention-3, flash-linear-attention, Quack, SonicMoE,
+and tilelang.
 FlashAttention-3 is installed whatever the local GPU, and mlops activates it
 automatically on Hopper GPUs; Quack and SonicMoE serve Hopper and Blackwell.  FlashMLA's
 Hopper sparse-attention forward is built from source at a pinned commit by
@@ -150,6 +151,7 @@ print(f"GPU: {torch.cuda.get_device_name(torch.cuda.current_device())}")
 import mlops  # noqa: F401  -- registers every provider adapter
 
 for module_name, package_name in (
+    ("cudnn.deepseek_sparse_attention", "nvidia-cudnn-frontend"),
     ("fla", "flash-linear-attention"),
     ("quack", "quack-kernels"),
     ("sonicmoe", "sonic-moe"),
