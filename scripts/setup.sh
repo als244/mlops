@@ -7,11 +7,12 @@ readonly default_environment="${project_root}/.venv"
 python_executable=""
 torch_backend="auto"
 expert_parallel=""
+flashmla=1
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/setup.sh [--python PATH] [--torch-backend BACKEND]
-                          [--expert-parallel quack|te|both]
+                          [--expert-parallel quack|te|both] [--no-flashmla]
 
 Create a complete mlops development environment.  By default the script
 creates .venv with Python 3.12 and automatically selects the installed GPU's
@@ -19,7 +20,11 @@ PyTorch backend.  --python installs into an existing virtual or Conda
 environment instead.  Every optional implementation provider is installed:
 FlashAttention-3, flash-linear-attention, Quack, SonicMoE, and tilelang.
 FlashAttention-3 is installed whatever the local GPU, and mlops activates it
-automatically on Hopper GPUs; Quack and SonicMoE serve Hopper and Blackwell.  --expert-parallel also installs
+automatically on Hopper GPUs; Quack and SonicMoE serve Hopper and Blackwell.  FlashMLA's
+Hopper sparse-attention forward is built from source at a pinned commit by
+scripts/setup_flashmla.sh (it has no wheel); mlops' Hopper sparse latent
+attention provider uses it with cuDNN Frontend's backward.  --no-flashmla skips
+that build.  --expert-parallel also installs
 the optional expert-parallel backends -- Quack, Transformer Engine, or both,
 each with MoonEP -- through scripts/setup_expert_parallel.sh, which also adds
 them to an existing environment; see docs/EXPERT_PARALLEL.md for their
@@ -46,6 +51,10 @@ while (($#)); do
         *) echo "--expert-parallel must be quack, te, or both" >&2; exit 2 ;;
       esac
       shift 2
+      ;;
+    --no-flashmla)
+      flashmla=0
+      shift
       ;;
     --help|-h)
       usage
@@ -87,30 +96,37 @@ if [[ ! -x "${python_executable}" ]]; then
   exit 1
 fi
 
-echo "[1/4] Installing PyTorch 2.13 with backend '${torch_backend}'"
+echo "[1/5] Installing PyTorch 2.13 with backend '${torch_backend}'"
 "${uv_executable}" pip install \
   --python "${python_executable}" \
   --torch-backend "${torch_backend}" \
   "torch>=2.13,<2.14"
 
-echo "[2/4] Installing mlops with every implementation provider"
+echo "[2/5] Installing mlops with every implementation provider"
 "${uv_executable}" pip install \
   --python "${python_executable}" \
   --torch-backend "${torch_backend}" \
   --editable "${project_root}[providers,dev]"
 
+if [[ "${flashmla}" == 1 ]]; then
+  echo "[3/5] Building FlashMLA's Hopper sparse-attention forward"
+  "${project_root}/scripts/setup_flashmla.sh" --python "${python_executable}"
+else
+  echo "[3/5] Skipping FlashMLA; mlops' Hopper sparse attention then keeps its TileLang forward"
+fi
+
 if [[ -n "${expert_parallel}" ]]; then
-  echo "[3/4] Installing the '${expert_parallel}' expert-parallel backends"
+  echo "[4/5] Installing the '${expert_parallel}' expert-parallel backends"
   # Last of the installs: installing torch restores the cuBLAS its wheel pins,
   # and Transformer Engine needs the newer one this step puts back.
   "${project_root}/scripts/setup_expert_parallel.sh" \
     --python "${python_executable}" \
     --backend "${expert_parallel}"
 else
-  echo "[3/4] Skipping the expert-parallel backends; --expert-parallel adds them"
+  echo "[4/5] Skipping the expert-parallel backends; --expert-parallel adds them"
 fi
 
-echo "[4/4] Verifying PyTorch, the accelerator, and the providers"
+echo "[5/5] Verifying PyTorch, the accelerator, and the providers"
 "${python_executable}" - <<'PY'
 from importlib import import_module
 from importlib.metadata import version
@@ -152,6 +168,15 @@ except ImportError as error:
     print(f"flash-attn-3: not loadable beside this torch, so unused ({error})")
 else:
     print(f"flash-attn-3: {version('flash-attn-3')}")
+
+# FlashMLA is built by scripts/setup_flashmla.sh; without it the Hopper sparse
+# latent attention provider keeps its TileLang forward.
+try:
+    import_module("flash_mla.cuda")
+except ImportError as error:
+    print(f"flash-mla: not installed, so the TileLang sparse forward is used ({error})")
+else:
+    print("flash-mla: installed (Hopper sparse-attention forward)")
 
 PY
 
