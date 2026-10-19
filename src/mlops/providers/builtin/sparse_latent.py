@@ -10,15 +10,32 @@ from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...dsa import _validate_sparse_latent
 
+# Hopper (sm90) tiles, chosen by docs/plans/sparse_attention_1019 measurements.
+FWD_HEAD_TILE = 64
+FWD_BLOCK = 64
+FWD_THREADS = 256
+BWD_HEAD_TILE = 64
+BWD_BLOCK = 32
 
-def _physical(q, kv, indices, q_rope=None, k_rope=None):
+
+def _tiles(device):
+    """Kernel tiles by architecture: upstream's Hopper tiles on sm90, the SM120 tiles elsewhere."""
+    if torch.cuda.get_device_capability(device) == (9, 0):
+        return dict(block_I=FWD_BLOCK, threads=FWD_THREADS, head_tile=FWD_HEAD_TILE,
+                    bwd_block=BWD_BLOCK, bwd_head_tile=BWD_HEAD_TILE)
+    return dict(block_I=32, threads=128, head_tile=16, bwd_block=32, bwd_head_tile=16)
+
+
+def _physical(q, kv, indices, q_rope=None, k_rope=None, block=32):
     # The reused upstream kernels have separate value and RoPE-tail operands.
     # A zero tail preserves the non-positional latent attention math; it is temporary kernel workspace.
     query = F.pad(q, (0, 64)) if q_rope is None else torch.cat((q, q_rope), -1)
     values = F.pad(kv, (0, 64)) if k_rope is None else torch.cat((kv, k_rope), -1)
+    # One zero row past the sequence makes the sentinel index below an in-bounds gather.
+    values = F.pad(values, (0, 0, 0, 1))
     query = query.unsqueeze(0).contiguous()
     values = values.unsqueeze(0).unsqueeze(2).contiguous()
-    ids = F.pad(indices, (0, (-indices.shape[-1]) % 32), value=-1)
+    ids = F.pad(indices, (0, (-indices.shape[-1]) % block), value=-1)
     ids = torch.where(ids >= 0, ids, q.shape[0]).to(torch.int32)
     return query, values, ids[None, :, None, :].contiguous()
 
@@ -33,7 +50,8 @@ def _forward(
 def _run_forward(q, kv, indices, scale, q_rope=None, k_rope=None):
     from ...kernels.sparse_mla.forward import sparse_mla_fwd
 
-    query, values, ids = _physical(q, kv, indices, q_rope, k_rope)
+    tiles = _tiles(q.device)
+    query, values, ids = _physical(q, kv, indices, q_rope, k_rope, block=tiles["block_I"])
     output, lse = sparse_mla_fwd(
         query,
         values,
@@ -43,9 +61,9 @@ def _run_forward(q, kv, indices, scale, q_rope=None, k_rope=None):
         64,
         ids.shape[-1],
         sm_scale=scale,
-        block_I=32,
-        threads=128,
-        head_tile=16,
+        block_I=tiles["block_I"],
+        threads=tiles["threads"],
+        head_tile=tiles["head_tile"],
     )
     return output.squeeze(0), lse.squeeze(0)
 
@@ -72,7 +90,8 @@ def _backward(
 def _run_backward(dy, q, kv, indices, output, lse, scale, q_rope=None, k_rope=None):
     from ...kernels.sparse_mla.backward import bwd, postprocess, preprocess
 
-    query, values, ids = _physical(q, kv, indices, q_rope, k_rope)
+    tiles = _tiles(q.device)
+    query, values, ids = _physical(q, kv, indices, q_rope, k_rope, block=tiles["bwd_block"])
     delta = preprocess(output.unsqueeze(0), dy.contiguous().unsqueeze(0))
     # Contributions from different queries/heads share KV; accumulate in FP32.
     dkv = torch.zeros_like(values, dtype=torch.float32)
@@ -89,10 +108,11 @@ def _run_backward(dy, q, kv, indices, output, lse, scale, q_rope=None, k_rope=No
         64,
         ids.shape[-1],
         sm_scale=scale,
-        head_tile=16,
+        head_tile=tiles["bwd_head_tile"],
+        block_size=tiles["bwd_block"],
     )
     dkv = postprocess(dkv, q.shape[-1], 64)
-    return dq[0], dkv[0, :, 0]
+    return dq[0], dkv[0, : q.shape[0], 0]
 
 
 @_backward.register_fake
