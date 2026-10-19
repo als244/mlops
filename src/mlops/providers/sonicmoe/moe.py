@@ -358,7 +358,7 @@ def down_backward(
             cu_seqlens_k=offsets,
             A_idx=gather,
             batch_idx_permute=None,
-            dynamic_scheduler=False,
+            dynamic_scheduler=True,
         )
     return dh, ds.view(rows, top_k).to(route_weights.dtype), dw2
 
@@ -411,7 +411,7 @@ def up_backward(
             cu_seqlens_k=offsets,
             A_idx=gather,
             batch_idx_permute=None,
-            dynamic_scheduler=False,
+            dynamic_scheduler=True,
             concat_layout=("out",),
         )
     grad_h2 = torch.empty_like(h2_flat)
@@ -973,7 +973,8 @@ def _autograd_backward(
     _grad_reverse,
     _grad_h,
 ):
-    residuals, components = ctx.saved_tensors[:12], ctx.saved_tensors[12:]
+    saved_tensors = ctx.saved_tensors
+    residuals, components = saved_tensors[:12], saved_tensors[12:]
     h2, router_weight = residuals[:2]
     if grad_aux is None:
         grad_aux = torch.zeros((), dtype=torch.float32, device=h2.device)

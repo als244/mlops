@@ -257,3 +257,33 @@ def test_supports_declines_elsewhere(monkeypatch):
         cuda[4][:, :60].contiguous(),
     )
     assert "multiples of 8" in sonicmoe_moe.supports(*narrow, **options).reason
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("implementation", [COMPOSED, SINGLE])
+@pytest.mark.parametrize("grad_dtype", [None, torch.float32])
+def test_concentrated_routes_leave_empty_expert_gradients_zero(
+    monkeypatch, implementation, grad_dtype
+):
+    original = _inputs
+
+    def concentrated(*args, **kwargs):
+        primals, options = original(*args, **kwargs)
+        with torch.no_grad():
+            primals[0].fill_(1)
+            primals[2].zero_()
+            # Distinct scores give every token the same two experts.
+            primals[2][:, 0] = torch.linspace(1, -1, EXPERTS, device="cuda")
+        return primals, options
+
+    monkeypatch.setitem(globals(), "_inputs", concentrated)
+    actual = _run(implementation, 29, "softmax_then_topk", grad_dtype=grad_dtype)
+    expected = _run(BUILTIN, 29, "softmax_then_topk", grad_dtype=grad_dtype)
+    for value, reference in zip(actual, expected, strict=True):
+        _assert_close(value, reference)
+    counts = actual[2].flatten()
+    assert int(torch.count_nonzero(counts)) == TOP_K
+    assert int(counts.sum()) == ROWS * TOP_K
+    for gradient in actual[-2:]:
+        assert int(torch.count_nonzero(gradient[counts == 0])) == 0

@@ -531,7 +531,10 @@ def _prepare_autograd_backward(
     _grad_slots,
     grad_h13,
 ):
-    h2, router_weight, w13_experts, _logits, route_weights, *_ = ctx.saved_tensors
+    # Non-reentrant activation checkpointing releases saved tensors on unpack.
+    # Retain this tuple for the kernel call instead of unpacking it twice.
+    saved_tensors = ctx.saved_tensors
+    h2, router_weight, w13_experts, _logits, route_weights, *_ = saved_tensors
     if grad_aux is None:
         grad_aux = torch.zeros((), dtype=torch.float32, device=h2.device)
     if grad_probability_sum is None:
@@ -553,7 +556,7 @@ def _prepare_autograd_backward(
         grad_probability_sum,
         grad_route_weights,
         grad_h13,
-        *ctx.saved_tensors,
+        *saved_tensors,
         ctx.top_k,
         ctx.routing_mode,
         ctx.lengths,

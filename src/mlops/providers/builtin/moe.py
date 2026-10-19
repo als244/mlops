@@ -435,7 +435,8 @@ def _autograd_backward(
     _grad_slots,
     _grad_h13,
 ):
-    h2, router_weight = ctx.saved_tensors[:2]
+    saved_tensors = ctx.saved_tensors
+    h2, router_weight = saved_tensors[:2]
     if grad_aux is None:
         grad_aux = torch.zeros((), dtype=torch.float32, device=h2.device)
     if grad_probability_sum is None:
@@ -448,7 +449,7 @@ def _autograd_backward(
         grad_output,
         grad_aux,
         grad_probability_sum,
-        *ctx.saved_tensors,
+        *saved_tensors,
         ctx.top_k,
         ctx.routing_mode,
         ctx.lengths,
