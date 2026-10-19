@@ -512,7 +512,8 @@ def _prepare_autograd_backward(
     _grad_reverse,
     grad_h,
 ):
-    residuals, components = ctx.saved_tensors[:9], ctx.saved_tensors[9:]
+    saved_tensors = ctx.saved_tensors
+    residuals, components = saved_tensors[:9], saved_tensors[9:]
     h2, router_weight, w13_experts, _logits, route_weights, *_ = residuals
     if grad_aux is None:
         grad_aux = torch.zeros((), dtype=torch.float32, device=h2.device)
@@ -710,7 +711,8 @@ def _finish_context(ctx, inputs, output):
 
 
 def _finish_autograd_backward(ctx, grad_output):
-    residuals, components = ctx.saved_tensors[:6], ctx.saved_tensors[6:]
+    saved_tensors = ctx.saved_tensors
+    residuals, components = saved_tensors[:6], saved_tensors[6:]
     # Inputs: h, w2_experts, route_weights, offsets, gather, scatter, reverse, residual, ...
     needs = ctx.needs_input_grad
     grad_h, grad_w2, grad_route_weights, grad_residual = _finish_backward_op(
