@@ -61,9 +61,31 @@ def _validate_sparse_latent(q, kv, indices):
         raise ValueError("Sparse attention inputs must share one CUDA device")
 
 
-def sparse_latent_attention(q, kv, indices, *, scale):
-    """Selected attention with one latent KV tensor shared across query heads."""
+def _validate_sparse_latent_rope(q, kv, indices, q_rope, k_rope):
     _validate_sparse_latent(q, kv, indices)
+    if q_rope is None or k_rope is None:
+        raise ValueError("Both Q and K positional tails are required")
+    if q_rope.shape != (*q.shape[:2], 64) or k_rope.shape != (q.shape[0], 64):
+        raise ValueError("Expected positional Q [tokens, heads, 64] and K [tokens, 64]")
+    if any(t.dtype != q.dtype or t.device != q.device for t in (q_rope, k_rope)):
+        raise ValueError("Positional tails must share Q's dtype and device")
+
+
+def _positional_arguments(q, kv, indices, q_rope, k_rope):
+    if q_rope is None and k_rope is None:
+        return {}
+    _validate_sparse_latent_rope(q, kv, indices, q_rope, k_rope)
+    return {"q_rope": q_rope, "k_rope": k_rope}
+
+
+def sparse_latent_attention(q, kv, indices, *, scale, q_rope=None, k_rope=None):
+    """Selected attention with a shared latent KV bank and optional RoPE tails.
+
+    Already-rotated tails contribute only to attention scores. Values and the
+    output retain the latent width. Autograd includes both positional gradients.
+    """
+    _validate_sparse_latent(q, kv, indices)
+    positional = _positional_arguments(q, kv, indices, q_rope, k_rope)
     implementation = resolve_implementation(
         "sparse_latent_attention",
         q,
@@ -71,8 +93,9 @@ def sparse_latent_attention(q, kv, indices, *, scale):
         indices,
         scale=float(scale),
         surface="semantic",
+        **positional,
     )
-    return implementation.apply(q, kv, indices, scale=float(scale))
+    return implementation.apply(q, kv, indices, scale=float(scale), **positional)
 
 
 __all__ = ["dsa_attention", "sparse_latent_attention"]

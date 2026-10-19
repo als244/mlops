@@ -35,17 +35,31 @@ def kimi_delta_attention(
     )
 
 
-def sparse_latent_attention(q, kv, indices, *, scale, entrypoint="forward", **_kwargs):
+def sparse_latent_attention(
+    q, kv, indices, *, scale, entrypoint="forward", q_rope=None, k_rope=None, **_kwargs
+):
     """Selected QK/PV work with one KV bank, including backward score replay."""
     tokens, heads, width = q.shape
     work = heads * tokens * indices.shape[-1] * (2 * width)
     forward = entrypoint == "forward"
+    positional = () if q_rope is None else (q_rope, k_rope)
+    # Positional dimensions enter QK, its backward replay, dQ and dK; never PV.
+    tail_work = (
+        0
+        if not positional
+        else (2 if forward else 6)
+        * heads
+        * tokens
+        * indices.shape[-1]
+        * q_rope.shape[-1]
+    )
     return CostHints(
-        logical_flops=(2 if forward else 5) * work,
+        logical_flops=(2 if forward else 5) * work + tail_work,
         logical_bytes_accessed=_bytes(q, kv, indices)
         + _bytes(q)
         + 4 * tokens * heads
-        + (0 if forward else _bytes(q, kv, q)),
+        + (0 if forward else _bytes(q, kv, q))
+        + (1 if forward else 2) * _bytes(*positional),
         notes=(
             "selected-key width is a bound including masked padding",
             "the shared latent KV gradient is counted once",
@@ -77,7 +91,7 @@ def pooled_topk(
         else (
             2 * tokens * heads * width * pools
             + 3 * tokens * heads * pools
-            + 5 * tokens * width
+            + (5 * tokens * width if pool > 1 else 0)
         )
     )
     return CostHints(

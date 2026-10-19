@@ -8,7 +8,12 @@ import torch
 
 _ROOT = Path(__file__).parent
 _KDA_FILES = {"test_kda.py", "test_kda_block.py"}
-_SPARSE_FILES = {"test_sparse_latent.py", "test_attention_lora.py", "test_mla.py"}
+_SPARSE_FILES = {
+    "test_sparse_latent.py",
+    "test_sparse_latent_rope.py",
+    "test_attention_lora.py",
+    "test_mla.py",
+}
 
 
 def pytest_collection_modifyitems(items):

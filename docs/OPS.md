@@ -1222,6 +1222,13 @@ each query needs at least one key. H must be divisible by 16 and L one of
 Implementation: `builtin.sparse_latent_attention.tilelang`.
 FP32 atomics in dKV mean bitwise deterministic gradients are not guaranteed.
 
+Optional `q_rope[T,H,64]` and `k_rope[T,64]` must be supplied together, in the
+same BF16 dtype/device. Their already-rotated dot product contributes to the
+score, while values/output remain latent-width. This selects
+`builtin.sparse_latent_attention.rope.tilelang`; autograd also produces both
+positional gradients. The caller applies RoPE and chooses the combined
+query/key scale.
+
 ### `pooled_topk`
 
 `pooled_topk(q, key, gates, head_weights, position_bias, boundaries, *,
@@ -2542,6 +2549,10 @@ also apply here. Calls do not build an autograd graph.
 `backward(dy, q, kv, indices, output, lse, *, scale)` returns dQ and dKV.
 Retain inputs, output and FP32 softmax `lse`; pass the same `scale`
 to both calls. The semantic tied-latent constraints also apply here.
+
+With `q_rope` and `k_rope` supplied to both functions, `backward` returns
+`(dq, dkv, dq_rope, dk_rope)`. Retain the same already-rotated positional inputs
+from forward. Omitting both preserves the two-gradient return value.
 
 #### `explicit.causal_conv_silu`
 
