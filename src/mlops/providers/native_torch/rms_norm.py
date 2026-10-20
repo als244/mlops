@@ -30,35 +30,54 @@ def _estimate(x, weight, _eps=1e-5, *, entrypoint, **_kwargs) -> CostHints:
     )
 
 
-def apply(x, weight, eps=1e-5):
-    """Normalize in FP32, round to the input dtype, then apply the gain."""
+def _compute(value):
     # Preserve float64 only for numerical gradcheck. Production float16,
     # bfloat16, and float32 calls retain the operation's fp32 reduction.
-    compute = x if x.dtype == torch.float64 else x.float()
+    return value if value.dtype == torch.float64 else value.float()
+
+
+def apply(x, weight, eps=1e-5, zero_centered=False):
+    """Normalize in FP32, round to the input dtype, then apply the gain; a
+    zero-centered weight is an offset from one, ``1 + weight`` applied to the
+    FP32 normalized value before the one cast."""
+    compute = _compute(x)
     rstd = torch.rsqrt(compute.square().mean(-1, keepdim=True) + float(eps))
+    if zero_centered:
+        return (compute * rstd * (1 + _compute(weight))).to(x.dtype)
     return ((compute * rstd).to(x.dtype) * weight).to(x.dtype)
 
 
-def forward(x, weight, eps=1e-5):
+def forward(x, weight, eps=1e-5, zero_centered=False):
     """Return native-PyTorch ``(output, rstd)`` without building autograd state."""
     width = x.shape[-1]
     rows = x.numel() // width
     x_rows = x.reshape(rows, width)
-    compute = x_rows if x.dtype == torch.float64 else x_rows.float()
+    compute = _compute(x_rows)
     rstd = torch.rsqrt(compute.square().mean(-1) + float(eps))
+    if zero_centered:
+        normalized = compute * rstd.unsqueeze(-1) * (1 + _compute(weight))
+        return normalized.to(x.dtype).reshape_as(x), rstd
     x_hat = (compute * rstd.unsqueeze(-1)).to(x.dtype)
     output = (x_hat * weight).to(x.dtype).reshape_as(x)
     return output, rstd
 
 
-def backward(grad_output, x, weight, rstd):
+def backward(grad_output, x, weight, rstd, zero_centered=False):
     """Return native-PyTorch ``(grad_x, grad_weight)`` explicit VJP."""
     width = x.shape[-1]
     rows = x.numel() // width
     grad_output_rows = grad_output.contiguous().reshape(rows, width)
     x_rows = x.reshape(rows, width)
-    compute = x_rows if x.dtype == torch.float64 else x_rows.float()
+    compute = _compute(x_rows)
     x_hat = compute * rstd.unsqueeze(-1)
+    if zero_centered:
+        # The forward is FP32 until its one cast, so its VJP is too.
+        grad_rows = _compute(grad_output_rows)
+        grad_hat = grad_rows * (1 + _compute(weight))
+        correction = (grad_hat * x_hat).mean(-1, keepdim=True)
+        grad_x = rstd.unsqueeze(-1) * (grad_hat - x_hat * correction)
+        grad_weight = (grad_rows * x_hat).sum(0).to(weight.dtype)
+        return grad_x.to(x.dtype).reshape_as(x), grad_weight
     x_hat_storage = x_hat.to(x.dtype)
     grad_hat_storage = (grad_output_rows * weight).to(x.dtype)
     grad_hat = (

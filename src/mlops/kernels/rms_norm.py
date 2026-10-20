@@ -26,6 +26,7 @@ if triton is not None:
         rstd_ptr,
         width,
         eps,
+        ZERO_CENTERED: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
         row = tl.program_id(0)
@@ -49,15 +50,22 @@ if triton is not None:
                 mask=mask,
                 other=0.0,
             ).to(tl.float32)
-            # Match the production/reference convention: normalization is
-            # rounded to the activation dtype before applying the gain.
-            x_hat = (x * rstd).to(output_ptr.dtype.element_ty).to(tl.float32)
             weight = tl.load(weight_ptr + offset + columns, mask=mask, other=0.0).to(
                 tl.float32
             )
+            if ZERO_CENTERED:
+                # A zero-centered weight is an offset from one: the fp32
+                # normalized value takes the gain 1 + weight before the one
+                # cast to the activation dtype.
+                output = x * rstd * (1.0 + weight)
+            else:
+                # Match the production/reference convention: normalization is
+                # rounded to the activation dtype before applying the gain.
+                x_hat = (x * rstd).to(output_ptr.dtype.element_ty).to(tl.float32)
+                output = x_hat * weight
             tl.store(
                 output_ptr + row * width + offset + columns,
-                (x_hat * weight).to(output_ptr.dtype.element_ty),
+                output.to(output_ptr.dtype.element_ty),
                 mask=mask,
             )
 
@@ -72,6 +80,7 @@ if triton is not None:
         rows,
         width,
         REFERENCE_CASTS: tl.constexpr,
+        ZERO_CENTERED: tl.constexpr,
         ROWS_PER_PROGRAM: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
@@ -100,6 +109,8 @@ if triton is not None:
                     mask=offset + columns < width,
                     other=0.0,
                 ).to(tl.float32)
+                if ZERO_CENTERED:
+                    weight = 1.0 + weight
                 grad_normalized = grad * weight
                 if REFERENCE_CASTS:
                     # Raw PyTorch multiplies two bf16 tensors here before the
@@ -127,6 +138,8 @@ if triton is not None:
                     mask=offset + columns < width,
                     other=0.0,
                 ).to(tl.float32)
+                if ZERO_CENTERED:
+                    weight = 1.0 + weight
                 x_hat = x * rstd
                 grad_normalized = grad * weight
                 x_hat_for_weight = x_hat
@@ -181,9 +194,11 @@ def rms_norm_triton_available() -> bool:
 
 
 def rms_norm_forward_triton(
-    x: torch.Tensor, weight: torch.Tensor, eps: float
+    x: torch.Tensor, weight: torch.Tensor, eps: float, zero_centered: bool = False
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run only the Triton forward; unsupported inputs never fall back."""
+    """Run only the Triton forward; unsupported inputs never fall back. A
+    zero-centered weight is an offset from one, applied as ``1 + weight`` to
+    the fp32 normalized value before the one cast."""
     if not _can_use_triton(x, weight):
         raise RuntimeError(
             "builtin Triton RMSNorm requires contiguous CUDA x and weight tensors"
@@ -199,6 +214,7 @@ def rms_norm_forward_triton(
         rstd,
         width,
         float(eps),
+        ZERO_CENTERED=bool(zero_centered),
         BLOCK=_BLOCK,
     )
     return output, rstd
@@ -210,8 +226,11 @@ def rms_norm_backward_triton(
     weight: torch.Tensor,
     rstd: torch.Tensor,
     grad_weight_dtype: torch.dtype | None = None,
+    zero_centered: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run only the Triton VJP; unsupported inputs never fall back."""
+    """Run only the Triton VJP; unsupported inputs never fall back. The
+    zero-centered VJP is fp32 throughout, as its forward is: the gain is
+    ``1 + weight`` and nothing is rounded before the stores."""
     grad_output = grad_output.contiguous()
     if not _can_use_triton(grad_output, x, weight, rstd):
         raise RuntimeError(
@@ -231,7 +250,8 @@ def rms_norm_backward_triton(
         partials,
         rows,
         width,
-        REFERENCE_CASTS=True,
+        REFERENCE_CASTS=not zero_centered,
+        ZERO_CENTERED=bool(zero_centered),
         ROWS_PER_PROGRAM=_ROWS_PER_PROGRAM,
         BLOCK=_BLOCK,
     )
@@ -240,7 +260,7 @@ def rms_norm_backward_triton(
 
 
 def rms_norm_forward(
-    x: torch.Tensor, weight: torch.Tensor, eps: float
+    x: torch.Tensor, weight: torch.Tensor, eps: float, zero_centered: bool = False
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return normalized output and the only freshly saved value, ``rstd``."""
     width = x.shape[-1]
@@ -248,12 +268,16 @@ def rms_norm_forward(
     output = torch.empty_like(x)
     rstd = torch.empty(rows, dtype=torch.float32, device=x.device)
     if _can_use_triton(x, weight):
-        return rms_norm_forward_triton(x, weight, eps)
+        return rms_norm_forward_triton(x, weight, eps, zero_centered)
 
     x_float = x.reshape(rows, width).float()
     rstd_value = torch.rsqrt(x_float.square().mean(-1) + float(eps))
-    x_hat = (x_float * rstd_value.unsqueeze(-1)).to(x.dtype)
-    output.copy_((x_hat * weight).to(x.dtype).reshape_as(x))
+    if zero_centered:
+        normalized = x_float * rstd_value.unsqueeze(-1) * (1 + weight.float())
+        output.copy_(normalized.to(x.dtype).reshape_as(x))
+    else:
+        x_hat = (x_float * rstd_value.unsqueeze(-1)).to(x.dtype)
+        output.copy_((x_hat * weight).to(x.dtype).reshape_as(x))
     rstd.copy_(rstd_value)
     return output, rstd
 
@@ -264,6 +288,7 @@ def rms_norm_backward(
     weight: torch.Tensor,
     rstd: torch.Tensor,
     grad_weight_dtype: torch.dtype | None = None,
+    zero_centered: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     width = x.shape[-1]
     rows = x.numel() // width
@@ -271,7 +296,22 @@ def rms_norm_backward(
     grad_x = torch.empty_like(x)
     if _can_use_triton(grad_output, x, weight, rstd):
         return rms_norm_backward_triton(
-            grad_output, x, weight, rstd, grad_weight_dtype
+            grad_output, x, weight, rstd, grad_weight_dtype, zero_centered
+        )
+
+    if zero_centered:
+        x_hat = x.reshape(rows, width).float() * rstd.unsqueeze(-1)
+        grad_rows = grad_output.reshape(rows, width).float()
+        grad_hat = grad_rows * (1 + weight.float())
+        correction = (grad_hat * x_hat).mean(-1, keepdim=True)
+        grad_x.copy_(
+            (rstd.unsqueeze(-1) * (grad_hat - x_hat * correction))
+            .to(x.dtype)
+            .reshape_as(x)
+        )
+        products = (grad_rows * x_hat).sum(0)
+        return grad_x, products.to(
+            weight.dtype if grad_weight_dtype is None else grad_weight_dtype
         )
 
     x_float = x.reshape(rows, width).float()

@@ -175,6 +175,10 @@ def _builtin_rms_norm_args(weight_grad_dtype=None):
     return (*_rms_norm_args(), weight_grad_dtype)
 
 
+def _builtin_zero_centered_rms_norm_args(weight_grad_dtype=None):
+    return (*_rms_norm_args(), weight_grad_dtype, True)
+
+
 def _layer_norm_args(weight_grad_dtype=None):
     return _parameter(6, 16), _parameter(16), _parameter(16), 1e-5, weight_grad_dtype
 
@@ -581,6 +585,11 @@ OPCHECK_CASES = (
     ("cross_entropy", cross_entropy._forward_op, _cross_entropy_args),
     ("embedding", embedding._forward_op, _embedding_args),
     ("rms_norm_builtin", rms_norm_builtin._forward_op, _builtin_rms_norm_args),
+    (
+        "rms_norm_builtin_zero_centered",
+        rms_norm_builtin._forward_op,
+        _builtin_zero_centered_rms_norm_args,
+    ),
     ("layer_norm", layer_norm._forward_op, _layer_norm_args),
     ("rope_table", rope._table_forward_op, _rope_args),
     ("rope_analytic", rope._analytic_forward_op, _rope_args),

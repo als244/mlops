@@ -250,20 +250,32 @@ hidden = embedding(token_ids, model.embed.weight)  # [B,S,D]
 **Signature**
 
 ```python
-rms_norm(x: Tensor, weight: Tensor, eps: float = 1e-5) -> Tensor
+rms_norm(
+    x: Tensor,
+    weight: Tensor,
+    eps: float = 1e-5,
+    *,
+    zero_centered: bool = False,
+) -> Tensor
 ```
 
 **Purpose**
 
 Applies RMS normalization over the final dimension followed by an affine gain.
+By default the normalized value is rounded to `x`'s dtype before the gain, as
+Llama's norm does. A zero-centered weight, as Qwen 3.5 keeps every norm but its
+linear attention's, is an offset from one: the FP32 normalized value is scaled
+by `1 + weight` before the one cast, so stored weights stay small and the scale
+keeps full precision. The gradients follow the same arithmetic.
 
 **Parameters**
 
 | Name | Type/shape | Description |
 |---|---|---|
 | `x` | `Tensor[...,D]` | rows to normalize |
-| `weight` | `Tensor[D]` | learned gain |
+| `weight` | `Tensor[D]` | learned gain, or its offset from one when zero-centered |
 | `eps` | `float` | positive squared-RMS stabilizer |
+| `zero_centered` | `bool` | scale by `1 + weight` in FP32 before the cast |
 
 **Returns**
 
@@ -2315,6 +2327,8 @@ forward(
     x: Tensor[...,D],
     weight: Tensor[D],
     eps: float = 1e-5,
+    *,
+    zero_centered: bool = False,
 ) -> tuple[Tensor[...,D], Tensor[R]]
 
 backward(
@@ -2322,11 +2336,14 @@ backward(
     x: Tensor[...,D],
     weight: Tensor[D],
     rstd: Tensor[R],
+    *,
+    zero_centered: bool = False,
 ) -> tuple[Tensor[...,D], Tensor[D]]
 ```
 
 Forward returns `(output, rstd)`. `rstd` is FP32 and is the only
-operation-produced residual. Backward returns `(grad_x, grad_weight)`.
+operation-produced residual. Backward returns `(grad_x, grad_weight)`, and
+takes the `zero_centered` its forward was given.
 
 #### `explicit.layer_norm`
 

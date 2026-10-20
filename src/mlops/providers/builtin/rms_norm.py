@@ -67,12 +67,17 @@ def _estimate(x, weight, _eps=1e-5, *, entrypoint, **_kwargs) -> CostHints:
     )
 
 
-def forward(x, weight, eps=1e-5):
-    """Return the builtin Triton ``(output, rstd)`` pair."""
-    return rms_norm_forward_triton(x.contiguous(), weight.contiguous(), float(eps))
+def forward(x, weight, eps=1e-5, zero_centered=False):
+    """Return the builtin Triton ``(output, rstd)`` pair; a zero-centered
+    weight is an offset from one."""
+    return rms_norm_forward_triton(
+        x.contiguous(), weight.contiguous(), float(eps), bool(zero_centered)
+    )
 
 
-def backward(grad_output, x, weight, rstd, weight_grad_dtype=None):
+def backward(
+    grad_output, x, weight, rstd, weight_grad_dtype=None, zero_centered=False
+):
     """Return the builtin Triton ``(grad_x, grad_weight)`` VJP, the weight's at
     ``weight_grad_dtype`` -- its own when ``None`` -- summed at fp32 either way."""
     return rms_norm_backward_triton(
@@ -81,6 +86,7 @@ def backward(grad_output, x, weight, rstd, weight_grad_dtype=None):
         weight.contiguous(),
         rstd.contiguous(),
         weight_grad_dtype,
+        bool(zero_centered),
     )
 
 
@@ -94,14 +100,15 @@ def _forward_op(
     weight: torch.Tensor,
     eps: float,
     weight_grad_dtype: torch.dtype | None,
+    zero_centered: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     del weight_grad_dtype
-    return forward(x, weight, float(eps))
+    return forward(x, weight, float(eps), zero_centered)
 
 
 @_forward_op.register_fake
-def _forward_fake(x, weight, eps, weight_grad_dtype):
-    del weight, eps, weight_grad_dtype
+def _forward_fake(x, weight, eps, weight_grad_dtype, zero_centered=False):
+    del weight, eps, weight_grad_dtype, zero_centered
     rows = x.numel() // x.shape[-1]
     return torch.empty_like(x), torch.empty(rows, dtype=torch.float32, device=x.device)
 
@@ -115,13 +122,16 @@ def _backward_op(
     weight: torch.Tensor,
     rstd: torch.Tensor,
     weight_grad_dtype: torch.dtype | None,
+    zero_centered: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return backward(grad_output, x, weight, rstd, weight_grad_dtype)
+    return backward(grad_output, x, weight, rstd, weight_grad_dtype, zero_centered)
 
 
 @_backward_op.register_fake
-def _backward_fake(grad_output, x, weight, rstd, weight_grad_dtype):
-    del grad_output, rstd
+def _backward_fake(
+    grad_output, x, weight, rstd, weight_grad_dtype, zero_centered=False
+):
+    del grad_output, rstd, zero_centered
     return torch.empty_like(x), torch.empty_like(weight, dtype=weight_grad_dtype)
 
 
@@ -138,27 +148,30 @@ def _backward_flops(grad_output, x, weight, *_rest, out_val=None, **_kwargs):
 
 
 def _setup_context(ctx, inputs, output):
-    x, weight, _eps, weight_grad_dtype = inputs
+    x, weight, _eps, weight_grad_dtype, zero_centered = inputs
     _normalized, rstd = output
     ctx.save_for_backward(x, weight, rstd)
     ctx.weight_grad_dtype = weight_grad_dtype
+    ctx.zero_centered = zero_centered
     ctx.mark_non_differentiable(rstd)
 
 
 def _autograd_backward(ctx, grad_output, _grad_rstd):
     x, weight, rstd = ctx.saved_tensors
     grad_x, grad_weight = _backward_op(
-        grad_output, x, weight, rstd, ctx.weight_grad_dtype
+        grad_output, x, weight, rstd, ctx.weight_grad_dtype, ctx.zero_centered
     )
-    return grad_x, grad_weight, None, None
+    return grad_x, grad_weight, None, None, None
 
 
 _forward_op.register_autograd(_autograd_backward, setup_context=_setup_context)
 
 
-def apply(x, weight, eps=1e-5):
+def apply(x, weight, eps=1e-5, zero_centered=False):
     """Apply the autograd-enabled builtin Triton RMSNorm boundary."""
-    output, _rstd = _forward_op(x, weight, float(eps), weight_gradient_dtype())
+    output, _rstd = _forward_op(
+        x, weight, float(eps), weight_gradient_dtype(), bool(zero_centered)
+    )
     return output
 
 
