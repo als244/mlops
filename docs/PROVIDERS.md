@@ -124,6 +124,16 @@ consume those tensors; their implementations do not build or cache them.
 The helper is itself a small graph-visible, non-differentiable custom target so
 FakeTensor/AOT cannot mistake call-derived metadata for a serialized constant.
 
+An operation must also allocate the same way on every call: a planner
+profiles a task once and replays it, and reclaims what a closed plan's tasks
+allocated. FLA memoizes its own sequence-index helpers (`fla.utils.tensor_cache`,
+such as the chunk offsets its delta-rule kernels derive from the cumulative
+lengths) by argument identity and keeps the tensors it computed, so a result
+cached under one plan and found under the next changes what a task allocates.
+The FLA provider package turns that cache off when its adapters load
+(`FLA_DISABLE_TENSOR_CACHE`, for FLA imported before or after them); FLA then
+recomputes a few small index tensors per call.
+
 Use `torch.cuda.set_sync_debug_mode("error")` as a development check, restoring
 the prior mode afterward. PyTorch documents this detector as experimental and
 incomplete, so also inspect warmed host-enqueue latency and a CUDA profiler
