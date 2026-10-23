@@ -406,6 +406,10 @@ The final dimension must be nonempty. No independent output dtype is accepted.
 q = l2_norm(q)  # [T,H,D]
 ```
 
+For strided inputs with feature width up to 512, `fla.l2_norm` reads the input
+strides directly and writes contiguous normalized output. This combines layout
+conversion with normalization for Q/K views of packed QKV tensors.
+
 ### `gated_rms_norm`
 
 **Status:** Public
@@ -1326,6 +1330,11 @@ device, so that is the caller's to guarantee. Weight channels must match `C`.
 cumulative, chunks = prepare_packed_sequence_metadata(lengths, projected)
 convolved = causal_conv_silu(projected, conv.weight, cumulative, chunks)
 ```
+
+The autograd path avoids weight-gradient computation when `weight.requires_grad`
+is false. Its input-only backward handles widths up to eight without a global
+preactivation buffer; wider widths fall back to FLA. The explicit backward
+continues to return both input and weight gradients.
 
 ### `prepare_packed_sequence_metadata`
 

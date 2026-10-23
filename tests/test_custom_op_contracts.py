@@ -57,8 +57,12 @@ PACKAGE_ROOT = Path(mlops.__file__).resolve().parent
 
 kda = importlib.import_module("mlops.providers.fla.kda")
 sparse_latent = importlib.import_module("mlops.providers.builtin.sparse_latent")
-sparse_latent_rope = importlib.import_module("mlops.providers.builtin.sparse_latent_rope")
-sparse_latent_hopper = importlib.import_module("mlops.providers.builtin.sparse_latent_hopper")
+sparse_latent_rope = importlib.import_module(
+    "mlops.providers.builtin.sparse_latent_rope"
+)
+sparse_latent_hopper = importlib.import_module(
+    "mlops.providers.builtin.sparse_latent_hopper"
+)
 pooled_indexer = importlib.import_module("mlops.providers.builtin.pooled_indexer")
 
 FORWARD_OPERATORS = {
@@ -117,6 +121,7 @@ BACKWARD_OPERATORS = {
     "lora_dispatch_bwd",
     "lora_combine_bwd",
     "causal_conv_silu_fla_bwd",
+    "causal_conv_silu_fla_input_bwd",
     "cross_entropy_builtin_triton_bwd",
     "dsa_attention_builtin_sparse_bwd",
     "embedding_builtin_deterministic_bwd",

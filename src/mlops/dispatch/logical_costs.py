@@ -293,7 +293,14 @@ def dsa_attention(
 
 
 def causal_conv_silu(
-    x, weight, cumulative, chunk_indices=None, *, entrypoint="forward", **_kwargs
+    x,
+    weight,
+    cumulative,
+    chunk_indices=None,
+    *,
+    entrypoint="forward",
+    weight_gradient=True,
+    **_kwargs,
 ) -> CostHints:
     """A depthwise causal convolution of width ``weight.shape[-1]``, then SiLU."""
     del cumulative, chunk_indices
@@ -308,8 +315,9 @@ def causal_conv_silu(
             notes=("two per tap, then the SiLU's five",),
         )
     return CostHints(
-        logical_flops=(4 * taps + 6) * elements,
-        logical_bytes_accessed=3 * activation + 2 * weight_bytes,
+        logical_flops=((4 if weight_gradient else 2) * taps + 6) * elements,
+        logical_bytes_accessed=3 * activation
+        + (2 if weight_gradient else 1) * weight_bytes,
     )
 
 

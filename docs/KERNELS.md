@@ -65,3 +65,10 @@ TileKernels calls are adapted in `providers/tilekernels/hyper_connection.py`.
 `providers/deepgemm/hyper_connection.py`. It combines the projection VJP,
 squared-norm VJP and direct stream-collapse gradient without materializing
 any full FP32 activation workspace. The public boundary remains `mhc_pre`.
+
+
+`src/mlops/kernels/hybrid_layout.py` implements row-strided L2 normalization
+and input-only packed causal-convolution/SiLU backward. These are internal
+kernels of the existing FLA providers, not separate public semantic operators.
+The convolution gradient preserves the FLA preactivation cast and sequence
+resets while avoiding activation-sized scratch and unused weight gradients.
