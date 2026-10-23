@@ -47,9 +47,10 @@ class LoRALinear(nn.Module):
     def forward(self, inputs):
         inner = F.linear(inputs, self.lora_a.to(inputs.dtype))
         update = F.linear(inner, self.lora_b.to(inputs.dtype))
-        return (
-            F.linear(inputs, self.weight, self.bias) + self.lora_config.scale * update
-        )
+        # Avoid a full-size identity copy in the adapter's compiled backward.
+        if self.lora_config.scale != 1.0:
+            update = self.lora_config.scale * update
+        return F.linear(inputs, self.weight, self.bias) + update
 
 
 class LoRAHead(LoRALinear):
