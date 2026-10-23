@@ -14,9 +14,10 @@ from mlops.lora.grouped import grouped_linear
 
 
 @pytest.mark.parametrize("compiled", [False, True])
-def test_dense_matches_merged_weight_gradients(compiled):
+@pytest.mark.parametrize("alpha", [5, 7])
+def test_dense_matches_merged_weight_gradients(compiled, alpha):
     torch.manual_seed(603)
-    layer = apply_lora(nn.Linear(19, 13), LoRAConfig(5, 7), targets=[""])
+    layer = apply_lora(nn.Linear(19, 13), LoRAConfig(5, alpha), targets=[""])
     with torch.no_grad():
         layer.lora_b.normal_(std=0.07)
     x = torch.randn(11, 19, requires_grad=True)
@@ -25,7 +26,7 @@ def test_dense_matches_merged_weight_gradients(compiled):
     )
     y = call(x)
     oracle = F.linear(
-        x, layer.weight + (7 / 5) * layer.lora_b @ layer.lora_a, layer.bias
+        x, layer.weight + (alpha / 5) * layer.lora_b @ layer.lora_a, layer.bias
     )
     seed = torch.randn_like(y)
     actual = torch.autograd.grad(
