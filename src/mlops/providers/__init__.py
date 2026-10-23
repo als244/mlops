@@ -36,6 +36,8 @@ _CATALOG = (
     "mlops.providers.native_torch.lora_head",
     "mlops.providers.fla.hybrid",
     "mlops.providers.fla.kda",
+    "mlops.providers.cula.kda",
+    "mlops.providers.cula.kda_native",
     "mlops.providers.builtin.sparse_latent",
     "mlops.providers.builtin.sparse_latent_rope",
     "mlops.providers.builtin.sparse_latent_hopper",

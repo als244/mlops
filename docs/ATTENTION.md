@@ -119,6 +119,43 @@ the existing gated normalization API and FLA fused forward/backward. The default
 `activation="silu"` preserves existing callers. Both choices compute the norm
 and gate in FP32, then cast the result to the input dtype.
 
+The optional Hopper provider
+`cula.kimi_delta_attention.sm90` (priority 110) uses cuLA's CuTe/WGMMA fused WY backward
+stage with the same FLA forward, intra-chunk and state stages. It accepts
+BF16 Q/K/V, D=128 and BF16/FP32 beta on SM90. It preserves the explicit VJP
+interface and computes metadata per call. Install the pinned cuLA checkout
+with `CULA_SOURCE=/path/to/cuLA bash scripts/setup_cula_sm90.sh`, then select
+it with `MLOPS_IMPLEMENTATIONS=kimi_delta_attention=cula.kimi_delta_attention.sm90`.
+The adapter directly imports the Hopper kernel, avoiding cuLA's unrelated
+SM100 private-MLIR imports and incompatible convenience-wrapper FLA calls.
+The higher-priority `cula.kimi_delta_attention.sm90.recompute` (priority 120)
+uses native C++ forward and the same backward, rebuilding Aqk/Akk inside backward.
+Its forward custom op returns the output, FP32 prefix gates, and two empty
+residual placeholders. Registered autograd saves Q/K/V, beta, prefix gates and sequence/chunk metadata;
+the original decay tensor is not retained solely for its known FP32 dtype. It never retains hidden tensor
+state. Both paths expose matching explicit forward/backward entrypoints and fake
+implementations for full-graph compilation. Native forward requires the SM90
+extension; absent it, dispatch uses the WY-only provider, then fast FLA (priority
+100) if cuLA or the supported geometry is unavailable. IEEE is priority 90 and
+must be explicitly selected. The indexer is non-differentiable.
+
+At 32K/B1/H64/D128 on H100, native forward plus recomputed backward costs
+28.90 ms versus 27.96 ms for FLA forward plus cuLA backward, but reduces forward
+incremental peak allocated memory from 5.37 GB to 1.61 GB and retained matrices
+by 512 MiB. Both cuLA adapters also avoid retaining the original FP32 decay
+tensor (another 1 GiB at this shape), which backward does not read. At B2/B4
+the native path is about 7% faster. This motivates the native provider's
+default priority; the WY-only provider remains an override.
+
+The main `setup.sh` builds cuLA on Hopper unless `--no-cula` is given.
+Use `setup_cula_sm90.sh wy-only` to skip the native extension, or `--python PATH`
+to target an existing environment. The helper clones the pinned revision under
+`MLOPS_BUILD_DIR` (default `~/.cache/mlops/build`); `CULA_SOURCE` or `--source`
+selects an existing checkout. Both providers
+have been tested with CuTe 4.7.1. SM100 currently falls back to FLA; cuLA's
+SM100 private API/dependency integration has not been validated on this H100
+reservation.
+
 ## Pooled indexing
 
 `pooled_topk(q, key, gates, head_weights, position_bias,
