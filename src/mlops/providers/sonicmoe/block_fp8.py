@@ -4,7 +4,7 @@
 The expert weights are `BlockFP8Weight` containers (``mlops/block_fp8.py``):
 E4M3 ``[E, out, in]`` with one FP32 scale per 128x128 block, stored once and
 in ``nn.Linear`` row order. Inside the custom operators a container is its
-components, a `BlockWeight`. The GEMMs (``expert_parallel/quack/experts/
+components, a `BlockWeight`. The GEMMs (``kernels/quack_moe/
 block_fp8_gemm.py``) read the same bytes as ``W`` for a projection and, for an
 input gradient, as ``Wᵀ``, transposing each E4M3 tile in shared memory; both
 promote each 128-wide K chunk by its block scale. Routed rows and cotangents
@@ -60,7 +60,7 @@ def supports(h2, w13_experts, w2_experts) -> SupportResult:
 
 
 def _rows():
-    from ...expert_parallel.quack.kernels.quantize_rows import quantize_rows_fp8
+    from mlops.kernels.quack_moe.quantize_rows import quantize_rows_fp8
 
     return quantize_rows_fp8
 
@@ -80,7 +80,7 @@ def _gemm(rows, scales, weight, offsets, dtype, **options):
 
 
 def _kernels():
-    from ...expert_parallel.quack.experts import block_fp8_gemm
+    from mlops.kernels.quack_moe import block_fp8_gemm
 
     return block_fp8_gemm
 
@@ -114,7 +114,7 @@ def _project(rows, scales, weight: BlockWeight, offsets, dtype, c=None):
 def up_projection(h2_flat, w13: BlockWeight, offsets, gather, limit=None):
     """Gather and quantize the routed rows, project through ``w13`` and apply
     SwiGLU (clamped at ``limit`` when given): ``(h, a)``, ``h`` interleaved."""
-    from ...expert_parallel.quack.kernels.swiglu_rows import swiglu_rows
+    from mlops.kernels.quack_moe.swiglu_rows import swiglu_rows
 
     rows, scales = _rows()(h2_flat, gather=gather)
     if _fused_up(h2_flat, w13):
@@ -134,7 +134,7 @@ def project_down(a, w2: BlockWeight, offsets):
 def project_down_from_preactivation(h, w2: BlockWeight, offsets, limit=None):
     """The same from the interleaved pre-activation: SwiGLU (clamped at
     ``limit`` when given) and the row quantization in one pass."""
-    from ...expert_parallel.quack.kernels.swiglu_rows import swiglu_quantize_rows_fp8
+    from mlops.kernels.quack_moe.swiglu_rows import swiglu_quantize_rows_fp8
 
     rows, scales = swiglu_quantize_rows_fp8(h, limit=limit)
     return _project(rows, scales, w2, offsets, h.dtype)
@@ -154,7 +154,7 @@ def input_gradient_rows(
     ``dh`` the quantizer reads gate columns first, matching ``w13``'s
     gate-then-up rows. The two calls belong together: the K order is a
     contract between them."""
-    from ...expert_parallel.quack.experts.block_fp8_gemm import (
+    from mlops.kernels.quack_moe.block_fp8_gemm import (
         block_fp8_transposed_gemm,
     )
 
@@ -173,7 +173,7 @@ def down_backward_activations(
     SwiGLU backward (clamped at ``limit``) in the GEMM's epilogue -- the score
     gradient, the interleaved pre-activation gradient and the route-scaled
     activation; for rows other than bf16, the GEMM and then one row pass."""
-    from ...expert_parallel.quack.kernels.swiglu_rows import (
+    from mlops.kernels.quack_moe.swiglu_rows import (
         routed_swiglu_rows_backward,
     )
 
@@ -199,7 +199,7 @@ def down_backward_activations(
 def lora_up_projection(x, w13: BlockWeight, c, offsets, gather=None, limit=None):
     """``h = x @ w13ᵀ + c`` per expert, ``c`` the LoRA term in the interleaved
     column order, then SwiGLU (clamped at ``limit``): ``(h, a)``."""
-    from ...expert_parallel.quack.kernels.swiglu_rows import swiglu_rows
+    from mlops.kernels.quack_moe.swiglu_rows import swiglu_rows
 
     rows, scales = _rows()(x, gather=gather)
     if _fused_up(x, w13) and _bf16(c):

@@ -37,7 +37,7 @@ def _quantize_components(source, interleaved):
     """``(data, transposed, scale, transposed_scale)`` of a BF16/FP32 weight:
     the kernels on CUDA, the same equations in tensor ops elsewhere."""
     if source.is_cuda:
-        from ..kernels.quantize_transpose import quantize_weights_fp8
+        from mlops.kernels.quack_moe.quantize_transpose import quantize_weights_fp8
 
         return quantize_weights_fp8(source, interleave_rows=interleaved)
     value = source.float()

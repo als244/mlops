@@ -105,7 +105,7 @@ def _routed(seed):
 
 @hopper
 def test_the_row_kernels_clamp_as_the_builtin_does():
-    from mlops.expert_parallel.quack.kernels import swiglu_rows
+    from mlops.kernels.quack_moe import swiglu_rows
 
     torch.manual_seed(0)
     h = _preactivation(0)
@@ -149,7 +149,7 @@ def test_the_row_kernels_clamp_as_the_builtin_does():
 def test_the_gated_epilogues_clamp_as_the_row_kernels_do():
     from quack.gemm_interface import gemm
 
-    from mlops.expert_parallel.quack.kernels.swiglu_rows import (
+    from mlops.kernels.quack_moe.swiglu_rows import (
         routed_swiglu_rows_backward,
         swiglu_rows,
     )
@@ -206,7 +206,7 @@ def _fp8_weight(weight, *, interleaved=False):
 
 @fp8_hopper
 def test_the_fp8_epilogues_clamp_as_the_row_kernels_do():
-    from mlops.expert_parallel.quack.kernels.swiglu_rows import (
+    from mlops.kernels.quack_moe.swiglu_rows import (
         routed_swiglu_rows_backward,
         swiglu_rows,
     )

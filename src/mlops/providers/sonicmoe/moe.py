@@ -182,7 +182,7 @@ def up_projection(
     h = torch.empty(assignments, 2 * width, dtype=h2_flat.dtype, device=h2_flat.device)
     a = torch.empty(assignments, width, dtype=h2_flat.dtype, device=h2_flat.device)
     if limit is not None:
-        from ...expert_parallel.quack.experts.swiglu_limit import swiglu_limit
+        from mlops.kernels.quack_moe.swiglu_limit import swiglu_limit
 
         swiglu_limit(
             h2_flat,
@@ -213,7 +213,7 @@ def activation(h, limit=None):
     """SwiGLU of the interleaved pre-activation, as the down projection reads
     it, clamped at ``limit`` when given."""
     if h.is_cuda:
-        from ...expert_parallel.quack.kernels.swiglu_rows import swiglu_rows
+        from mlops.kernels.quack_moe.swiglu_rows import swiglu_rows
 
         return swiglu_rows(h, limit=limit)
     pairs = h.view(h.shape[0], h.shape[1] // 2, 2)
@@ -304,7 +304,7 @@ def down_backward(
         # SonicMoE's gated backward with the clamped SwiGLU: the same GEMM
         # (the cotangent gathered through ``A_idx``, ``w2`` as stored), the
         # route score per sorted row, its gradient reduced in the epilogue.
-        from ...expert_parallel.quack.experts.swiglu_limit import (
+        from mlops.kernels.quack_moe.swiglu_limit import (
             dswiglu_limit_scored,
         )
 

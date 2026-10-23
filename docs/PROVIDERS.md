@@ -279,12 +279,28 @@ auxiliary loss and the probability sums are the package's own
 (`kernels/moe_router.py`, `providers/moe_common.py`), so every routing mode
 behaves exactly as with the builtin.
 
+The implementation is a composition, for both BF16 and FP8:
+
+| Responsibility | Implementation |
+|---|---|
+| Router logits, expert selection and group policy | MLOps routing operators |
+| Assignment metadata, weighted token combine and token-broadcast VJP | SonicMoE functional kernels |
+| Grouped projections, LoRA GEMMs and activation epilogues | Quack plus `mlops.kernels.quack_moe` |
+| Cross-rank dispatch/combine (EP only) | `mlops.expert_parallel` transport adapters |
+
+BF16 projections call Quack's `gemm_act`/`gemm`/`gemm_add` and fused backward
+pieces; they still use SonicMoE metadata and combination kernels. No monolithic
+upstream SonicMoE layer is called. Shared local expert kernels have a neutral
+module name, so profiler names do not imply EP communication during DP runs.
+Legacy `expert_parallel.quack.experts`/`kernels` module paths remain import
+aliases for saved artifacts; new code imports `mlops.kernels.quack_moe`.
+
 A `swiglu_limit` (GLM's clamped SwiGLU, `moe`'s option) runs in the same
 kernels: the gated forward and backward GEMMs use the package's own Quack
-epilogues (`expert_parallel/quack/experts/swiglu_limit.py`, bf16 and FP8,
+epilogues (`kernels/quack_moe/swiglu_limit.py`, bf16 and FP8,
 with and without a LoRA term entering before the activation), which take the
 limit as a run-time scalar operand, and the row kernels
-(`expert_parallel/quack/kernels/swiglu_rows.py`) take it as a run-time
+(`kernels/quack_moe/swiglu_rows.py`) take it as a run-time
 argument, so one compiled kernel serves every limit.
 
 The adapters accept CUDA tensors on compute capability 9.x and 10.x, bfloat16
@@ -322,7 +338,7 @@ weight's E4M3 rows and E4M3 transpose with one descale per row of each,
 quantized once -- `QuackFP8Weight.quantize(w13, interleaved=True)` and
 `QuackFP8Weight.quantize(w2)` from a checkpoint's weights, or `copy_` from a
 bf16/fp32 master after an optimizer step (both orientations by the Triton
-quantizers in `expert_parallel/quack/kernels/`). `w13`'s rows are stored
+quantizers in `kernels/quack_moe/`). `w13`'s rows are stored
 interleaved, gate and up rows adjacent, the order Quack's paired SwiGLU
 epilogue reads; the logical view, `dequantize()` and the gradients stay in
 `nn.Linear` order. With such weights `moe` runs the experts' GEMMs in E4M3 on
@@ -349,7 +365,7 @@ axes, so one copy serves the projections, which reduce over a weight's input
 axis, and the input gradients, which reduce over its output axis; no
 transposed copy is kept. They compute at `"fp8_block"` (their default) on
 SM90 through Quack `GemmSm90` subclasses with their own producers and
-mainloop (`expert_parallel/quack/experts/block_fp8_gemm.py`): 128x128x128
+mainloop (`kernels/quack_moe/block_fp8_gemm.py`): 128x128x128
 tiles over the same routing metadata, each K tile one scale block, its
 wgmmas accumulated from zero and folded into the FP32 sum at the block's
 scale. The rows are E4M3, quantized per row per call and gathered in the

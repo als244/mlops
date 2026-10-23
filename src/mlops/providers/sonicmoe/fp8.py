@@ -11,7 +11,7 @@ projection needs no concatenated layout and the backward's ``dh`` no
 reordering. The routed rows, the activation and the cotangents are quantized
 per row per call (current scaling) by the expert-parallel path's kernels,
 gathered or activated in the same pass. The GEMMs are that path's
-scale-aware epilogue kernels (``expert_parallel/quack/experts/fp8.py``,
+scale-aware epilogue kernels (``kernels/quack_moe/fp8.py``,
 ``wgrad.py``), varlen over this provider's expert offsets. Weight gradients
 stay the bf16 forms' varlen-K GEMMs, in the containers' logical dtype and
 ``nn.Linear`` row order (SM90's varlen-K kernels have no FP8 layout).
@@ -237,13 +237,13 @@ def register_container_dispatch(*operators):
 
 
 def _kernels():
-    from ...expert_parallel.quack.experts.fp8 import (
+    from mlops.kernels.quack_moe.fp8 import (
         scaled_swiglu,
         scaled_swiglu_backward,
     )
-    from ...expert_parallel.quack.experts.wgrad import scaled_fp8
-    from ...expert_parallel.quack.kernels.quantize_rows import quantize_rows_fp8
-    from ...expert_parallel.quack.kernels.swiglu_rows import swiglu_quantize_rows_fp8
+    from mlops.kernels.quack_moe.quantize_rows import quantize_rows_fp8
+    from mlops.kernels.quack_moe.swiglu_rows import swiglu_quantize_rows_fp8
+    from mlops.kernels.quack_moe.wgrad import scaled_fp8
 
     return (
         scaled_swiglu,
@@ -264,7 +264,7 @@ def up_projection(h2_flat, w13: Weight, offsets, gather, limit=None):
     rows, scales = quantize_rows(h2_flat, gather=gather)
     options = {}
     if limit is not None:
-        from ...expert_parallel.quack.experts.swiglu_limit import scaled_swiglu_limit
+        from mlops.kernels.quack_moe.swiglu_limit import scaled_swiglu_limit
 
         scaled_swiglu, options = scaled_swiglu_limit, {"limit": float(limit)}
     result = scaled_swiglu(
@@ -328,7 +328,7 @@ def down_backward_activations(
     rows, scales = quantize_rows(grad_output_flat, gather=gather)
     options = {}
     if limit is not None:
-        from ...expert_parallel.quack.experts.swiglu_limit import (
+        from mlops.kernels.quack_moe.swiglu_limit import (
             scaled_dswiglu_limit_scored,
         )
 
@@ -440,7 +440,7 @@ def lora_up_projection(x, w13: Weight, c, offsets, gather=None, limit=None):
     rows, scales = quantize_rows(x, gather=gather)
     epilogue, options = _lora_up_epilogue(), {}
     if limit is not None:
-        from ...expert_parallel.quack.experts.swiglu_limit import (
+        from mlops.kernels.quack_moe.swiglu_limit import (
             scaled_swiglu_limit_add,
         )
 

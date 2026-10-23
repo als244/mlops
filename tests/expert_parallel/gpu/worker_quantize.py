@@ -14,7 +14,7 @@ def main():
     args = parser.parse_args()
     rank = int(os.environ.get("LOCAL_RANK", "0"))
     torch.cuda.set_device(rank)
-    from mlops.expert_parallel.quack.kernels.quantize_rows import _quantize_rows
+    from mlops.kernels.quack_moe.quantize_rows import _quantize_rows
 
     width, prefix = 2048, 1 << 31
     rows = prefix // width + 1
