@@ -794,8 +794,10 @@ def _supports(
     values = (parameter, gradient, exp_avg, exp_avg_sq)
     if not all(isinstance(value, torch.Tensor) for value in (*values, step)):
         return SupportResult.no("state and gradient must be tensors")
-    if any(value.device.type != "cuda" for value in (*values, step)):
-        return SupportResult.no("requires CUDA state and gradient tensors")
+    if any(value.device.type != "cuda" for value in values):
+        return SupportResult.no("requires CUDA parameter, gradient, and moments")
+    if step.device.type not in {"cpu", "cuda"}:
+        return SupportResult.no("step must be on CPU or CUDA")
     if any(value.dtype not in _FLOAT_DTYPES for value in values):
         return SupportResult.no("requires BF16, FP16, or FP32 floating tensors")
     if step.dtype not in {torch.int64, torch.float32} or step.numel() != 1:
@@ -826,11 +828,16 @@ def _estimate(
         for value in (parameter, exp_avg, exp_avg_sq)
     )
     return CostHints(
-        implementation_bytes_accessed=read_bytes + write_bytes + 2 * step.element_size(),
+        implementation_bytes_accessed=(
+            read_bytes + write_bytes
+            + (2 * step.element_size() if step.device.type == "cuda" else 0)
+        ),
         workspace_bytes=0,
         notes=(
             "traffic reflects each admitted tensor's actual dtype",
-            "the separate scalar-step launch remains allocation-free",
+            "CPU counters use runtime scalar arguments and no scalar-step launch"
+            if step.device.type == "cpu"
+            else "CUDA counters use an allocation-free scalar-step launch",
         ),
     )
 

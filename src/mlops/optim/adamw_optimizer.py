@@ -18,7 +18,12 @@ from ._adamw_common import (
 
 
 class AdamW(torch.optim.Optimizer):
-    """Coordinate-wise AdamW; communication and sharding belong to the caller."""
+    """Coordinate-wise AdamW; communication and sharding belong to the caller.
+
+    By default, step counters live on CPU and their current values are runtime
+    kernel arguments. ``capturable=True`` keeps counters on the parameter's
+    device for CUDA graph replay, where Python does not run between updates.
+    """
 
     implementation_id = "builtin.adamw.triton"
     supports_flat_parameter_shards = True
@@ -74,6 +79,10 @@ class AdamW(torch.optim.Optimizer):
         offset = sum(len(group["params"]) for group in self.param_groups)
         super().add_param_group(param_group)
         group = self.param_groups[-1]
+        # Dynamo rewrites torch.optim's `capturable` flag when tracing a fresh
+        # optimizer. Our custom op supports dynamic CPU state; retain the
+        # caller's counter-placement choice independently of that rewrite.
+        group["_device_step"] = bool(group["capturable"])
         hold_settings_on_host(group)
         validate_adamw_options(group)
         # Independent host scalars are ordinary captured inputs. Constructing
@@ -89,6 +98,7 @@ class AdamW(torch.optim.Optimizer):
         state = super().state_dict()
         for group in state["param_groups"]:
             group.pop("rounding_salts", None)
+            group["capturable"] = group.pop("_device_step", group["capturable"])
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -112,6 +122,8 @@ class AdamW(torch.optim.Optimizer):
             ):
                 if saved in group:
                     group.setdefault(name, group.pop(saved))
+            group.setdefault("capturable", False)
+            group.setdefault("_device_step", bool(group["capturable"]))
             group.setdefault("parameter_rounding", "nearest")
             group.setdefault("opt_state_rounding", "nearest")
 
@@ -122,7 +134,10 @@ class AdamW(torch.optim.Optimizer):
         state: dict[str, Any],
     ) -> None:
         opt_state_dtype = resolve_dtype(group["opt_state_dtype"], parameter)
-        state["step"] = torch.zeros((), dtype=torch.int64, device=parameter.device)
+        state["step"] = torch.zeros(
+            (), dtype=torch.int64,
+            device=parameter.device if group["_device_step"] else "cpu",
+        )
         state["exp_avg"] = torch.zeros_like(parameter, dtype=opt_state_dtype)
         state["exp_avg_sq"] = torch.zeros_like(parameter, dtype=opt_state_dtype)
 
@@ -222,8 +237,12 @@ class AdamW(torch.optim.Optimizer):
                             torch.int64 if name == "step" else
                             resolve_dtype(group["opt_state_dtype"], parameter)
                         )
+                        device = (
+                            "cpu" if name == "step" and not group["_device_step"]
+                            else parameter.device
+                        )
                         self.state[parameter][name] = entries[name].to(
-                            device=parameter.device, dtype=dtype, copy=True
+                            device=device, dtype=dtype, copy=True
                         )
 
         pre = self.register_load_state_dict_pre_hook(preserve)
