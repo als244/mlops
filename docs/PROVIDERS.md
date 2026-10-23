@@ -406,3 +406,30 @@ boundaries. The complete two-operation workflow is documented in
 `mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
 TEMoELoRA modules with caller-owned groups and communication buffers.
 See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.md).
+
+
+## Hyper-connection implementations
+
+`hyper_connection.py` defines the public `mhc_pre` and `mhc_combine` contracts.
+Adapters live in `providers/native_torch/hyper_connection.py`,
+`providers/builtin/hyper_connection.py`, and
+`providers/tilekernels/hyper_connection.py`; private Triton code lives in
+`kernels/hyper_connection.py`. All adapters use the normal immutable registry,
+metadata support predicates and per-operation overrides. Optional imports occur
+only inside execution. Neither model nor ShadowSpill owns provider selection.
+
+Preprocessing includes Sinkhorn but excludes the attention/MLP branch.
+Postprocessing includes mixing, branch expansion and addition. The current
+adapters expose the semantic/autograd surface; they do not advertise public
+`mlops.explicit` entrypoints. Their private backward custom ops expose fake
+outputs, canonical FLOP formulas, and first-order VJPs with tensor-only saved
+state. Native preprocessing stays decomposable for recomputation. TileKernels
+saves the small logits and reconstructs Sinkhorn iteration states on chip.
+
+TileKernels is eligible only on SM90/SM100 and when its dependency is present.
+Pre currently requires four streams and tokens divisible by eight; post requires
+BF16 contiguous activations, four streams, hidden width divisible by 128, and
+FP32 coefficient mode. SM90 has numerical/compiled forward/backward validation;
+SM100 eligibility follows upstream support, without local hardware validation.
+See [the operation contracts](OPS.md#hyper-connections) for exact provider IDs
+and precision options. Unsupported cases select builtin/native implementations.

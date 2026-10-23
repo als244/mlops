@@ -51,7 +51,7 @@ math, not by a model family.
 | `kda.py` | `kimi_delta_attention`, `kda_decay` |
 | `dsa.py`, `dsa_indexer.py` | `sparse_latent_attention`, `pooled_topk` alongside existing DSA APIs |
 | `mla.py` | `sparse_mla` alongside existing `mla_attention` |
-| `hyper_connection.py` | `mhc_normalize_streams`, `mhc_coefficients`, `mhc_combine` |
+| `hyper_connection.py` | `mhc_pre`, `mhc_combine` (plus composition helpers) |
 | `routing.py` | `sigmoid_topk` |
 | Existing activation/normalization APIs | `swiglu(..., limit=...)`, `packed_swiglu(..., limit=...)`, `gated_rms_norm(..., activation="sigmoid")` |
 
@@ -85,14 +85,22 @@ explicit calls accept the option. Packed inputs support arbitrary leading dimens
 
 ## Hyper-connections
 
-`mhc_normalize_streams(streams)` returns FP32 normalized flattened
-streams. The caller applies its dense projection (or LoRA projection) in FP32.
-`mhc_coefficients(streams, projected, bias, scale, ...)`
-takes this projected FP32 tensor together with `[..., N, D]` streams and returns post coefficients, the doubly
-normalized mixing matrix, and the collapsed `[...,D]` branch input.
-`mhc_combine(branch, streams, post, mixing)` expands the branch and mixes the
-residual streams. These are ordinary differentiable PyTorch expressions;
-Inductor can compile them.
+`mhc_pre(streams, projection, bias, scale, ...)` includes RMS normalization,
+FP32 coefficient projection, gates, Sinkhorn and branch-input collapse.
+It returns `(post, mixing, branch_input)`. `mhc_combine(branch, streams,
+post, mixing, coefficient_precision="fp32")` includes residual mixing,
+branch expansion and addition. The attention/MLP sits between these two
+provider-dispatched operations. The native reference is decomposable;
+optimized custom operations expose their saved inputs and backward to autograd.
+
+FP32 coefficients/accumulation are the default. Activations stay BF16 in
+optimized post kernels, without full FP32 activation copies. The explicit
+`coefficient_precision="activation"` option preserves the GLM HF reference's
+coefficient rounding. TileKernels' optional SM90/SM100 providers fuse Sinkhorn
+and the full post forward/backward; builtin and native fallbacks remain.
+See [the operation contracts](OPS.md#hyper-connections) for shapes and dispatch
+IDs. Projection ownership remains in the model; externally composed projections
+can still use `mhc_normalize_streams` and `mhc_coefficients`.
 
 ## KDA
 

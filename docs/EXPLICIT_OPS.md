@@ -51,3 +51,12 @@ registry and artifact bootstrap. See [the attention guide](ATTENTION.md).
 The sparse latent operation also accepts matching `q_rope`/`k_rope` tails in
 forward and backward. Its explicit backward then returns four gradients:
 query, combined latent KV, positional query, and positional key.
+
+
+## Semantic compositions without explicit entrypoints
+
+`mhc_pre` and `mhc_combine` currently expose ordinary autograd only. Their
+providers register private fake/autograd/VJP operations where needed, but do
+not advertise the public `explicit` surface. Direct private-op calls are not
+a supported substitute. This leaves the native preprocessing composition
+visible to AOTAutograd and recomputation planning.

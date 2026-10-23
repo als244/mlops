@@ -53,6 +53,7 @@ from mlops import (
     mhc_coefficients,
     mhc_combine,
     mhc_normalize_streams,
+    mhc_pre,
     mla_attention,
     moe,
     packed_swiglu,
@@ -177,10 +178,12 @@ replay is correct.
 | `dsa_selection_override` | diagnostic selection | context manager | caller-supplied selection |
 | `dsa_attention` | selected attention | `[T,Hq,Dv]` | `builtin.dsa_attention.sparse` |
 | `sparse_latent_attention`, `sparse_mla` | tied-latent attention / composition | `[T,H,L]` / `[T,H,Dv]` | `builtin.sparse_latent_attention.tilelang` / composed |
-| `pooled_topk` | pooled causal selection | `[T,K+pool_size-1]` | `builtin.pooled_topk.triton` |
-| `kimi_delta_attention`, `kda_decay` | recurrent attention / FP32 decay | `[T,H,D]` | `fla.kimi_delta_attention.chunk` / composed |
+| `pooled_topk` | pooled causal selection | `[T,K+pool_size-1]` | `cudnn.pooled_topk.sm90` / Triton fallback |
+| `kimi_delta_attention`, `kda_decay` | recurrent attention / FP32 decay | `[T,H,D]` | cuLA SM90 / FLA fallback; composed decay |
 | `sigmoid_topk` | expert selection | IDs and weights `[T,K]` | composed PyTorch |
-| `mhc_normalize_streams`, `mhc_coefficients`, `mhc_combine` | residual streams | normalized streams / coefficients / mixed streams | composed PyTorch |
+| `mhc_pre` | residual streams | post coefficients / mixing / branch input | TileKernels Sinkhorn on SM90/SM100; native fallback |
+| `mhc_combine` | residual streams | mixed streams | TileKernels post on SM90/SM100; builtin/native fallback |
+| `mhc_normalize_streams`, `mhc_coefficients` | composition helpers | normalized streams / coefficients | composed PyTorch |
 | `causal_conv_silu` | hybrid mixer | shape of input | `fla.causal_conv_silu` |
 | `linear_attention` | hybrid mixer | shape of V | `fla.linear_attention.gated_delta_rule` |
 | `linear_mixer` | graph-layout policy | shape of hidden | `builtin.linear_mixer.packed` |
@@ -1672,35 +1675,60 @@ Dense router projection and any balancing objective remain caller-owned.
 
 ## Hyper-connections
 
-These functions expose stream normalization, coefficient construction and
-residual mixing; the caller owns the learned projection. See the
-[attention and residual-mixing guide](ATTENTION.md#hyper-connections).
+The semantic boundaries are **before** and **after** the attention/MLP branch.
+Parameters belong to the model and are passed as tensors; every tensor input is
+differentiable. Providers may fuse within a boundary. The native composition is
+visible to AOTAutograd and recomputation partitioning; an opaque fused provider
+must register its fake function, VJP, saved tensors and FLOP accounting.
 
-### `mhc_normalize_streams`
+### `mhc_pre`
 
-`mhc_normalize_streams(streams, *, eps=1e-5)` flattens the last two
-dimensions of `streams[...,N,D]` and applies FP32 RMS normalization.
-Returns `[...,N*D]` in FP32 for a caller-owned coefficient projection.
-`eps` stabilizes the variance.
+`mhc_pre(streams, projection, bias, scale, *, eps=1e-5,
+sinkhorn_eps=1e-6, iterations=20)` includes flattened RMS normalization,
+coefficient projection, pre/post gates, Sinkhorn, and branch-input collapse.
+For `streams[...,N,D]`, the projection is `[N*(N+2),N*D]`, bias is `[N*(N+2)]`
+and scale is `[3]`. Returns `(post[...,N], mixing[...,N,N], branch_input[...,D])`.
+Computation through coefficient construction is FP32; branch input retains the
+activation dtype. Parameter storage dtypes are unchanged.
 
-### `mhc_coefficients`
-
-`mhc_coefficients(streams, projected, bias, scale, *,
-sinkhorn_eps=1e-6, iterations=20)` turns FP32 projected coefficients into
-`(post, mixing, collapsed)`. Given `streams[...,N,D]`, `projected`
-has shape `[...,N*(N+2)]`, `bias[N*(N+2)]`, and `scale[3]`; `bias` and
-`scale` widen to FP32 whatever their dtype, so with the projection the whole
-coefficient computation is FP32, as DeepSeek's and GLM's mHC train it.
-Sigmoid/softmax and `iterations` of Sinkhorn normalization run in FP32;
-`sinkhorn_eps` stabilizes them. `collapsed[...,D]` returns in the streams'
-dtype; post and mixing remain FP32. The function is differentiable.
+Implementations: `native_torch.mhc_pre` and optional
+`tilekernels.mhc_pre.sinkhorn`. The latter currently fuses Sinkhorn forward and
+backward; normalization/projection and collapse remain ordinary tensor code.
+Sinkhorn's iteration states are recomputed on chip during backward.
 
 ### `mhc_combine`
 
-`mhc_combine(branch, streams, post, mixing)` expands `branch[...,D]`
-across `streams[...,N,D]` using `post[...,N]` and combines residuals
-using `mixing[...,N,N]`. Coefficients cast to the streams' dtype before
-mixing. Returns `[...,N,D]`, with ordinary PyTorch autograd.
+`mhc_combine(branch, streams, post, mixing, *, coefficient_precision="fp32")`
+is the complete post operation: mix residual streams, expand the branch, add.
+`mixing[...,i,j]` sends input stream i to output stream j. FP32 coefficients and
+accumulation are the default, with final output cast to the activation dtype.
+The optimized providers never materialize full FP32 activation copies.
+`coefficient_precision="activation"` retains the GLM HF reference's reduced
+coefficient operands and intermediate rounding (compiler fusion can affect
+rounding of ordinary elementwise code).
+
+Implementations: `native_torch.mhc_combine`,
+`builtin.mhc_combine.four_stream`, and optional `tilekernels.mhc_combine`.
+TileKernels is preferred for supported FP32-coefficient calls on SM90/SM100;
+SM90 forward/backward are tested locally, SM100 is supported upstream but has
+not yet been hardware-tested here. Other architectures, unsupported shapes,
+and activation-precision mode fall back to the builtin/native providers.
+
+```python
+post, mixing, branch_input = mhc_pre(streams, fn, bias, scale)
+branch = attention_or_mlp(branch_input)
+streams = mhc_combine(branch, streams, post, mixing)
+```
+
+### Composition helpers
+
+`mhc_normalize_streams(streams, *, eps=1e-5)` returns FP32 `[...,N*D]`.
+`mhc_coefficients(streams, projected, bias, scale, *, sinkhorn_eps=1e-6,
+iterations=20)` consumes externally projected FP32 logits and returns the
+same tuple as `mhc_pre`. They remain available for custom compositions;
+model code should use the two semantic boundaries to permit larger fusion.
+The private `mlops::mhc_mix_four` and TileKernels Sinkhorn operations are
+implementation details, not required model graph boundaries.
 
 ## Language-model epilogues
 
@@ -2135,9 +2163,9 @@ order.
 | `causal_conv_silu` | `fla.causal_conv_silu` | `native_torch.causal_conv_silu` |
 | `l2_norm` | `fla.l2_norm` | `native_torch.l2_norm` |
 | `gated_rms_norm` | `fla.gated_rms_norm` | `native_torch.gated_rms_norm` |
-| `kimi_delta_attention` | `fla.kimi_delta_attention.chunk` | none |
+| `kimi_delta_attention` | `cula.kimi_delta_attention.sm90.recompute`, `cula.kimi_delta_attention.sm90`, `fla.kimi_delta_attention.chunk` (IEEE opt-in) | none |
 | `sparse_latent_attention` | `builtin.sparse_latent_attention.tilelang` | none |
-| `pooled_topk` | `builtin.pooled_topk.triton` | none |
+| `pooled_topk` | `cudnn.pooled_topk.sm90`, `builtin.pooled_topk.triton` | none |
 | `linear_attention` | `fla.linear_attention.gated_delta_rule` | `native_torch.linear_attention` |
 | `linear_mixer` | `builtin.linear_mixer.packed` | `native_torch.linear_mixer.per_sequence` |
 | `dsa_attention` | `builtin.dsa_attention.sparse` | `native_torch.dsa_attention` |
