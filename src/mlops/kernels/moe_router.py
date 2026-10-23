@@ -291,18 +291,22 @@ def route(
         scores = torch.sigmoid(logits.float())
         with torch.no_grad():
             selection = scores + (0.0 if bias is None else bias.float())
-            grouped = selection.view(tokens, int(n_group), experts // int(n_group))
-            grouped, _ = torch.sort(grouped, dim=-1, descending=True, stable=True)
-            group_scores = grouped[..., : min(2, grouped.shape[-1])].sum(-1)
-            _, group_ids = torch.sort(
-                group_scores, dim=-1, descending=True, stable=True
-            )
-            group_mask = torch.zeros(
-                tokens, int(n_group), dtype=torch.bool, device=logits.device
-            )
-            group_mask.scatter_(1, group_ids[:, : int(topk_group)], True)
-            expert_mask = group_mask.repeat_interleave(experts // int(n_group), dim=1)
-            masked = selection.masked_fill(~expert_mask, float("-inf"))
+            if int(topk_group) >= int(n_group):
+                # Every group is eligible: no ranking or mask is needed.
+                masked = selection
+            else:
+                grouped = selection.view(tokens, int(n_group), experts // int(n_group))
+                grouped, _ = torch.sort(grouped, dim=-1, descending=True, stable=True)
+                group_scores = grouped[..., : min(2, grouped.shape[-1])].sum(-1)
+                _, group_ids = torch.sort(
+                    group_scores, dim=-1, descending=True, stable=True
+                )
+                group_mask = torch.zeros(
+                    tokens, int(n_group), dtype=torch.bool, device=logits.device
+                )
+                group_mask.scatter_(1, group_ids[:, : int(topk_group)], True)
+                expert_mask = group_mask.repeat_interleave(experts // int(n_group), dim=1)
+                masked = selection.masked_fill(~expert_mask, float("-inf"))
             _, selected_ids = torch.sort(masked, dim=-1, descending=True, stable=True)
             selected_ids = selected_ids[:, : int(top_k)]
         picked = scores.gather(1, selected_ids)
