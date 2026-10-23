@@ -294,8 +294,8 @@ def test_the_containers_components_are_the_operators_operands():
 def test_row_kernels_compile_once_per_width():
     """Token counts, gathers, pitches and SwiGLU limits are runtime arguments:
     no launch dimension or limit compiles another kernel."""
-    from mlops.expert_parallel.quack.kernels import quantize_rows, swiglu_rows
-    from mlops.expert_parallel.quack.kernels.quantize_transpose import (
+    from mlops.kernels.quack_moe import quantize_rows, swiglu_rows
+    from mlops.kernels.quack_moe.quantize_transpose import (
         _batched_transpose_quantize,
         quantize_weights_fp8,
     )

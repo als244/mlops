@@ -9,9 +9,10 @@ import itertools
 
 import torch
 
+from mlops.kernels.quack_moe.fp8 import QuackFP8Experts
+from mlops.kernels.quack_moe.wgrad import scaled_fp8
+
 from ..activation_transport import gradient_rows
-from ..experts.fp8 import QuackFP8Experts
-from ..experts.wgrad import scaled_fp8
 
 
 class ChunkFP8Experts(QuackFP8Experts):

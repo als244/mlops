@@ -136,8 +136,8 @@ def _interleaved(value):
 def test_the_grouped_block_gemm_matches_the_dequantized_product(
     transposed, math, gathered
 ):
-    from mlops.expert_parallel.quack.kernels.quantize_rows import quantize_rows_fp8
     from mlops.kernels.block_fp8 import grouped_block_gemm
+    from mlops.kernels.quack_moe.quantize_rows import quantize_rows_fp8
 
     torch.manual_seed(1)
     counts = [0, 70, 131, 15]  # an empty expert, and tiles left partial
@@ -196,8 +196,8 @@ def test_the_grouped_block_gemm_matches_the_dequantized_product(
 @pytest.mark.gpu
 @hopper
 def test_the_gate_up_layouts_and_the_addend():
-    from mlops.expert_parallel.quack.kernels.quantize_rows import quantize_rows_fp8
     from mlops.kernels.block_fp8 import grouped_block_gemm
+    from mlops.kernels.quack_moe.quantize_rows import quantize_rows_fp8
 
     torch.manual_seed(2)
     offsets = torch.tensor([0, 40, 40, 140], device="cuda", dtype=torch.int32)
@@ -251,8 +251,8 @@ def test_the_gate_up_layouts_and_the_addend():
 @pytest.mark.gpu
 @hopper
 def test_the_block_gemm_compiles_once_per_layout():
-    from mlops.expert_parallel.quack.kernels.quantize_rows import quantize_rows_fp8
     from mlops.kernels import block_fp8
+    from mlops.kernels.quack_moe.quantize_rows import quantize_rows_fp8
 
     device = torch.cuda.current_device()
     weight = BlockFP8Weight.quantize(torch.randn(4, 96, 192, device="cuda"))

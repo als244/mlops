@@ -1,6 +1,6 @@
 """The block-scaled FP8 expert GEMMs
-(``expert_parallel/quack/experts/block_fp8_gemm.py``) and the row quantizer's
-K order for the transposing one (``expert_parallel/quack/kernels/
+(``kernels/quack_moe/block_fp8_gemm.py``) and the row quantizer's
+K order for the transposing one (``kernels/quack_moe/
 quantize_rows.py``).
 
 On the CPU: the transposer's index maps, read from the kernel's own CuTe-DSL
@@ -29,14 +29,14 @@ SM90 = "sm_90a"
 def _gemm_module():
     pytest.importorskip("cutlass")
     pytest.importorskip("quack")
-    from mlops.expert_parallel.quack.experts import block_fp8_gemm
+    from mlops.kernels.quack_moe import block_fp8_gemm
 
     return block_fp8_gemm
 
 
 def _quantizer():
     pytest.importorskip("triton")
-    from mlops.expert_parallel.quack.kernels import quantize_rows
+    from mlops.kernels.quack_moe import quantize_rows
 
     return quantize_rows
 

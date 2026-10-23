@@ -55,6 +55,8 @@ def initialize() -> None:
     sweeps.apply()
     # The patched kernel source lives here, so it is part of the fingerprint.
     register_source_dir(Path(__file__).resolve().parent)
+    # Shared DP/EP epilogues and CuTe kernels belong to the same cache identity.
+    register_source_dir(Path(__file__).resolve().parents[1] / "kernels" / "quack_moe")
     for item in os.environ.get(SOURCE_DIRS_VARIABLE, "").split(os.pathsep):
         if item:
             register_source_dir(item)

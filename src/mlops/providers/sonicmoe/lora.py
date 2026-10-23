@@ -3,9 +3,9 @@
 The composition keeps ``expert_lora``'s trace-visible routing (the package's
 router with its own backward) and SonicMoE's routing metadata, and runs
 everything else as two opaque operators that take a base weight with its two
-low-rank factors, the structure of the expert-parallel Quack LoRA math
-(``expert_parallel/quack/lora/math.py``) on the plain SonicMoE path's fused
-pieces:
+low-rank factors. Local expert kernels live in ``mlops.kernels.quack_moe``
+and are shared with the EP adapter; this provider performs no inter-rank
+communication. It composes the following fused pieces:
 
 * up: the routed rows are never materialized -- the rank projection
   ``z = x @ Aᵀ`` and the base GEMM gather them from the token rows through
@@ -46,10 +46,11 @@ from __future__ import annotations
 
 import torch
 
+from mlops.kernels.quack_moe.swiglu_rows import routed_swiglu_rows_backward
+
 from ...dispatch.context import weight_gradient_dtype
 from ...dispatch.costs import flop_formula
 from ...dispatch.registry import SupportResult
-from ...expert_parallel.quack.kernels.swiglu_rows import routed_swiglu_rows_backward
 from ...lora.routing import routing, routing_logits, statistics
 from . import bf16, fp8
 from .moe import CAPABILITIES, ROW_ALIGNMENT, available, kernels, routing_metadata
@@ -185,7 +186,7 @@ def _up_forward(
     h = torch.empty(rows, 2 * width, dtype=x.dtype, device=x.device)
     a = torch.empty(rows, width, dtype=x.dtype, device=x.device)
     if swiglu_limit is not None:
-        from ...expert_parallel.quack.experts.swiglu_limit import swiglu_limit_add
+        from mlops.kernels.quack_moe.swiglu_limit import swiglu_limit_add
 
         swiglu_limit_add(
             x,

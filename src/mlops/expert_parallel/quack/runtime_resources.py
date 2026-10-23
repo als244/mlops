@@ -7,10 +7,11 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
+from mlops.kernels.quack_moe.pointwise import _Pointwise
+
 from .bank_pool import projection_banks
 from .communication import _walk_tensors
 from .config import config_signature
-from .kernels.pointwise import _Pointwise
 from .weights import _Bank
 
 

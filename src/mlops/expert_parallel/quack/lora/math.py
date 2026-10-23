@@ -7,11 +7,12 @@ import torch.nn.functional as F
 from quack.gemm_config import GemmConfig
 from quack.gemm_interface import gemm_act, gemm_tuned
 
+from mlops.kernels.quack_moe.bf16 import _gemm
+from mlops.kernels.quack_moe.pointwise import _Pointwise
+from mlops.kernels.quack_moe.policy import select_policy
+from mlops.kernels.quack_moe.wgrad import scaled_fp8
+
 from ..activation_transport import FP8Rows, quantized_rows
-from ..experts.bf16 import _gemm
-from ..experts.policy import select_policy
-from ..experts.wgrad import scaled_fp8
-from ..kernels.pointwise import _Pointwise
 
 LORA_GEMM = GemmConfig(
     tile_m=128,

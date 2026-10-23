@@ -74,6 +74,17 @@ the input-gradient tile, with channel offsets and separate gradient tensors.
 The convolution gradient preserves the FLA preactivation cast and sequence
 resets while avoiding activation-sized scratch and unused weight gradients.
 
+## Shared local expert math
+
+`src/mlops/kernels/quack_moe/` owns local BF16/FP8 grouped GEMMs, clipped-SwiGLU
+epilogues, row quantization/transpose, pointwise kernels and FP8 row payload
+helpers. SonicMoE DP and Quack EP adapters import the same implementations.
+It has no MoonEP or other communication dependency and does not select routed
+experts. Group offsets, gather indices, scales and GEMM policy are explicit
+caller inputs. The Quack runtime fingerprints this directory for its caches.
+The old private `expert_parallel/quack/experts/` and `kernels/` paths are aliases;
+new kernels and callers belong here.
+
 The final KDA intra-chunk gradient kernel accumulates in FP32 and stores `dQ`
 and `dK` in their input dtypes. This moves the existing final cast into the
 store, avoiding full FP32 output buffers and separate conversion launches.

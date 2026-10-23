@@ -167,7 +167,7 @@ hidden widths must be multiples of 128; top-k is at most 32.
 | TE `gemm_sm_margin` | `32` | SM headroom requested from Transformer Engine GEMMs |
 
 Quack's fixed GEMM choices live in
-[the expert policy](../src/mlops/expert_parallel/quack/experts/policy.py).
+[the expert policy](../src/mlops/kernels/quack_moe/policy.py).
 The BF16 fallback uses a 256x128 cooperative, 1x2-cluster weight-gradient tile
 when expected tokens per expert exceed 1024; shorter reductions keep the
 128x192 ping-pong setting. Expected load is
