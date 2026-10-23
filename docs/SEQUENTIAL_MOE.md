@@ -57,3 +57,5 @@ Factors compute at the input activation dtype; gradients follow factor storage
 dtype. A uses Kaiming initialization and B starts at zero. Base components stay
 frozen and retain their checkpoint representation. BF16 and FP16 GEMMs are
 supported; compressed weight storage is independent of GEMM precision.
+
+Router weights default to BF16 storage. Set `router_dtype=torch.float32` to opt into FP32 router weights; `gradient_dtype` remains independent and defaults to FP32.

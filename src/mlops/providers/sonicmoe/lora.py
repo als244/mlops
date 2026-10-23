@@ -51,7 +51,7 @@ from ...dispatch.costs import flop_formula
 from ...dispatch.registry import SupportResult
 from ...expert_parallel.quack.kernels.swiglu_rows import routed_swiglu_rows_backward
 from ...lora.routing import routing, routing_logits, statistics
-from . import fp8
+from . import bf16, fp8
 from .moe import CAPABILITIES, ROW_ALIGNMENT, available, kernels, routing_metadata
 
 
@@ -65,7 +65,7 @@ def supports(hidden, gate_up, down, *, compute_precision=None) -> SupportResult:
     if not available():
         return SupportResult.no("the quack and sonicmoe extras are not installed")
     plain = [t for t in (gate_up, down) if not fp8.is_container(t)]
-    if any(t.dtype is not torch.bfloat16 for t in (hidden, *plain)):
+    if any(bf16.compute_dtype(t) is not torch.bfloat16 for t in (hidden, *plain)):
         return SupportResult.no("SonicMoE computes in bfloat16")
     if hidden.shape[-1] % ROW_ALIGNMENT or down.shape[2] % ROW_ALIGNMENT:
         return SupportResult.no("the model and expert widths must be multiples of 8")
@@ -790,6 +790,19 @@ def _down_backward_flops(
     )
 
 
+def _aligned_factors(a, b):
+    """Keep the logical rank while satisfying Quack's BF16 row alignment.
+
+    Padding is differentiable, so gradients return at the original factor
+    shapes. Aligned ranks take the original tensors without any extra copy.
+    Base weights, including FP8 containers, are never touched.
+    """
+    padding = -a.shape[1] % ROW_ALIGNMENT
+    if not padding:
+        return a, b
+    return bf16.padded(a, (0, 0, 0, padding)), bf16.padded(b, (0, padding))
+
+
 def sonicmoe_up(
     x,
     gather,
@@ -809,6 +822,7 @@ def sonicmoe_up(
     ``a13 [E, r, H]`` and ``b13 [E, 2I, r]`` (rows interleaved, scaled) at
     the rows' dtype."""
     grad = torch.is_grad_enabled()
+    a13, b13 = _aligned_factors(a13, b13)
     return _up_forward(
         x,
         gather,
@@ -850,6 +864,7 @@ def sonicmoe_down(
     ``residual``; the gradient flows to ``h``. ``down`` plain or a
     container, ``a2 [E, r, I]`` and ``b2 [E, H, r]`` (scaled)."""
     grad = torch.is_grad_enabled()
+    a2, b2 = _aligned_factors(a2, b2)
     return _down_forward(
         a,
         h,
@@ -922,8 +937,8 @@ def expert_lora(
         gather,
         reverse,
         gate_up,
-        a13.to(dtype),
-        (interleaved_rows(b13) * scale).to(dtype),
+        bf16.for_compute(a13, dtype),
+        bf16.for_compute(bf16.scaled(interleaved_rows(b13), scale), dtype),
         offsets,
         top_k,
         grad_dtype=grad_dtype,
@@ -933,8 +948,8 @@ def expert_lora(
         activated,
         h,
         down,
-        a2.to(dtype),
-        (b2 * scale).to(dtype),
+        bf16.for_compute(a2, dtype),
+        bf16.for_compute(bf16.scaled(b2, scale), dtype),
         offsets,
         gather,
         scatter,

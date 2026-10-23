@@ -39,7 +39,7 @@ from ..moe_common import (
     routing_statistics,
     skipped_gradient,
 )
-from . import fp8
+from . import bf16, fp8
 
 # A bf16 row of this many elements is 16 bytes, the unit Quack's loads move.
 ROW_ALIGNMENT = 8
@@ -102,7 +102,10 @@ def supports(
     if not available():
         return SupportResult.no("the quack and sonicmoe extras are not installed")
     plain = [w for w in (w13_experts, w2_experts) if not fp8.is_container(w)]
-    if any(tensor.dtype is not torch.bfloat16 for tensor in (h2, residual, *plain)):
+    if any(
+        bf16.compute_dtype(tensor) is not torch.bfloat16
+        for tensor in (h2, residual, *plain)
+    ):
         return SupportResult.no("SonicMoE computes in bfloat16")
     if h2.shape[-1] % ROW_ALIGNMENT or w2_experts.shape[2] % ROW_ALIGNMENT:
         return SupportResult.no("the model and expert widths must be multiples of 8")

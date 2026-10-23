@@ -7,6 +7,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 
+from ...kernels.router import routed_logits
 from ..parameters import BF16ComputeWeight
 from .buffers import bind_buffer
 from .config import MoEConfig, config_signature
@@ -181,10 +182,13 @@ class TEMoE(nn.Module):
     def route(self, x):
         flat = x.reshape(-1, self.config.model_dim)
         with torch.autocast(device_type=x.device.type, enabled=False):
-            logits = F.linear(
-                flat.to(self.config.router_dtype),
-                self.router_weight.to(self.config.router_dtype),
-            ).float()
+            # Weight storage and logit precision are independent. As in the
+            # Quack layer, BF16 operands accumulate into FP32 routing logits.
+            logits = routed_logits(
+                flat,
+                self.router_weight,
+                weight_grad_dtype=self.config.router_weight_grad_dtype,
+            )
         values, ids = logits.topk(self.config.top_k, dim=-1)
         p = (
             values.softmax(-1)

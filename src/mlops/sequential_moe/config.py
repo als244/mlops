@@ -27,7 +27,7 @@ class SequentialMoEConfig:
     train_shared: bool = True
     factor_dtype: torch.dtype = torch.bfloat16
     gradient_dtype: torch.dtype = torch.float32
-    router_dtype: torch.dtype = torch.float32
+    router_dtype: torch.dtype = torch.bfloat16
     activation_accum_dtype: torch.dtype | None = None
     shared_experts: int = 0
     shared_expert_size: int | None = None
