@@ -42,6 +42,7 @@ _CATALOG = (
     "mlops.providers.builtin.sparse_latent_rope",
     "mlops.providers.builtin.sparse_latent_hopper",
     "mlops.providers.builtin.pooled_indexer",
+    "mlops.providers.cudnn.pooled_indexer",
     "mlops.providers.native_torch.hybrid",
     "mlops.providers.builtin.linear_mixer",
     "mlops.providers.native_torch.linear_mixer",

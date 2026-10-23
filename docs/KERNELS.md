@@ -35,7 +35,15 @@ the attributed TileLang forward/backward kernels. Pooled index selection lives
 in `src/mlops/kernels/pooled_indexer.py`: a Triton kernel that scores a chunk of
 queries against every pooled key with the head reduction fused, and a selection
 kernel that searches each query's FP32 scores for its cutoff and writes its
-selection.
+selection. The SM90 priority provider in `pooled_indexer_cudnn.py` instead
+uses cuDNN 1.30's typed CuTe scorer (including FP32 head weights) and radix
+top-k, with the combined score/radix workspace capped at 256 MiB.
+
+FLA KDA uses fast dot precision by default; IEEE intra-chunk arithmetic is
+an explicit implementation override. The optional cuLA SM90 training provider
+replaces the fused WY backward stage while retaining call-local state metadata.
+Its native-forward variant rebuilds intra-chunk matrices inside backward and
+saves only the required prefix gates alongside caller inputs and metadata.
 
 The existing SwiGLU kernels accept a compile-time clipping limit in both directions;
 the default avoids the clipping branches. Gated RMSNorm threads the selected

@@ -165,24 +165,15 @@ selected indices, padded with -1.
 - Payloads are CUDA tensors; `boundaries` is small, explicit CPU metadata.
 - CPU metadata is a runtime input to the custom op; changing its contents does
   not recompile the tested graph.
-- The keys of each sequence are pooled once, then one Triton launch per chunk
-  of queries scores the chunk against every pooled key with the scale, ReLU and
-  head weights applied in registers, and a second launch reads each query's
-  FP32 scores and writes its selection, the cutoff found by a binary search
-  over the float bit patterns and ties going to the lowest pool (a query wider
-  than 16384 pools selects with `torch.topk` instead). A chunk's scores stay
-  within 256 MiB, so no global `[total_tokens,total_tokens]` matrix exists and
-  a call makes a few dozen allocations however long the sequence.
-- Queries and keys sharing a 16-bit dtype are scored on the tensor cores; any
-  other dtypes are scored in FP32, which they reach exactly. The width may be
-  at most 256.
-- If a sequence fits within the key budget, every causal key is selected
-  without score computation.
-- Tied top-k scores may select different equally ranked pools from
-  Transformers' `torch.topk`. These are valid ties, but different selected
-  keys can change attention outputs. Bitwise checkpoint parity is not claimed.
-  The heads sum in another order than in PyTorch arithmetic, so a cutoff
-  between scores closer than FP32 rounding may select either.
+- On SM90, `cudnn.pooled_topk.sm90` has priority for BF16 Q/K, D=128,
+  H in {16,32,64}, and supported top-k geometry. It uses cuDNN 1.30's CuTe
+  scorer and radix top-k, preserving FP32 head weights through the typed
+  scorer. Pooling and index expansion use Triton.
+- Scoring plus both radix work arrays are chunked within 256 MiB; the
+  output index matrix is additional. No full sequence-by-sequence score
+  matrix or persistent tensor cache is retained.
+- Other geometries use `builtin.pooled_topk.triton`. It can also be selected
+  explicitly through `MLOPS_IMPLEMENTATIONS`.
 
 ## Sparse attention and MLA
 
@@ -272,14 +263,17 @@ The reference recurrence uses FP32, so tests use explicit numerical tolerances.
 
 These are reusable operations. Whole-model checkpoint loading, model
 composition, SequentialMoE integration and planned end-to-end training are
-separate work. The pooled indexer's long-sequence implementation is bounded
-but not yet fused/tuned. Exact top-k tie identity and removal of the sparse
+separate work. Pooled indexing has bounded-workspace Triton and SM90 cuDNN
+implementations. Exact top-k tie identity and removal of the sparse
 kernel's zero positional tail remain optimization/compatibility work.
 Quantized attention projections and an indexer-training objective are not
 implemented by these APIs.
 
 ## Source attribution
 
+- cuLA commit `bee137a998f822e8fa84f26ffd7f7103a3bbdcba` supplies the optional
+  SM90 fused WY backward kernel (imported, not copied).
+- cuDNN Frontend 1.30.0 supplies the SM90 index scorer and radix selection.
 - FLA 0.5.2 supplies the KDA training algorithm. Adapted intra-chunk kernels and
   the MIT license live in `src/mlops/kernels/kda/`.
 - TileLang sparse MLA forward/backward derive from commit
