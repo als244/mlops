@@ -11,15 +11,16 @@ from mlops.sequential_moe.precision.storage import materialize, pack
 pytestmark = pytest.mark.gpu
 
 
+@pytest.mark.parametrize("alpha", [5, 8])
 @pytest.mark.parametrize("storage", ["fp8", "nvfp4"])
 @pytest.mark.parametrize("compiled", [False, True])
-def test_compressed_lora_matches_decompressed_linear(storage, compiled):
+def test_compressed_lora_matches_decompressed_linear(storage, compiled, alpha):
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         pytest.skip("Requires BF16 CUDA")
     torch.manual_seed(431)
     weight = torch.randn(256, 128, device="cuda", dtype=torch.bfloat16) * 0.03
     parts, spec = pack(weight, storage, nvfp4_block_rows=1)
-    config = LoRAConfig(rank=8, alpha=5, factor_dtype=torch.float32)
+    config = LoRAConfig(rank=8, alpha=alpha, factor_dtype=torch.float32)
     candidate = FrozenLoRALinear(FrozenLinear(parts, spec), config)
     dense = nn.Linear(128, 256, bias=False, device="cuda", dtype=torch.bfloat16)
     with torch.no_grad():

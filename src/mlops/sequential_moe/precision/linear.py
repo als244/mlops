@@ -92,4 +92,6 @@ class FrozenLoRALinear(FrozenLinear):
     def forward(self, x):
         inner = F.linear(x, self.lora_a.to(x.dtype))
         update = F.linear(inner, self.lora_b.to(x.dtype))
-        return super().forward(x) + self.lora_config.scale * update
+        if self.lora_config.scale != 1.0:
+            update = self.lora_config.scale * update
+        return super().forward(x) + update
