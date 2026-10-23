@@ -242,3 +242,159 @@ def test_a_small_in_place_gemm_tunes_on_copies_and_keeps_its_output(
     out, expected, _, _ = _tune_in_place(384, 256, monkeypatch, tmp_path)
     error = (out.float() - expected).norm() / expected.norm()
     assert error < 1e-2, error
+
+
+def test_concurrent_cache_misses_publish_one_choice(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from time import sleep
+
+    monkeypatch.setenv("QUACK_CACHE_DIR", str(tmp_path))
+    monkeypatch.delenv("QUACK_FORCE_CACHE_UPDATE", raising=False)
+    barrier = Barrier(4)
+    sweeps_run = []
+
+    def caller(index):
+        local = _tuner()
+        configs = [_Config("a"), _Config("b")]
+        key = ("concurrent", 256, 64)
+
+        def bench():
+            sweeps_run.append(index)
+            # All callers reach the same miss while the first tunes.
+            sleep(0.1)
+            local.configs_timings = {
+                config: [1.0 if i == index % 2 else 2.0]
+                for i, config in enumerate(configs)
+            }
+            local.cache[key] = min(local.configs_timings, key=local.configs_timings.get)
+
+        barrier.wait(timeout=10)
+        sweeps.check_disk_cache(local, key, configs, bench)
+        return str(local.cache[key])
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        choices = list(pool.map(caller, range(4)))
+    assert len(sweeps_run) == 1
+    assert len(set(choices)) == 1
+
+
+def test_adaptive_timer_validates_budgets_and_supports_long_targets(monkeypatch):
+    assert sweeps._positive_setting(None, "MLOPS_QUACK_TUNE_TIME_MS", 2000) == 2000
+    monkeypatch.setenv("MLOPS_QUACK_TUNE_TIME_MS", "4000")
+    assert sweeps._positive_setting(None, "MLOPS_QUACK_TUNE_TIME_MS", 2000) == 4000
+    for value in (0, -1, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="positive"):
+            sweeps._positive_setting(value, "budget", 2000)
+    with pytest.raises(ValueError, match="positive integer"):
+        sweeps._positive_setting(1.5, "samples", 3, integer=True)
+
+
+def test_capture_size_is_bounded_and_preserves_complete_rotations():
+    # Fast kernels need extra replays, not an unbounded captured graph.
+    assert sweeps.calls_for_budget(.001, 50, 4) == 256
+    # A 76 ms kernel needs one execution per graph, without a 50-call floor.
+    assert sweeps.calls_for_budget(76, 50, 1) == 1
+    for sets in (1, 3, 4, 16):
+        calls = sweeps.calls_for_budget(.01, 50, sets)
+        assert calls % sets == 0 and sets <= calls <= 256
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_adaptive_timer_runs_requested_budgets_and_keeps_matmul_output():
+    from time import perf_counter
+
+    a = torch.randn(1024, 1024, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn_like(a)
+    out = torch.empty_like(a)
+    expected = a @ b
+    torch.cuda.synchronize()
+    started = perf_counter()
+    timings = sweeps.benchmark_rotation(
+        torch.mm, [(a, b)], [{"out": out}], {},
+        warmup_target_ms=50, timed_target_ms=100, samples=3,
+        quantiles=(.5, .2, .8),
+    )
+    elapsed = perf_counter() - started
+    # Measured CUDA budgets alone require at least 150 ms, even when the
+    # bounded graph is too short to cover the budget in one replay.
+    assert elapsed >= .15
+    assert 0 < timings[1] <= timings[0] <= timings[2]
+    torch.testing.assert_close(out, expected)
+
+
+def test_overwrite_gemm_makes_no_backups_but_aliases_are_restored():
+    from quack.gemm_interface import gemm_tuned
+
+    from mlops.quack_runtime.preservation import tensors_to_preserve
+    a, b, out = torch.randn(4, 4), torch.randn(4, 4), torch.zeros(4, 4)
+    assert tensors_to_preserve(gemm_tuned.fn, (a, b, out), {}) == []
+    saved = tensors_to_preserve(gemm_tuned.fn, (a, b, out), {"C": out})
+    assert len(saved) == 1 and saved[0] is out
+    saved = tensors_to_preserve(gemm_tuned.fn, (a, b, out), {"add_to_output": True})
+    assert len(saved) == 1 and saved[0] is out
+    # A read operand can overlap an output without being the same Tensor.
+    saved = tensors_to_preserve(gemm_tuned.fn, (a, b, out), {"C": out[1:3]})
+    assert len(saved) == 1 and saved[0] is out
+    # Disjoint slices of the same storage do not need restoration.
+    storage = torch.zeros(32)
+    assert tensors_to_preserve(gemm_tuned.fn, (a, b, storage[:16]), {"C": storage[16:]}) == []
+
+
+def test_mod_contract_keeps_readwrite_sinks_and_output_input_aliases():
+    from quack.epilogue.frontend import gemm_epilogue
+    from quack.epilogue.ops import ColVecReduce
+    from quack.gemm_runtime.autotune import _make_tuned_fn
+
+    from mlops.quack_runtime.preservation import tensors_to_preserve
+
+    @gemm_epilogue(outputs=("aux",), reduces={"total": ColVecReduce("total")})
+    def epi(acc, c):
+        return {"D": acc + c, "aux": acc, "total": acc}
+
+    fn = _make_tuned_fn(epi, ("aux", "total"))
+    a, b, out, aux = [torch.ones(4, 4) for _ in range(4)]
+    total = torch.zeros(4)
+    kwargs = {"A": a, "B": b, "D": out, "C": None, "aux": aux, "total": total}
+    selected = tensors_to_preserve(fn, (), kwargs)
+    assert len(selected) == 1 and selected[0] is total
+    kwargs["C"] = aux
+    selected = tensors_to_preserve(fn, (), kwargs)
+    assert {id(x) for x in selected} == {id(aux), id(total)}
+
+
+def test_pure_output_sweep_has_no_host_copy_and_uses_real_operands():
+    from quack.gemm_interface import gemm_tuned
+    a, b, out = [torch.ones(4, 4) for _ in range(3)]
+    arg_sets, kwarg_sets = sweeps.rotation_sets((a, b, out), {}, 1)
+    assert arg_sets.saved is None
+    def bench(fn, sets, kwsets, **kwargs):
+        sets[0][2].fill_(3)
+        return [1.0]
+    result = sweeps.restoring(bench)(gemm_tuned.fn, arg_sets, kwarg_sets, extra_kwargs={})
+    assert result == [1.0] and arg_sets.saved._copies == []
+    assert torch.equal(out, torch.full_like(out, 3))
+    assert torch.equal(a, torch.ones_like(a))
+
+
+def test_compact_sm90_additions_preserve_baseline_and_respect_cooperative_flag():
+    from quack import gemm_config as gc
+
+    from mlops.quack_runtime.autotune import _SM90_MEASURED_ADDITIONS
+    wrapped = gc._get_sm90_configs
+    original = wrapped.__wrapped__
+    for epilogue in (None, "gated", "lse"):
+        for tune_coop in (False, True):
+            before=set(original(epilogue, tune_coop))
+            after=wrapped(epilogue, tune_coop)
+            assert before <= set(after) and len(after) == len(set(after))
+            # Existing N=96 additions plus the nine concrete measured choices.
+            assert len(set(after)-before) <= 13
+            for m,n,pp,cm,cn in _SM90_MEASURED_ADDITIONS:
+                if not tune_coop and not pp: continue
+                assert any(c.tile_m==m and c.tile_n==n and c.pingpong==pp
+                           and c.cluster_m==cm and c.cluster_n==cn
+                           and not c.swap_ab and c.device_capacity==9 for c in after)
+            if not tune_coop:
+                assert all(c.pingpong for c in set(after)-before)
