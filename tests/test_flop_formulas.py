@@ -563,3 +563,16 @@ def test_mhc_provider_counts_include_post_vjps_and_sinkhorn_replay(fake):
     assert cost.logical_bytes_accessed == sum(
         t.numel() * t.element_size() for t in (b, x, p, m, x)
     )
+
+
+def test_fused_mhc_pre_counts_frozen_projection_and_sinkhorn_replay(fake):
+    x, w = _tensor(32, 4, 128), _tensor(24, 512)
+    bias, scale, post = _f32(24), _f32(3), _f32(32, 4)
+    dot, square = _f32(32, 24), _f32(32)
+    dp, dm, dy = _f32(32, 4), _f32(32, 4, 4), _tensor(32, 128)
+    args = x, w, bias, scale, post, dot, square, dp, dm, dy, 1e-5, 1e-6, 20
+    frozen = _count(ops.mhc_pre_deepgemm_backward, *args, False, False, False)
+    trained = _count(ops.mhc_pre_deepgemm_backward, *args, True, True, True)
+    assert trained - frozen == 2 * 32 * 512 * 24
+    canonical = logical.mhc_pre(x, w, bias, scale, iterations=20, entrypoint="backward")
+    assert trained - canonical.logical_flops == 32 * 4 * 4 * (4 + 3 * 39)
