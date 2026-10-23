@@ -125,3 +125,34 @@ backends to an environment that is already set up:
 ```
 
 See [expert-parallel configuration, installation and examples](docs/EXPERT_PARALLEL.md).
+
+## Quack autotuning
+
+The SM90 default pool includes the existing N=96 tiles plus nine measured
+configurations, for 57 generic candidates before shape/epilogue pruning
+(previously 48). They apply to ordinary MLOps calls, including independent
+ShadowSpill profiling workers; distributed tuning is not required. See
+[the selected configurations and evidence](docs/sonicmoe-autotuning.md).
+
+Candidate timing defaults to 50 ms of warmup and 180 ms of measurement across
+three timing windows, using CUDA-event budgets and bounded graph replays.
+Override with `MLOPS_QUACK_TUNE_WARMUP_MS`, `MLOPS_QUACK_TUNE_TIME_MS`, and
+`MLOPS_QUACK_TUNE_SAMPLES`. Existing valid tuning results are reused.
+
+`MLOPS_QUACK_TUNE_DISTRIBUTED=1` enables cooperative searches on an initialized
+PyTorch distributed group. The caller must provide identical tuning activations
+and enter identical tuner searches in identical order on every rank. Candidates
+are divided across ranks; local winners are collected, the global winner is
+broadcast, and the full score table is cached. Independent GPU workers must leave
+this off. ShadowSpill's MoE benchmark exposes `--distributed-tuning` and handles
+activation synchronization during warmup and restoration before measurement.
+
+Quack's tuning results persist under `~/.quack/cache` (`QUACK_CACHE_DIR` overrides
+this path). Quack also applies `QUACK_CACHE_DIR` to its compiled-kernel cache,
+whose default is node-local `/tmp/<user>/quack_cache`. Pointing this override
+at an empty directory starts both caches cold. `QUACK_FORCE_CACHE_UPDATE=1`
+instead forces fresh candidate measurements while retaining compiled kernels. The cache key includes tensor metadata
+and the pruned candidate list. Tuning on a single operand set backs up only
+read/write operands and output/input aliases for supported GEMMs; read-only
+weights and overwritten outputs need no host copies. Unknown kernels retain
+conservative preservation.

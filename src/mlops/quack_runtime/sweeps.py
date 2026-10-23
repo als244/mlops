@@ -8,28 +8,40 @@ fixed pool -- a ShadowSpill execution pool -- the device's free memory says
 nothing about the pool, and four copies of GiB-scale operands do not fit:
 every candidate fails, the pool runs out of memory in the middle of a
 measurement, and the sweep's all-infinite timings are cached, so every later
-process runs the first-listed config untuned. Three changes:
+process runs the first-listed config untuned. Changes:
 
 * as many copy sets as it takes for one rotation round to move three L2s of
   bytes (at most 16), with no floor and no reading of the device's free
   memory, so the copies stay within a few L2 sizes;
 * no copy when a single set already moves that much: the sweep times the
-  call's own tensors, and a host copy of their bytes restores them after each
-  candidate -- in-place GEMMs (``gemm_add_inplace``) read and write their
+  call's own tensors, preserving only read/write operands (including aliases)
+  with host backups restored after each candidate -- in-place GEMMs (``gemm_add_inplace``) read and write their
   output, so the real call must see it untouched;
 * a sweep in which every candidate failed is neither written to the disk
-  cache nor taken from it, so a later process tunes that shape again.
+  cache nor taken from it, so a later process tunes that shape again;
+* adaptive repetitions targeting 50 ms warmup plus 180 ms across three timing
+  windows per candidate, without fixed 50/200 execution floors; environment
+  overrides MLOPS_QUACK_TUNE_WARMUP_MS, MLOPS_QUACK_TUNE_TIME_MS, and
+  MLOPS_QUACK_TUNE_SAMPLES adjust this search cost;
+* a per-key file lock serializes cache misses, so simultaneous DP ranks
+  reuse one kernel configuration and its workspace contract.
 """
 
 import builtins
+import fcntl
 import hashlib
 import json
+import math
 import os
+import statistics
 import sys
+import time
+from pathlib import Path
 
 import torch
 
 from .pipeline import _checked_source
+from .preservation import tensors_to_preserve
 
 _applied = False
 _copy_sets = None
@@ -114,18 +126,17 @@ class RotationSets(list):
     """A sweep's rotation sets when the one set is the call's own tensors,
     with the copies that restore them after each candidate."""
 
-    def __init__(self, sets, saved):
+    def __init__(self, sets, saved=None):
         super().__init__(sets)
         self.saved = saved
 
 
 def rotation_sets(args, kwargs, n_buffers):
     """``n_buffers`` copies of the call's tensors, as Quack makes them; for
-    one set, the call's own tensors, saved first (`RotationSets`)."""
+    one set, the call's own tensors, lazily preserved once the kernel is known."""
     if n_buffers > 1:
         return _copy_sets(args, kwargs, n_buffers)
-    saved = SavedTensors(args, kwargs)
-    return RotationSets([tuple(args)], saved), [dict(kwargs)]
+    return RotationSets([tuple(args)]), [dict(kwargs)]
 
 
 def restoring(bench):
@@ -133,6 +144,10 @@ def restoring(bench):
     call's own tensors afterwards when they were the rotation set."""
 
     def bench_rotation(fn, arg_sets, kwarg_sets, *args, **kwargs):
+        if isinstance(arg_sets, RotationSets) and arg_sets.saved is None:
+            named = dict(kwarg_sets[0]) | kwargs.get("extra_kwargs", {})
+            tensors = tensors_to_preserve(fn, arg_sets[0], named)
+            arg_sets.saved = SavedTensors(tensors, {})
         try:
             return bench(fn, arg_sets, kwarg_sets, *args, **kwargs)
         finally:
@@ -140,6 +155,102 @@ def restoring(bench):
                 arg_sets.saved.restore()
 
     return bench_rotation
+
+
+
+
+def _positive_setting(value, name, default, *, integer=False):
+    if value is None:
+        value = os.environ.get(name, default)
+    converted = float(value)
+    if not math.isfinite(converted) or converted <= 0 or (integer and not converted.is_integer()):
+        raise ValueError(f"{name} must be a positive {'integer' if integer else 'finite number'}")
+    return int(converted) if integer else converted
+
+
+def calls_for_budget(est_ms, budget_ms, sets, cap=256):
+    """Whole rotations; one rotation minimum, bounded capture size."""
+    rounds = max(1, min(max(1, cap // sets), math.ceil(budget_ms / max(est_ms * sets, 1e-3))))
+    return rounds * sets
+
+
+def benchmark_rotation(
+    fn,
+    arg_sets,
+    kwarg_sets,
+    extra_kwargs,
+    warmup_target_ms=None,
+    timed_target_ms=None,
+    samples=None,
+    quantiles=None,
+):
+    """Rotate L2-cold operands for GPU-time budgets, without execution floors.
+
+    Each graph holds at most 256 calls (whole operand rotations). Replays
+    continue until CUDA events reach each requested budget, so tiny kernels
+    still receive the full measurement time without an enormous graph.
+    Budgets are targets: a window can exceed its target by one graph replay.
+    """
+    warmup_target_ms = _positive_setting(
+        warmup_target_ms, "MLOPS_QUACK_TUNE_WARMUP_MS", 50.0
+    )
+    timed_target_ms = _positive_setting(
+        timed_target_ms, "MLOPS_QUACK_TUNE_TIME_MS", 180.0
+    )
+    samples = _positive_setting(
+        samples, "MLOPS_QUACK_TUNE_SAMPLES", 3, integer=True
+    )
+    count = len(arg_sets)
+
+    def launch(index):
+        index %= count
+        fn(*arg_sets[index], **kwarg_sets[index], **extra_kwargs)
+
+    # A compile miss raises CompilePending before graph capture.
+    for index in range(3):
+        launch(index)
+    torch.cuda.synchronize()
+    begin, end = [torch.cuda.Event(enable_timing=True) for _ in range(2)]
+    begin.record()
+    launch(0)
+    end.record()
+    end.synchronize()
+    estimate = max(begin.elapsed_time(end), 1e-3)
+    chunk_ms = min(50.0, warmup_target_ms, timed_target_ms / samples)
+    calls = calls_for_budget(estimate, chunk_ms, count)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        for index in range(calls):
+            launch(index)
+    torch.cuda.synchronize()
+
+    def window(target_ms):
+        elapsed, executions = 0.0, 0
+        while elapsed < target_ms:
+            begin.record()
+            graph.replay()
+            end.record()
+            end.synchronize()
+            duration = begin.elapsed_time(end)
+            if not math.isfinite(duration) or duration <= 0:
+                raise RuntimeError("autotune graph produced an invalid CUDA duration")
+            elapsed += duration
+            executions += calls
+        return elapsed / executions
+
+    window(warmup_target_ms)
+    durations = [window(timed_target_ms / samples) for _ in range(samples)]
+    if quantiles:
+        ordered = sorted(durations)
+
+        def quantile(q):
+            position = q * (len(ordered) - 1)
+            lo, hi = math.floor(position), math.ceil(position)
+            return ordered[lo] + (ordered[hi] - ordered[lo]) * (position - lo)
+
+        return [quantile(q) for q in quantiles]
+    return statistics.median(durations)
+
 
 
 def _failed(timings):
@@ -151,7 +262,11 @@ def _failed(timings):
 def check_disk_cache(self, tuning_key, configs, bench_fn):
     """Quack's ``Autotuner.check_disk_cache``, except that a sweep in which
     every candidate failed is neither taken from the disk cache nor written
-    to it."""
+    to it, and simultaneous misses publish one shared result."""
+    if os.environ.get("MLOPS_QUACK_TUNE_DISTRIBUTED") == "1":
+        from .distributed import check_disk_cache as distributed_check
+
+        return distributed_check(self, tuning_key, configs, bench_fn)
     import quack.autotuner as tuner
 
     if not tuning_key:
@@ -167,42 +282,65 @@ def check_disk_cache(self, tuning_key, configs, bench_fn):
     cache_key = hashlib.sha256("-".join(cache_key).encode("utf-8")).hexdigest()
     cache = tuner.FileCacheManager(tuner._base32(cache_key))
     file_name = f"{fn.__name__[:150]}.autotune.json"
-    path = cache.get_file(file_name)
-    # There's an environment variable to force cache update
-    if path and not os.environ.get(f"{tuner.PACKAGE_NAME.upper()}_FORCE_CACHE_UPDATE"):
-        str2config = {s: c for s, c in zip(config_str_list, configs)}
-        with open(path, "r") as cached_configs:
-            timings = json.load(cached_configs)["configs_timings"]
-        timings = {str2config[config]: timing for config, timing in timings}
-        if not _failed(timings.values()):
-            self.cache[tuning_key] = builtins.min(timings, key=timings.get)
-            self.configs_timings = timings
-            self.bench_time = 0
-            return
+    # Serialize the read/tune/write transaction: atomic publication alone lets
+    # simultaneous DP ranks retain different winners and workspace contracts.
+    # The lock is per cache key, so unrelated GEMM shapes tune independently.
+    with (Path(cache.cache_dir) / "mlops-tuning.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            path = cache.get_file(file_name)
+            # There's an environment variable to force cache update
+            if path and not os.environ.get(
+                f"{tuner.PACKAGE_NAME.upper()}_FORCE_CACHE_UPDATE"
+            ):
+                str2config = {s: c for s, c in zip(config_str_list, configs)}
+                with open(path, "r") as cached_configs:
+                    timings = json.load(cached_configs)["configs_timings"]
+                timings = {str2config[config]: timing for config, timing in timings}
+                if not _failed(timings.values()):
+                    self.cache[tuning_key] = builtins.min(timings, key=timings.get)
+                    self.configs_timings = timings
+                    self.bench_time = 0
+                    return
 
-    bench_fn()
-    if _failed(self.configs_timings.values()):
-        print(
-            f"{tuner.PACKAGE_NAME} autotune: every config failed for "
-            f"{fn.__name__}; the sweep is not cached",
-            file=sys.stderr,
-        )
-        return
-    cache.put(
-        json.dumps(
-            {
-                # str(): the key tuple holds torch dtypes/shape tuples, and
-                # this field is informational (only configs_timings is read back)
-                "key": str(tuning_key),
-                "configs_timings": [
-                    (str(config), timings)
-                    for config, timings in self.configs_timings.items()
-                ],
-            }
-        ),
-        file_name,
-        binary=False,
-    )
+            warmup_ms = _positive_setting(None, "MLOPS_QUACK_TUNE_WARMUP_MS", 50.0)
+            timed_ms = _positive_setting(None, "MLOPS_QUACK_TUNE_TIME_MS", 180.0)
+            print(
+                f"mlops quack: tuning {fn.__name__}: {len(configs)} candidates; "
+                f"{warmup_ms:g} ms warmup + {timed_ms:g} ms timed per candidate",
+                flush=True,
+            )
+            started = time.monotonic()
+            bench_fn()
+            print(
+                f"mlops quack: tuned {fn.__name__} in "
+                f"{time.monotonic() - started:.1f}s; best={self.cache.get(tuning_key)}",
+                flush=True,
+            )
+            if _failed(self.configs_timings.values()):
+                print(
+                    f"{tuner.PACKAGE_NAME} autotune: every config failed for "
+                    f"{fn.__name__}; the sweep is not cached",
+                    file=sys.stderr,
+                )
+                return
+            cache.put(
+                json.dumps(
+                    {
+                        # str(): the key tuple holds torch dtypes/shape tuples, and
+                        # this field is informational (only configs_timings is read back)
+                        "key": str(tuning_key),
+                        "configs_timings": [
+                            (str(config), timings)
+                            for config, timings in self.configs_timings.items()
+                        ],
+                    }
+                ),
+                file_name,
+                binary=False,
+            )
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def apply():
@@ -227,13 +365,14 @@ def apply():
     for name in ("check_disk_cache", "_bench"):
         _checked_source(getattr(tuner.Autotuner, name), _SOURCES[name])
 
+    from . import preservation
+
+    preservation.apply()
     _copy_sets = bench_utils._clone_l2_rotate_inputs
     # The autotuner calls the helpers through its own module's names.
     tuner._pick_l2_rotate_count = rotation_count
     tuner._clone_l2_rotate_inputs = rotation_sets
-    tuner._bench_cuda_graph_l2_rotate = restoring(
-        bench_utils._bench_cuda_graph_l2_rotate
-    )
+    tuner._bench_cuda_graph_l2_rotate = restoring(benchmark_rotation)
     tuner.Autotuner.check_disk_cache = torch.compiler.disable(check_disk_cache)
     _applied = True
     return True

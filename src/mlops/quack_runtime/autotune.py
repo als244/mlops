@@ -13,6 +13,24 @@ from functools import lru_cache, wraps
 
 _applied = False
 
+# Nine measured additions from 162 GLM-shaped GEMM searches: BF16/FP8,
+# full/LoRA (rank 32), 2K..64K tokens, SM90. Together with the old defaults,
+# their best recorded times are within 4.6% of the 192-candidate exploration
+# pool for every measured shape (0.5% geometric-mean slowdown). Each row is
+# one exact config; do not expand it across all cluster/swap combinations.
+# Fields: tile_m, tile_n, pingpong, cluster_m, cluster_n.
+_SM90_MEASURED_ADDITIONS = (
+    (64, 32, True, 1, 1),
+    (128, 128, False, 1, 2),
+    (64, 256, False, 2, 1),
+    (128, 192, False, 2, 1),
+    (64, 192, True, 1, 1),
+    (128, 32, True, 1, 1),
+    (64, 128, True, 1, 1),
+    (64, 128, True, 2, 1),
+    (128, 32, False, 2, 1),
+)
+
 
 def apply():
     global _applied
@@ -59,6 +77,22 @@ def apply():
                 )
                 if candidate not in candidates:
                     candidates.append(candidate)
+        for m, n, pingpong, cm, cn in _SM90_MEASURED_ADDITIONS:
+            if not tune_coop and not pingpong:
+                continue
+            candidate = gc.GemmConfig(
+                tile_m=m,
+                tile_n=n,
+                pingpong=pingpong,
+                cluster_m=cm,
+                cluster_n=cn,
+                swap_ab=False,
+                device_capacity=9,
+                is_dynamic_persistent=False,
+                use_tma_gather=False,
+            )
+            if candidate not in candidates:
+                candidates.append(candidate)
         return candidates
 
     gc._get_sm90_configs = extended_sm90_configs
