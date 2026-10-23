@@ -15,5 +15,13 @@
       "version": "0.5.2",
       "sha256": "74a888a0b51fd94a8c950f91befaa3a2af3decf898fc178440ac143f8ab555f6"
     }
+  },
+  "cula": {
+    "repository": "https://github.com/inclusionAI/cuLA",
+    "commit": "bee137a998f822e8fa84f26ffd7f7103a3bbdcba",
+    "imported_sm90_kernel": "cula/ops/kda/sm90/bwd_wy_dqkg.py",
+    "validated_cutlass_dsl": "4.7.1",
+    "source_modified": false,
+    "imported_sm90_forward": "cula/cudac.py:kda_fwd_prefill -> cula._cudac_sm90"
   }
 }

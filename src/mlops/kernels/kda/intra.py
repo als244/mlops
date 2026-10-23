@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, Songlin Yang, Yu Zhang, Zhiyuan Li
 # Adapted from FLA 0.5.2 under the MIT license (see FLA_LICENSE).
-# Only adaptation to numerical kernels: explicit IEEE FP32 dot precision.
+# Dot precision follows FLA by default; IEEE FP32 is an explicit opt-in.
 # Local orchestration bypasses runtime dispatch, leaving installed FLA unchanged.
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from fla.ops.kda.wy_fast import recompute_w_u_fwd
 from fla.ops.utils import prepare_chunk_indices
 from fla.ops.utils.cache import fla_cache_autotune
 from fla.ops.utils.op import exp2, gather
-from fla.utils import IS_GATHER_SUPPORTED, autotune_cache_kwargs
+from fla.utils import IS_GATHER_SUPPORTED, IS_TF32_SUPPORTED, autotune_cache_kwargs
 
-SOLVE_TRIL_DOT_PRECISION = tl.constexpr("ieee")
+DEFAULT_DOT_PRECISION = "tf32" if IS_TF32_SUPPORTED else "ieee"
 
 
 @triton.heuristics(
@@ -53,6 +53,7 @@ def chunk_kda_fwd_kernel_inter_solve_fused(
     BK: tl.constexpr,
     IS_VARLEN: tl.constexpr,
     USE_SAFE_GATE: tl.constexpr,
+    DOT_PRECISION: tl.constexpr,
 ):
     """
     Fused kernel: compute inter-subchunk Akk + solve_tril in one pass.
@@ -156,8 +157,8 @@ def chunk_kda_fwd_kernel_inter_solve_fused(
             # [BK, BC]
             b_kgt = tl.trans(b_k0 * exp2(b_gn1[None, :] - b_g0))
             # [BC, BC]
-            b_Aqk10 += tl.dot(b_q1 * b_gqn, b_kgt, input_precision="ieee")
-            b_Akk10 += tl.dot(b_k1 * b_gqn, b_kgt, input_precision="ieee")
+            b_Aqk10 += tl.dot(b_q1 * b_gqn, b_kgt, input_precision=DOT_PRECISION)
+            b_Akk10 += tl.dot(b_k1 * b_gqn, b_kgt, input_precision=DOT_PRECISION)
 
             if NC >= 3 and i_tc2 < T:
                 m_ck2 = m_tc2[:, None] & m_k[None, :]
@@ -178,13 +179,13 @@ def chunk_kda_fwd_kernel_inter_solve_fused(
                 b_kg2 = b_k2 * b_gqn2
                 # [BK, BC]
                 b_kgt = tl.trans(b_k0 * exp2(b_gn2[None, :] - b_g0))
-                b_Aqk20 += tl.dot(b_qg2, b_kgt, input_precision="ieee")
-                b_Akk20 += tl.dot(b_kg2, b_kgt, input_precision="ieee")
+                b_Aqk20 += tl.dot(b_qg2, b_kgt, input_precision=DOT_PRECISION)
+                b_Akk20 += tl.dot(b_kg2, b_kgt, input_precision=DOT_PRECISION)
                 # [BC, BC]
                 b_kgt = tl.trans(b_k1 * exp2(b_gn2[None, :] - b_g1))
                 # [BC, BC]
-                b_Aqk21 += tl.dot(b_qg2, b_kgt, input_precision="ieee")
-                b_Akk21 += tl.dot(b_kg2, b_kgt, input_precision="ieee")
+                b_Aqk21 += tl.dot(b_qg2, b_kgt, input_precision=DOT_PRECISION)
+                b_Akk21 += tl.dot(b_kg2, b_kgt, input_precision=DOT_PRECISION)
 
                 if NC >= 4 and i_tc3 < T:
                     m_ck3 = m_tc3[:, None] & m_k[None, :]
@@ -206,18 +207,18 @@ def chunk_kda_fwd_kernel_inter_solve_fused(
                     # [BK, BC]
                     b_kgt = tl.trans(b_k0 * exp2(b_gn3[None, :] - b_g0))
                     # [BC, BC]
-                    b_Aqk30 += tl.dot(b_qg3, b_kgt, input_precision="ieee")
-                    b_Akk30 += tl.dot(b_kg3, b_kgt, input_precision="ieee")
+                    b_Aqk30 += tl.dot(b_qg3, b_kgt, input_precision=DOT_PRECISION)
+                    b_Akk30 += tl.dot(b_kg3, b_kgt, input_precision=DOT_PRECISION)
                     # [BK, BC]
                     b_kgt = tl.trans(b_k1 * exp2(b_gn3[None, :] - b_g1))
                     # [BC, BC]
-                    b_Aqk31 += tl.dot(b_qg3, b_kgt, input_precision="ieee")
-                    b_Akk31 += tl.dot(b_kg3, b_kgt, input_precision="ieee")
+                    b_Aqk31 += tl.dot(b_qg3, b_kgt, input_precision=DOT_PRECISION)
+                    b_Akk31 += tl.dot(b_kg3, b_kgt, input_precision=DOT_PRECISION)
                     # [BK, BC]
                     b_kgt = tl.trans(b_k2 * exp2(b_gn3[None, :] - b_g2))
                     # [BC, BC]
-                    b_Aqk32 += tl.dot(b_qg3, b_kgt, input_precision="ieee")
-                    b_Akk32 += tl.dot(b_kg3, b_kgt, input_precision="ieee")
+                    b_Aqk32 += tl.dot(b_qg3, b_kgt, input_precision=DOT_PRECISION)
+                    b_Akk32 += tl.dot(b_kg3, b_kgt, input_precision=DOT_PRECISION)
 
     ################################################################################
     # save off-diagonal Aqk blocks and prepare Akk
@@ -315,41 +316,41 @@ def chunk_kda_fwd_kernel_inter_solve_fused(
 
     # we used tf32 to maintain matrix inverse's precision whenever possible.
     b_Ai10 = -tl.dot(
-        tl.dot(b_Ai11, b_Akk10, input_precision=SOLVE_TRIL_DOT_PRECISION),
+        tl.dot(b_Ai11, b_Akk10, input_precision=DOT_PRECISION),
         b_Ai00,
-        input_precision=SOLVE_TRIL_DOT_PRECISION,
+        input_precision=DOT_PRECISION,
     )
 
     if NC >= 3:
         b_Ai21 = -tl.dot(
-            tl.dot(b_Ai22, b_Akk21, input_precision=SOLVE_TRIL_DOT_PRECISION),
+            tl.dot(b_Ai22, b_Akk21, input_precision=DOT_PRECISION),
             b_Ai11,
-            input_precision=SOLVE_TRIL_DOT_PRECISION,
+            input_precision=DOT_PRECISION,
         )
         b_Ai20 = -tl.dot(
             b_Ai22,
-            tl.dot(b_Akk20, b_Ai00, input_precision=SOLVE_TRIL_DOT_PRECISION)
-            + tl.dot(b_Akk21, b_Ai10, input_precision=SOLVE_TRIL_DOT_PRECISION),
-            input_precision=SOLVE_TRIL_DOT_PRECISION,
+            tl.dot(b_Akk20, b_Ai00, input_precision=DOT_PRECISION)
+            + tl.dot(b_Akk21, b_Ai10, input_precision=DOT_PRECISION),
+            input_precision=DOT_PRECISION,
         )
     if NC >= 4:
         b_Ai32 = -tl.dot(
-            tl.dot(b_Ai33, b_Akk32, input_precision=SOLVE_TRIL_DOT_PRECISION),
+            tl.dot(b_Ai33, b_Akk32, input_precision=DOT_PRECISION),
             b_Ai22,
-            input_precision=SOLVE_TRIL_DOT_PRECISION,
+            input_precision=DOT_PRECISION,
         )
         b_Ai31 = -tl.dot(
             b_Ai33,
-            tl.dot(b_Akk31, b_Ai11, input_precision=SOLVE_TRIL_DOT_PRECISION)
-            + tl.dot(b_Akk32, b_Ai21, input_precision=SOLVE_TRIL_DOT_PRECISION),
-            input_precision=SOLVE_TRIL_DOT_PRECISION,
+            tl.dot(b_Akk31, b_Ai11, input_precision=DOT_PRECISION)
+            + tl.dot(b_Akk32, b_Ai21, input_precision=DOT_PRECISION),
+            input_precision=DOT_PRECISION,
         )
         b_Ai30 = -tl.dot(
             b_Ai33,
-            tl.dot(b_Akk30, b_Ai00, input_precision=SOLVE_TRIL_DOT_PRECISION)
-            + tl.dot(b_Akk31, b_Ai10, input_precision=SOLVE_TRIL_DOT_PRECISION)
-            + tl.dot(b_Akk32, b_Ai20, input_precision=SOLVE_TRIL_DOT_PRECISION),
-            input_precision=SOLVE_TRIL_DOT_PRECISION,
+            tl.dot(b_Akk30, b_Ai00, input_precision=DOT_PRECISION)
+            + tl.dot(b_Akk31, b_Ai10, input_precision=DOT_PRECISION)
+            + tl.dot(b_Akk32, b_Ai20, input_precision=DOT_PRECISION),
+            input_precision=DOT_PRECISION,
         )
 
     ################################################################################
@@ -424,6 +425,7 @@ def chunk_kda_bwd_kernel_intra(
     IS_VARLEN: tl.constexpr,
     SAFE_GATE: tl.constexpr,
     USE_GATHER: tl.constexpr,
+    DOT_PRECISION: tl.constexpr,
 ):
     i_kc, i_t, i_bh = tl.program_id(0), tl.program_id(1).to(tl.int64), tl.program_id(2)
     i_b, i_hv = i_bh // HV, i_bh % HV
@@ -499,8 +501,8 @@ def chunk_kda_bwd_kernel_intra(
             b_dAqk = tl.load(p_dAqk, mask=m_dAf, other=0.0)
             b_dAkk = tl.load(p_dAkk, mask=m_dAf, other=0.0)
             # [BC, BK]
-            b_dq2 += tl.dot(b_dAqk, b_kg, input_precision="ieee")
-            b_dk2 += tl.dot(b_dAkk, b_kg, input_precision="ieee")
+            b_dq2 += tl.dot(b_dAqk, b_kg, input_precision=DOT_PRECISION)
+            b_dk2 += tl.dot(b_dAkk, b_kg, input_precision=DOT_PRECISION)
         b_gqn = exp2(b_g - b_gn)
         b_dq2 *= b_gqn
         b_dk2 *= b_gqn
@@ -547,11 +549,11 @@ def chunk_kda_bwd_kernel_intra(
 
         b_k_exp_diag_qk = b_k * exp_neg_b_g_diag_qk
         b_dq2 += (
-            tl.dot(b_dAqk_diag_qk, b_k_exp_diag_qk, input_precision="ieee")
+            tl.dot(b_dAqk_diag_qk, b_k_exp_diag_qk, input_precision=DOT_PRECISION)
             * exp_b_g_diag_qk
         )
         b_dk2 += (
-            tl.dot(b_dAkk_diag_qk, b_k_exp_diag_qk, input_precision="ieee")
+            tl.dot(b_dAkk_diag_qk, b_k_exp_diag_qk, input_precision=DOT_PRECISION)
             * exp_b_g_diag_qk
         )
     else:
@@ -619,8 +621,8 @@ def chunk_kda_bwd_kernel_intra(
             b_kbg = b_kb * tl.where(m_j[:, None], b_gkn, 0)
             # [BC, BK]
             # (SY 09/17) important to not use bf16 here to have a good precision.
-            b_dkt += tl.dot(b_dAqk, b_qg, input_precision="ieee")
-            b_dkt += tl.dot(b_dAkk, b_kbg, input_precision="ieee")
+            b_dkt += tl.dot(b_dAqk, b_qg, input_precision=DOT_PRECISION)
+            b_dkt += tl.dot(b_dAkk, b_kbg, input_precision=DOT_PRECISION)
         b_dkt *= exp2(b_gn - b_g)
     o_dA = i_ti * HV * BT + i_i * BC + o_i
     p_qj = q + i_ti * H * K + o_k
@@ -666,11 +668,11 @@ def chunk_kda_bwd_kernel_intra(
         b_kb_exp = b_k * b_b[:, None] * exp_b_g_diag_kk
 
         b_dkt += (
-            tl.dot(b_dAqk_diag_kk, b_q_exp, input_precision="ieee")
+            tl.dot(b_dAqk_diag_kk, b_q_exp, input_precision=DOT_PRECISION)
             * exp_neg_b_g_diag_kk
         )
         b_dkt += (
-            tl.dot(b_dAkk_diag_kk, b_kb_exp, input_precision="ieee")
+            tl.dot(b_dAkk_diag_kk, b_kb_exp, input_precision=DOT_PRECISION)
             * exp_neg_b_g_diag_kk
         )
     else:
@@ -739,6 +741,7 @@ def chunk_kda_fwd_kernel_intra_sub_chunk(
     BK: tl.constexpr,
     IS_VARLEN: tl.constexpr,
     USE_GATHER: tl.constexpr,
+    DOT_PRECISION: tl.constexpr,
 ):
     i_t, i_i, i_bh = tl.program_id(0).to(tl.int64), tl.program_id(1), tl.program_id(2)
     i_b, i_hv = i_bh // HV, i_bh % HV
@@ -804,8 +807,8 @@ def chunk_kda_fwd_kernel_intra_sub_chunk(
 
     b_kgt = tl.trans(b_k * b_gk)
 
-    b_Aqk = tl.dot(b_q * b_gq, b_kgt, input_precision="ieee") * scale
-    b_Akk = tl.dot(b_k * b_gq, b_kgt, input_precision="ieee") * b_beta[:, None]
+    b_Aqk = tl.dot(b_q * b_gq, b_kgt, input_precision=DOT_PRECISION) * scale
+    b_Akk = tl.dot(b_k * b_gq, b_kgt, input_precision=DOT_PRECISION) * b_beta[:, None]
 
     o_i = tl.arange(0, BC)
     m_Aqk = o_i[:, None] >= o_i[None, :]
@@ -850,6 +853,7 @@ def chunk_kda_fwd_intra(
     chunk_indices: torch.LongTensor | None = None,
     safe_gate: bool = False,
     disable_recompute: bool = False,
+    ieee: bool = False,
 ):
     B, T, H, K, HV = *k.shape, gk.shape[2]
     BT = chunk_size
@@ -875,6 +879,7 @@ def chunk_kda_fwd_intra(
         grid = (NT, NC, B * HV)
         BK = triton.next_power_of_2(K)
         chunk_kda_fwd_kernel_intra_sub_chunk[grid](
+            DOT_PRECISION="ieee" if ieee else DEFAULT_DOT_PRECISION,
             q=q,
             k=k,
             g=gk,
@@ -910,6 +915,7 @@ def chunk_kda_fwd_intra(
     # Step 2: Fused inter + solve_tril (works for both fixed-len and varlen)
     grid = (NT, B * HV)
     chunk_kda_fwd_kernel_inter_solve_fused[grid](
+        DOT_PRECISION="ieee" if ieee else DEFAULT_DOT_PRECISION,
         q=q,
         k=k,
         g=gk,
