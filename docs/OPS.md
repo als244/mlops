@@ -1250,7 +1250,10 @@ CUDA inputs are `q[T,H,D]`, `key[T,D]`, `gates[T,D]`,
 `boundaries` is an integer CPU tensor with sequence boundaries, passed as runtime
 data. Output is INT32 `[T,top_k+pool_size-1]`, padded with -1.
 Selection is non-differentiable; short sequences select all causal keys without
-scoring. The implementation, `builtin.pooled_topk.triton`, pools the keys of each
+scoring. On SM90, `cudnn.pooled_topk.sm90` is preferred for BF16 Q/K, D=128
+and H=16/32/64 with supported pool/top-k geometry. It preserves FP32 head
+weights and caps the combined scoring/radix scratch at 256 MiB; output indices
+are additional. Other geometries use `builtin.pooled_topk.triton`, which pools the keys of each
 sequence once, then one Triton launch per chunk of queries scores the chunk
 against every pooled key with the scale, ReLU and head weights applied in
 registers, and a second launch reads each query's FP32 scores and writes its
