@@ -97,7 +97,10 @@ FP32 coefficients/accumulation are the default. Activations stay BF16 in
 optimized post kernels, without full FP32 activation copies. The explicit
 `coefficient_precision="activation"` option preserves the GLM HF reference's
 coefficient rounding. TileKernels' optional SM90/SM100 providers fuse Sinkhorn
-and the full post forward/backward; builtin and native fallbacks remain.
+and the full post forward/backward; DeepGEMM additionally offers fused full
+preprocessing through the same interface. The latter uses TF32 projection with
+FP32 accumulation/coefficient outputs and avoids the full FP32 normalized
+activation in forward. Builtin and native fallbacks remain.
 See [the operation contracts](OPS.md#hyper-connections) for shapes and dispatch
 IDs. Projection ownership remains in the model; externally composed projections
 can still use `mhc_normalize_streams` and `mhc_coefficients`.
@@ -219,15 +222,17 @@ with FP32 atomics; bitwise deterministic results are not promised.
 | KDA inputs | BF16/FP16 Q/K/V, FP32 log decay; beta may be BF16, FP16 or FP32 |
 | KDA decay transform | Casts projected gates and decay parameters to FP32 for exponential and sigmoid arithmetic |
 | Gated RMSNorm | FP32 normalization and SiLU/sigmoid gate; output casts to the input dtype |
-| mHC coefficients | Requires an FP32 coefficient projection; normalization and Sinkhorn iterations use FP32 |
-| mHC residual mixing | Collapse accumulates in FP32; final residual mixing casts coefficients to the streams' dtype |
+| mHC coefficients | FP32 outputs/accumulation; native FP32 or DeepGEMM TF32 projection; checkpoint parameter storage is unchanged |
+| mHC residual mixing | FP32 coefficients/accumulation by default; optional activation-precision coefficient rounding |
 | Pooled indexer | FP32 pooling softmax and scoring; pooled keys retain the key dtype |
 | Sparse latent attention | BF16 Q/KV; FP32 logits, softmax, output accumulation, LSE and shared-KV gradient accumulation |
 | SwiGLU with clipping | Preserves activation-dtype rounding at clamp/SiLU boundaries; fused kernels use FP32 intermediates |
 
-FP32 router/mHC projections must be computed in FP32, with autocast disabled
+Externally composed FP32 router/mHC projections should disable autocast
 around the caller's linear operation. Casting an already rounded BF16 projection
-does not recover that accuracy. The operations accept explicit parameters;
+does not recover that accuracy. The DeepGEMM mHC provider explicitly selects
+TF32 projection with FP32 outputs and accumulation; it also disables ambient
+autocast. The operations accept explicit parameters;
 the caller owns their storage dtypes. Upstream convolution/projection weights
 are not parameters of the attention operations. A model's checkpoint dtype
 policy belongs in its model definition and loader.

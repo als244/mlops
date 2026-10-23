@@ -44,6 +44,9 @@ sonicmoe = [
   "mlops[quack]",
   "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@7396f3e604827d8186c2e16e64b28ee33d3defd0 ; sys_platform == 'linux'",
 ]
+# DeepGEMM is built by scripts/setup_deepgemm.sh against this Torch/CUDA,
+# with pinned source/submodules and C++20/elfutils build checks. setup.sh
+# includes it by default; --no-deepgemm opts out.
 # cuLA is built separately by scripts/setup_cula_sm90.sh: upstream metadata
 # constrains CuTe <4.7 for its SM100 private APIs, while our SM90 adapter is
 # validated with the public CuTe APIs in 4.7.1. setup.sh adds it on Hopper.

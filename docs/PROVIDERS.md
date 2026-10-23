@@ -413,8 +413,9 @@ See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.m
 `hyper_connection.py` defines the public `mhc_pre` and `mhc_combine` contracts.
 Adapters live in `providers/native_torch/hyper_connection.py`,
 `providers/builtin/hyper_connection.py`, and
-`providers/tilekernels/hyper_connection.py`; private Triton code lives in
-`kernels/hyper_connection.py`. All adapters use the normal immutable registry,
+`providers/tilekernels/hyper_connection.py`, and
+`providers/deepgemm/hyper_connection.py`; private Triton code lives in
+`kernels/hyper_connection.py` and `kernels/mhc_pre.py`. All adapters use the normal immutable registry,
 metadata support predicates and per-operation overrides. Optional imports occur
 only inside execution. Neither model nor ShadowSpill owns provider selection.
 
@@ -433,3 +434,30 @@ FP32 coefficient mode. SM90 has numerical/compiled forward/backward validation;
 SM100 eligibility follows upstream support, without local hardware validation.
 See [the operation contracts](OPS.md#hyper-connections) for exact provider IDs
 and precision options. Unsupported cases select builtin/native implementations.
+
+### DeepGEMM mHC preprocessing setup
+
+The complete setup builds pinned DeepGEMM revision
+`5081f8513af57e61696de4f4f04b0e707ffb503e` with its submodules against the
+selected PyTorch/CUDA environment. `--no-deepgemm` skips this source build.
+For an existing environment, run:
+
+```bash
+./scripts/setup_deepgemm.sh --python "$CONDA_PREFIX/bin/python"
+```
+
+The helper is idempotent; `--force` rebuilds. It requires CUDA >=12.9 and a
+C++20 host compiler supporting `<format>` (for example GCC 13+). Set `CXX`
+when the default compiler is older. DeepJIT also needs elfutils/libelf headers:
+system development packages or `MLOPS_ELFUTILS_ROOT` are accepted. If neither is
+available, the helper creates an isolated Conda build-dependency prefix.
+`MLOPS_BUILD_DIR` controls source/build placement. TileKernels and TileLang are
+installed by the ordinary `providers` extra, at their pinned/minimum versions.
+DeepGEMM is built separately to avoid replacing the selected PyTorch dependency.
+
+`deepgemm.mhc_pre` uses the existing semantic interface and first-order custom
+op VJP, fake outputs and FLOP formulas. It is gated to SM90/SM100 and compatible
+four-stream geometry; missing dependencies and unsupported geometry leave the
+other providers available. See the precision, saved-state and backward
+workspace description in [the operation contract](OPS.md#mhc_pre). SM100 is
+supported by upstream kernels but has not been tested locally.

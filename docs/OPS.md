@@ -181,7 +181,7 @@ replay is correct.
 | `pooled_topk` | pooled causal selection | `[T,K+pool_size-1]` | `cudnn.pooled_topk.sm90` / Triton fallback |
 | `kimi_delta_attention`, `kda_decay` | recurrent attention / FP32 decay | `[T,H,D]` | cuLA SM90 / FLA fallback; composed decay |
 | `sigmoid_topk` | expert selection | IDs and weights `[T,K]` | composed PyTorch |
-| `mhc_pre` | residual streams | post coefficients / mixing / branch input | TileKernels Sinkhorn on SM90/SM100; native fallback |
+| `mhc_pre` | residual streams | post coefficients / mixing / branch input | DeepGEMM fused pre / TileKernels Sinkhorn on SM90/SM100; native fallback |
 | `mhc_combine` | residual streams | mixed streams | TileKernels post on SM90/SM100; builtin/native fallback |
 | `mhc_normalize_streams`, `mhc_coefficients` | composition helpers | normalized streams / coefficients | composed PyTorch |
 | `causal_conv_silu` | hybrid mixer | shape of input | `fla.causal_conv_silu` |
@@ -1691,10 +1691,24 @@ and scale is `[3]`. Returns `(post[...,N], mixing[...,N,N], branch_input[...,D])
 Computation through coefficient construction is FP32; branch input retains the
 activation dtype. Parameter storage dtypes are unchanged.
 
-Implementations: `native_torch.mhc_pre` and optional
-`tilekernels.mhc_pre.sinkhorn`. The latter currently fuses Sinkhorn forward and
-backward; normalization/projection and collapse remain ordinary tensor code.
-Sinkhorn's iteration states are recomputed on chip during backward.
+Implementations: `native_torch.mhc_pre`, `tilekernels.mhc_pre.sinkhorn`, and
+`deepgemm.mhc_pre`. TileKernels alone fuses Sinkhorn forward/backward;
+normalization/projection and collapse remain ordinary tensor code.
+DeepGEMM combines its TF32 HC prenorm projection/squared-norm reduction with
+TileKernels' fused RMS scaling, gates, Sinkhorn and stream collapse. It keeps
+coefficients and accumulators FP32 and checkpoint storage unchanged; TF32
+projection and algebraic reordering change floating-point rounding.
+
+The DeepGEMM provider requires SM90/SM100, contiguous BF16 four-stream inputs,
+H divisible by 128, T divisible by 32, and BF16/FP32 projection weights. It is
+preferred for supported geometry;
+`MLOPS_IMPLEMENTATIONS=mhc_pre=deepgemm.mhc_pre` forces it explicitly. The forward saves inputs and small FP32
+projection/norm statistics instead of a full FP32 normalized activation.
+Backward recomputes gates/Sinkhorn, uses component VJPs and a fused TF32x3 projection/input-gradient
+kernel. Neither forward nor backward materializes a full FP32 activation
+workspace. Frozen parameters avoid their parameter-gradient GEMMs; trainable
+projection gradients use bounded 256-token chunks. Sinkhorn iteration states
+are reconstructed on chip. These providers support first-order autograd.
 
 ### `mhc_combine`
 

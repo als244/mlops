@@ -45,6 +45,9 @@ dependency.
 The script creates `.venv`, installs the supported PyTorch, installs mlops
 editable with cuDNN Frontend, FlashAttention-3, flash-linear-attention,
 Quack, SonicMoE, TileLang, TileKernels and development tools, then verifies the installation.
+It also builds pinned DeepGEMM for fused mHC preprocessing; `--no-deepgemm`
+skips it. This build needs a C++20 compiler with `<format>` and elfutils headers;
+see [provider setup](docs/PROVIDERS.md#deepgemm-mhc-preprocessing-setup).
 On Hopper it also builds cuLA's pinned native KDA forward and fused WY backward
 provider; `--no-cula` skips that build. Set `MLOPS_BUILD_DIR` to place source
 builds outside a quota-limited home directory. See [the attention guide](docs/ATTENTION.md)

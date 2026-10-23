@@ -60,3 +60,8 @@ FP32 coefficients, accumulate in FP32 and write reduced-precision activations;
 there is no full FP32 activation workspace. The activation-coefficient option
 uses the separate legacy mixing primitive and a decomposable epilogue.
 TileKernels calls are adapted in `providers/tilekernels/hyper_connection.py`.
+
+`kernels/mhc_pre.py` provides the private projection/input-gradient kernel for
+`providers/deepgemm/hyper_connection.py`. It combines the projection VJP,
+squared-norm VJP and direct stream-collapse gradient without materializing
+any full FP32 activation workspace. The public boundary remains `mhc_pre`.
