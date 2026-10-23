@@ -200,8 +200,14 @@ for full-training and external-LoRA composition.
 
 KDA uses FLA's chunked training algorithm with `safe_gate=True` in both
 directions. The caller supplies log-decays bounded in [-5, 0]. The retained
-intra-chunk FLA kernels explicitly use IEEE FP32 dot arithmetic, avoiding
-excessive reduced decay-gradient error from implicit TF32 arithmetic.
+intra-chunk FLA kernels use FLA's fast dot precision by default (TF32 on
+Hopper). Strict IEEE intra-chunk dots are opt-in through
+`MLOPS_IMPLEMENTATIONS=kimi_delta_attention=fla.kimi_delta_attention.chunk.ieee`.
+The distinct implementation and custom-op IDs keep compiler artifacts separate.
+IEEE reduces error in small decay-parameter gradients at strong decay, at a
+measured performance cost; it is not a determinism setting. The fast path is
+checked against upstream FLA, while the IEEE block fixture checks the FP32
+recurrent reference without loosening its accuracy tolerance.
 State-kernel launch metadata is computed per call instead of using FLA's
 tensor-identity cache. This avoids retaining caller-owned views or reusing metadata
 after their storage contents change; the same FLA numerical kernels are used.

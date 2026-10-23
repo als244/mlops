@@ -119,7 +119,7 @@ def add_lora(model):
 @pytest.mark.parametrize("lora", [False, True])
 @pytest.mark.parametrize("lengths", [(79,), (31, 67)])
 @pytest.mark.parametrize("compiled", [False, True])
-def test_kda_block(lengths, compiled, lora, stress_decay):
+def test_kda_block_ieee_accuracy(lengths, compiled, lora, stress_decay):
     torch.manual_seed(111)
     reference = make_reference()
     if stress_decay:
@@ -145,7 +145,13 @@ def test_kda_block(lengths, compiled, lora, stress_decay):
         dtype=torch.int64,
     )
     fn = torch.compile(optimized_block, fullgraph=True) if compiled else optimized_block
-    actual = fn(model, x, cumulative, chunks)
+    # This fixture checks the opt-in IEEE path against the FP32 recurrent
+    # reference, including small decay-parameter gradients. Fast default math
+    # is tested against upstream FLA in test_kda_math_policy.py.
+    with mlops.dispatch.use_implementation(
+        "kimi_delta_attention", "fla.kimi_delta_attention.chunk.ieee"
+    ):
+        actual = fn(model, x, cumulative, chunks)
     expected = torch.cat(
         [reference(x_ref[a:b].unsqueeze(0)).squeeze(0) for a, b in pairwise(ends)]
     )
