@@ -14,6 +14,10 @@ def l2_norm_forward(x, eps):
 def fla_l2_norm_forward(x, eps):
     from fla.modules.l2norm import l2norm_fwd
 
+    if not x.is_contiguous() and 0 < x.shape[-1] <= 512:
+        from .hybrid_layout import strided_l2_forward
+
+        return strided_l2_forward(x, eps)
     return l2norm_fwd(x.contiguous(), float(eps))
 
 

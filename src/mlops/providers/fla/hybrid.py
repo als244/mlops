@@ -109,6 +109,40 @@ def _causal_backward_fake(grad_output, x, weight, cumulative, chunk_indices=None
     return torch.empty_like(x), torch.empty_like(weight)
 
 
+@torch.library.custom_op("mlops::causal_conv_silu_fla_input_bwd", mutates_args=())
+def _causal_input_backward_op(
+    grad_output: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    cumulative: torch.Tensor,
+    chunk_indices: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if weight.shape[-1] > 8:
+        return causal_backward(grad_output, x, weight, cumulative, chunk_indices)[0]
+    from ...kernels.hybrid_layout import causal_silu_input_backward
+
+    return causal_silu_input_backward(grad_output, x, weight, cumulative, chunk_indices)
+
+
+@_causal_input_backward_op.register_fake
+def _causal_input_backward_fake(grad_output, x, weight, cumulative, chunk_indices=None):
+    return torch.empty_like(x, memory_format=torch.contiguous_format)
+
+
+@flop_formula(_causal_input_backward_op)
+def _causal_input_backward_flops(
+    grad_output, x, weight, cumulative, chunk_indices=None, *, out_val=None, **_kwargs
+):
+    return logical.causal_conv_silu(
+        x,
+        weight,
+        cumulative,
+        chunk_indices,
+        entrypoint="backward",
+        weight_gradient=False,
+    ).logical_flops
+
+
 @flop_formula(_causal_forward_op)
 def _causal_forward_flops(
     x, weight, cumulative, chunk_indices=None, *, out_val=None, **_kwargs
@@ -139,6 +173,19 @@ def _setup_causal_context(ctx, inputs, output):
 
 def _causal_autograd_backward(ctx, grad_output):
     x, weight, cumulative, chunk_indices = ctx.saved_tensors
+    if not ctx.needs_input_grad[1]:
+        return (
+            _causal_input_backward_op(
+                grad_output,
+                x,
+                weight,
+                cumulative,
+                chunk_indices if ctx.has_chunk_indices else None,
+            ),
+            None,
+            None,
+            None,
+        )
     grad_x, grad_weight = _causal_backward_op(
         grad_output,
         x,
@@ -183,7 +230,7 @@ def _l2_forward_op(x: torch.Tensor, eps: float) -> tuple[torch.Tensor, torch.Ten
 def _l2_forward_fake(x, eps):
     del eps
     return (
-        torch.empty_like(x),
+        torch.empty_like(x, memory_format=torch.contiguous_format),
         torch.empty(x.shape[:-1], dtype=torch.float32, device=x.device),
     )
 

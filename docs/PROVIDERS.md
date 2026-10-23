@@ -461,3 +461,26 @@ four-stream geometry; missing dependencies and unsupported geometry leave the
 other providers available. See the precision, saved-state and backward
 workspace description in [the operation contract](OPS.md#mhc_pre). SM100 is
 supported by upstream kernels but has not been tested locally.
+
+
+## Packed linear-attention preparation
+
+The FLA L2 adapter accepts strided inputs. For feature widths up to 512, its
+layout kernel reads the original row strides and writes contiguous normalized
+output plus FP32 reciprocal norms in one pass. It avoids Q/K `.contiguous()`
+copies for views of packed QKV; wider inputs retain the FLA fallback. Its fake
+implementation advertises the same contiguous output layout.
+
+The causal-convolution autograd adapter selects
+`causal_conv_silu_fla_input_bwd` when the convolution weight is frozen. For
+widths up to eight, this private kernel reconstructs a tile and halo on chip,
+computes SiLU derivatives once, and returns only the input gradient. It keeps
+the FLA preactivation rounding boundary without a global preactivation buffer
+or unused partial weight-gradient buffer. Full weight training and the public
+explicit backward retain FLA's input-and-weight gradient implementation. Wider
+convolutions retain that fallback. Both private paths register fake behavior
+and logical FLOP formulas; the input-only formula excludes weight-gradient work.
+
+The layout kernels are in `src/mlops/kernels/hybrid_layout.py`; the provider's
+public semantic interfaces and priority remain unchanged. GPU correctness and
+matched-stage measurements are required for changes to these kernels.
