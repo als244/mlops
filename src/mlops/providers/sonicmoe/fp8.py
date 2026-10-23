@@ -33,6 +33,7 @@ import torch
 
 from ...block_fp8 import BlockFP8Weight
 from ...dispatch.registry import SupportResult
+from ...expert_parallel.parameters import BF16ComputeWeight
 from ...expert_parallel.quack.parameters.fp8 import QuackFP8Weight
 from . import block_fp8
 from .block_fp8 import BlockWeight
@@ -73,6 +74,10 @@ def supports(h2, w13_experts, w2_experts, precision="fp8_current") -> SupportRes
     per call); for ``"fp8_current"`` SM90, the extras, 16-element widths, and
     ``w13`` interleaved when it is a container; ``"fp8_block"`` as
     `block_fp8.supports` says."""
+    if any(isinstance(w, BF16ComputeWeight) for w in (w13_experts, w2_experts)):
+        return SupportResult.no(
+            "explicit BF16 compute containers require bf16 math; quantize their payloads first for FP8"
+        )
     for weight in (w13_experts, w2_experts):
         if is_container(weight) and not isinstance(weight, CONTAINERS[precision]):
             return SupportResult.no(
@@ -145,6 +150,15 @@ def prepare(compute_precision, w13_experts, w2_experts, dtype):
 
     precision = resolve(compute_precision, w13_experts, w2_experts)
     grad_dtype = weight_gradient_dtype()
+    if grad_dtype is None:
+        grad_dtype = next(
+            (
+                w.dtype
+                for w in (w13_experts, w2_experts)
+                if isinstance(w, BF16ComputeWeight)
+            ),
+            None,
+        )
     if precision in PRECISIONS:
         w13_experts, w2_experts = containers(w13_experts, w2_experts, precision)
         if grad_dtype is None:
@@ -198,9 +212,12 @@ def register_container_dispatch(*operators):
         if kwargs:
             raise ValueError("Use positional operator arguments")
         args = list(args)
-        components = []
+        slot = max(index for index, value in enumerate(args) if isinstance(value, list))
+        components = list(args[slot])
         for index, value in enumerate(args):
-            if isinstance(value, QuackFP8Weight):
+            if isinstance(value, BF16ComputeWeight):
+                args[index] = value._data
+            elif isinstance(value, QuackFP8Weight):
                 args[index] = value._data
                 components.extend(
                     (value._transposed, value._scale, value._transposed_scale)
@@ -215,7 +232,7 @@ def register_container_dispatch(*operators):
         return func(*args)
 
     for operator in operators:
-        for container in CONTAINERS.values():
+        for container in (*CONTAINERS.values(), BF16ComputeWeight):
             operator.register_torch_dispatch(container, handler)
 
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import torch
 
+from ..expert_parallel.parameters import BF16ComputeWeight
 from .matmul import add_product_, product_at
 
 OPERAND_DTYPES = (torch.bfloat16, torch.float16)
@@ -41,13 +42,23 @@ def operand_dtype(hidden: torch.Tensor) -> torch.dtype:
     return torch.float32
 
 
+def weight_operand(weight, dtype):
+    # Called inside the router autograd boundary. Read physical storage while
+    # the boundary retains the original parameter's logical gradient dtype.
+    if isinstance(weight, BF16ComputeWeight):
+        weight = weight._data
+    return weight.to(dtype)
+
+
 def router_logits(
     hidden: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
 ) -> torch.Tensor:
     """fp32 logits ``[rows, E]`` of ``hidden [rows, D]`` through ``weight
     [E, D]`` (nn.Linear orientation), plus ``bias [E]`` when given."""
     dtype = operand_dtype(hidden)
-    logits = product_at(hidden.to(dtype), weight.to(dtype).t(), torch.float32)
+    logits = product_at(
+        hidden.to(dtype), weight_operand(weight, dtype).t(), torch.float32
+    )
     if bias is not None:
         logits = logits + bias.to(torch.float32)
     return logits
@@ -59,7 +70,7 @@ def add_router_input_gradient_(
     """``grad_hidden += grad_logits @ weight`` in place, at ``grad_hidden``'s
     dtype, with the operands at the activation's dtype."""
     dtype = operand_dtype(grad_hidden)
-    add_product_(grad_hidden, grad_logits.to(dtype), weight.to(dtype))
+    add_product_(grad_hidden, grad_logits.to(dtype), weight_operand(weight, dtype))
     return grad_hidden
 
 
@@ -71,8 +82,10 @@ def router_input_gradient(
     ``like``'s dtype directly when that is the operands' dtype."""
     dtype = operand_dtype(like)
     if like.dtype is dtype:
-        return grad_logits.to(dtype) @ weight.to(dtype)
-    product = product_at(grad_logits.to(dtype), weight.to(dtype), torch.float32)
+        return grad_logits.to(dtype) @ weight_operand(weight, dtype)
+    product = product_at(
+        grad_logits.to(dtype), weight_operand(weight, dtype), torch.float32
+    )
     return product.to(like.dtype)
 
 

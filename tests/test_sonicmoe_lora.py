@@ -44,7 +44,7 @@ hopper = pytest.mark.skipif(
 )
 
 
-def _inputs(seed, *, train_base, expert_width=EXPERT_WIDTH):
+def _inputs(seed, *, train_base, expert_width=EXPERT_WIDTH, rank=RANK):
     generator = torch.Generator(device="cuda").manual_seed(seed)
 
     def randn(*shape, dtype=torch.bfloat16, scale=1.0, grad=True):
@@ -60,13 +60,13 @@ def _inputs(seed, *, train_base, expert_width=EXPERT_WIDTH):
     down = randn(
         EXPERTS, WIDTH, expert_width, scale=expert_width**-0.5, grad=train_base
     )
-    a13 = randn(EXPERTS, RANK, WIDTH, dtype=torch.float32, scale=WIDTH**-0.5)
+    a13 = randn(EXPERTS, rank, WIDTH, dtype=torch.float32, scale=WIDTH**-0.5)
     # Nonzero B factors, so the LoRA term and its gradients are exercised.
-    b13 = randn(EXPERTS, 2 * expert_width, RANK, dtype=torch.float32, scale=RANK**-0.5)
+    b13 = randn(EXPERTS, 2 * expert_width, rank, dtype=torch.float32, scale=rank**-0.5)
     a2 = randn(
-        EXPERTS, RANK, expert_width, dtype=torch.float32, scale=expert_width**-0.5
+        EXPERTS, rank, expert_width, dtype=torch.float32, scale=expert_width**-0.5
     )
-    b2 = randn(EXPERTS, WIDTH, RANK, dtype=torch.float32, scale=RANK**-0.5)
+    b2 = randn(EXPERTS, WIDTH, rank, dtype=torch.float32, scale=rank**-0.5)
     return (hidden, residual, router, gate_up, down, a13, b13, a2, b2)
 
 
@@ -92,8 +92,9 @@ def _run(
     expert_width=EXPERT_WIDTH,
     lengths=None,
     swiglu_limit=None,
+    rank=RANK,
 ):
-    primals = _inputs(seed, train_base=train_base, expert_width=expert_width)
+    primals = _inputs(seed, train_base=train_base, expert_width=expert_width, rank=rank)
     with weight_gradients_at(grad_dtype):
         output, aux, counts, probability_sum = expert_lora(
             *primals,
@@ -436,3 +437,53 @@ def test_the_precision_option_is_apart_from_the_weights():
         _assert_close(value, reference)
     with pytest.raises(ValueError, match="compute_precision='bf16'"):
         _run_fp8("builtin", 5, "softmax_then_topk", train_base=False)
+
+
+@pytest.mark.gpu
+@hopper
+@pytest.mark.parametrize("rank", [1, 4, 7, 9])
+@pytest.mark.parametrize("train_base", [False, True])
+def test_unaligned_lora_rank_matches_builtin(rank, train_base):
+    options = {"train_base": train_base, "rank": rank, "grad_dtype": torch.float32}
+    actual = _run("sonicmoe", 3, "sigmoid_noaux_tc", **options)
+    expected = _run("builtin", 3, "sigmoid_noaux_tc", **options)
+    for value, reference in zip(actual, expected, strict=True):
+        _assert_close(value, reference)
+
+
+def test_aligned_lora_factors_need_no_copy():
+    a = torch.empty(2, 16, 32)
+    b = torch.empty(2, 64, 16)
+    aligned_a, aligned_b = sonicmoe_lora._aligned_factors(a, b)
+    assert aligned_a is a and aligned_b is b
+
+
+@pytest.mark.gpu
+@fp8_hopper
+@pytest.mark.parametrize("rank", [4, 16])
+def test_block_fp8_lora_rank_forward_backward(rank):
+    from mlops.block_fp8 import BlockFP8Weight
+
+    def run(implementation):
+        primals = list(_inputs(5, train_base=False, expert_width=128, rank=rank))
+        for index in (3, 4):
+            primals[index] = BlockFP8Weight.quantize(primals[index].detach())
+        output, aux, counts, probabilities = expert_lora(
+            *primals,
+            top_k=TOP_K,
+            routing_mode="sigmoid_noaux_tc",
+            scale=0.5,
+            implementation=implementation,
+            compute_precision="bf16" if implementation == "builtin" else None,
+            **_routing(5, "sigmoid_noaux_tc"),
+        )
+        torch.manual_seed(5)
+        loss = (output.float() * torch.randn_like(output)).sum() + 0.3 * aux
+        gradients = torch.autograd.grad(
+            loss, [value for value in primals if value.requires_grad]
+        )
+        assert all(isinstance(primals[i], BlockFP8Weight) for i in (3, 4))
+        return output, aux, counts, probabilities, *gradients
+
+    for value, reference in zip(run("sonicmoe"), run("builtin"), strict=True):
+        _assert_close(value, reference, **FP8_BOUNDS)

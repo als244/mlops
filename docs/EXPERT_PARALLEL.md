@@ -150,7 +150,7 @@ hidden widths must be multiples of 128; top-k is at most 32.
 | --- | --- | --- |
 | `compute_precision` | `"bf16"` | Routed weight/activation computation; FP8 choices are listed above |
 | `weight_grad_dtype` | `torch.float32` | Returned routed/shared weight gradient dtype |
-| `router_dtype` | `torch.float32` | Router weight dtype (its logits come from bf16 operands with fp32 sums, see below) |
+| `router_dtype` | `torch.bfloat16` | Router weight dtype (its logits come from bf16 operands with fp32 sums, see below) |
 | `router_weight_grad_dtype` | `torch.float32` | Returned router gradient dtype |
 | `num_shared_experts` | `0` | Shared expert count, packed into one wider BF16 MLP |
 | `shared_expert_dim` | Routed hidden width | Width of each shared expert |

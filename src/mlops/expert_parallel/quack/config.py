@@ -48,7 +48,7 @@ class MoEConfig:
     )
     fuse_probability_backward: bool = True
     fuse_input_grad_accumulation: bool = True
-    router_dtype: torch.dtype = torch.float32
+    router_dtype: torch.dtype = torch.bfloat16
     router_weight_grad_dtype: torch.dtype = torch.float32
     init_std: float = 0.02
     profile_ranges: bool = True
