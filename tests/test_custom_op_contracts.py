@@ -26,6 +26,7 @@ from mlops.providers.builtin.adamw import (
 
 
 fla_hybrid = importlib.import_module("mlops.providers.fla.hybrid")
+fla_split_conv = importlib.import_module("mlops.providers.fla.causal_conv_qkv")
 dsa = importlib.import_module("mlops.providers.builtin.dsa")
 cross_entropy = importlib.import_module("mlops.providers.builtin.cross_entropy")
 embedding = importlib.import_module("mlops.providers.builtin.embedding")
@@ -65,8 +66,24 @@ sparse_latent_hopper = importlib.import_module(
 )
 pooled_indexer = importlib.import_module("mlops.providers.builtin.pooled_indexer")
 
+cula_kda = importlib.import_module("mlops.providers.cula.kda")
+cula_kda_native = importlib.import_module("mlops.providers.cula.kda_native")
+cudnn_indexer = importlib.import_module("mlops.providers.cudnn.pooled_indexer")
+mhc_builtin = importlib.import_module("mlops.providers.builtin.hyper_connection")
+mhc_tilekernels = importlib.import_module("mlops.providers.tilekernels.hyper_connection")
+mhc_deepgemm = importlib.import_module("mlops.providers.deepgemm.hyper_connection")
+
 FORWARD_OPERATORS = {
+    "kimi_delta_attention_cula_sm90_fwd": cula_kda._forward,
+    "kimi_delta_attention_cula_sm90_native_fwd": cula_kda_native._forward,
+    "pooled_topk_cudnn_sm90": cudnn_indexer._select,
+    "mhc_mix_four": mhc_builtin.mix,
+    "mhc_post_four": mhc_builtin._post,
+    "mhc_sinkhorn_tilekernels": mhc_tilekernels._sinkhorn,
+    "mhc_post_tilekernels": mhc_tilekernels._post,
+    "mhc_pre_deepgemm": mhc_deepgemm._forward,
     "kimi_delta_attention_fla_fwd": kda._forward,
+    "kimi_delta_attention_fla_ieee_fwd": kda._forward_ieee,
     "sparse_latent_attention_tilelang_fwd": sparse_latent._forward,
     "sparse_latent_rope_tilelang_fwd": sparse_latent_rope._forward,
     "sparse_latent_attention_hopper_fwd": sparse_latent_hopper._forward,
@@ -80,6 +97,7 @@ FORWARD_OPERATORS = {
     "lora_dispatch": lora_routing._dispatch,
     "lora_combine": lora_routing._combine,
     "causal_conv_silu_fla_fwd": fla_hybrid._causal_forward_op,
+    "causal_conv_silu_qkv_fla_fwd": fla_split_conv._forward,
     "cross_entropy_builtin_triton_fwd": cross_entropy._forward_op,
     "dsa_attention_builtin_sparse_fwd": dsa._attention_forward_op,
     "embedding_builtin_deterministic_fwd": embedding._forward_op,
@@ -108,7 +126,15 @@ FORWARD_OPERATORS = {
 }
 
 BACKWARD_OPERATORS = {
+    "kimi_delta_attention_cula_sm90_bwd",
+    "kimi_delta_attention_cula_sm90_native_bwd",
+    "mhc_post_four_input_grads",
+    "mhc_post_four_coefficient_grads",
+    "mhc_sinkhorn_tilekernels_backward",
+    "mhc_post_tilekernels_backward",
+    "mhc_pre_deepgemm_backward",
     "kimi_delta_attention_fla_bwd",
+    "kimi_delta_attention_fla_ieee_bwd",
     "sparse_latent_attention_tilelang_bwd",
     "sparse_latent_rope_tilelang_bwd",
     "sparse_latent_attention_hopper_bwd",
@@ -122,6 +148,7 @@ BACKWARD_OPERATORS = {
     "lora_combine_bwd",
     "causal_conv_silu_fla_bwd",
     "causal_conv_silu_fla_input_bwd",
+    "causal_conv_silu_qkv_input_bwd",
     "cross_entropy_builtin_triton_bwd",
     "dsa_attention_builtin_sparse_bwd",
     "embedding_builtin_deterministic_bwd",

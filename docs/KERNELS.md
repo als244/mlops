@@ -69,6 +69,12 @@ any full FP32 activation workspace. The public boundary remains `mhc_pre`.
 
 `src/mlops/kernels/hybrid_layout.py` implements row-strided L2 normalization
 and input-only packed causal-convolution/SiLU backward. These are internal
-kernels of the existing FLA providers, not separate public semantic operators.
+kernels of the FLA providers. The `causal_conv_silu_qkv` operation also uses
+the input-gradient tile, with channel offsets and separate gradient tensors.
 The convolution gradient preserves the FLA preactivation cast and sequence
 resets while avoiding activation-sized scratch and unused weight gradients.
+
+The final KDA intra-chunk gradient kernel accumulates in FP32 and stores `dQ`
+and `dK` in their input dtypes. This moves the existing final cast into the
+store, avoiding full FP32 output buffers and separate conversion launches.
+The reverse gate scan and model gate derivative remain separate operations.

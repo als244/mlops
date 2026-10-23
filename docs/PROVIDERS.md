@@ -481,6 +481,13 @@ explicit backward retain FLA's input-and-weight gradient implementation. Wider
 convolutions retain that fallback. Both private paths register fake behavior
 and logical FLOP formulas; the input-only formula excludes weight-gradient work.
 
-The layout kernels are in `src/mlops/kernels/hybrid_layout.py`; the provider's
-public semantic interfaces and priority remain unchanged. GPU correctness and
-matched-stage measurements are required for changes to these kernels.
+The split-projection operation `causal_conv_silu_qkv` reuses FLA forward for each
+projection, with a separate-gradient input VJP. An opaque multi-output forward
+and registered autograd retain that VJP across export and AOT differentiation;
+its fourth, private output is the packed input saved for backward. Frozen weights
+select `fla.causal_conv_silu_qkv`; unsupported widths or trainable weights select
+`builtin.causal_conv_silu_qkv.composed`. The raw kernel reuses the existing
+input-gradient tile with channel offsets and writes contiguous Q/K/V gradients.
+
+The layout kernels are in `src/mlops/kernels/hybrid_layout.py`. GPU correctness
+and matched-stage measurements are required for changes to these kernels.

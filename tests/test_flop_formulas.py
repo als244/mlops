@@ -34,6 +34,7 @@ OPAQUE_OPERATIONS = frozenset(
     {
         "adamw",
         "causal_conv_silu",
+        "causal_conv_silu_qkv",
         "cross_entropy",
         "dsa_attention",
         "embedding",
@@ -576,3 +577,20 @@ def test_fused_mhc_pre_counts_frozen_projection_and_sinkhorn_replay(fake):
     assert trained - frozen == 2 * 32 * 512 * 24
     canonical = logical.mhc_pre(x, w, bias, scale, iterations=20, entrypoint="backward")
     assert trained - canonical.logical_flops == 32 * 4 * 4 * (4 + 3 * 39)
+
+
+def test_split_convolution_counts_logical_work_without_packing(fake):
+    q, k, v = _tensor(8, 7), _tensor(8, 11), _tensor(8, 13)
+    packed, weight, cu = _tensor(8, 31), _tensor(31, 1, 4), _i64(3)
+    for entrypoint, weight_gradient in (("forward", True), ("backward", True), ("backward", False)):
+        expected = logical.causal_conv_silu(
+            packed, weight, cu, entrypoint=entrypoint, weight_gradient=weight_gradient
+        )
+        actual = logical.causal_conv_silu_qkv(
+            q, k, v, weight, cu, entrypoint=entrypoint, weight_gradient=weight_gradient
+        )
+        assert actual.logical_flops == expected.logical_flops
+        assert actual.logical_bytes_accessed == expected.logical_bytes_accessed
+    assert _count(ops.causal_conv_silu_qkv_fla_fwd, q, k, v, weight, cu) == 13 * 8 * 31
+    assert _count(ops.causal_conv_silu_qkv_input_bwd, q, k, v, packed, weight, cu) == 14 * 8 * 31
+    assert estimate_implementation("causal_conv_silu_qkv", q, k, v, weight, cu).logical_flops == 13 * 8 * 31
