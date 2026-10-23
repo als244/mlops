@@ -1510,7 +1510,13 @@ Q/K/V share BF16 or FP16; `g` is FP32 bounded log decay in [-5,0].
 All inputs use one CUDA device. `cumulative` gives integer sequence boundaries
 and `chunks` gives integer (sequence, chunk) pairs for 64-token chunks.
 There is zero initial recurrent state and no returned final state.
-Implementation: `fla.kimi_delta_attention.chunk`. Autograd returns gradients
+On SM90 with BF16 Q/K/V and D=128, dispatch prefers
+`cula.kimi_delta_attention.sm90.recompute` (native forward, recomputed
+intra-chunk matrices in backward), then `cula.kimi_delta_attention.sm90`
+(FLA forward, cuLA fused WY backward). Unsupported geometry or missing optional
+dependencies uses `fla.kimi_delta_attention.chunk`. Fast arithmetic is the
+default; `fla.kimi_delta_attention.chunk.ieee` is an explicit accuracy override.
+Autograd returns gradients
 for Q, K, V, decay and beta; metadata has no gradient. No caller tensors are
 retained in a global cache.
 
@@ -2557,7 +2563,10 @@ backward(grad_output, q, k, v, indices, lse, lengths)
 residuals for
 `backward(dy, q, k, v, g, beta, gates, aqk, akk, cumulative, chunks)`,
 which returns dQ, dK, dV, dG and dBeta. `gates` is the FP32 cumulative
-decay; `aqk` and `akk` are intra-chunk matrices. The semantic KDA constraints
+decay; `aqk` and `akk` are provider-owned intra-chunk residuals. The native
+cuLA recompute provider returns empty placeholders and rebuilds these matrices
+in backward. Keep the same implementation override for both calls and do not
+mix residuals from different providers. The semantic KDA constraints
 also apply here. Calls do not build an autograd graph.
 
 #### `explicit.sparse_latent_attention`

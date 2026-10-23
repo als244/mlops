@@ -8,18 +8,21 @@ python_executable=""
 torch_backend="auto"
 expert_parallel=""
 flashmla=1
+cula=1
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/setup.sh [--python PATH] [--torch-backend BACKEND]
-                          [--expert-parallel quack|te|both] [--no-flashmla]
+                          [--expert-parallel quack|te|both] [--no-flashmla] [--no-cula]
 
 Create a complete mlops development environment.  By default the script
 creates .venv with Python 3.12 and automatically selects the installed GPU's
 PyTorch backend.  --python installs into an existing virtual or Conda
 environment instead.  Every optional implementation provider is installed:
 cuDNN Frontend, FlashAttention-3, flash-linear-attention, Quack, SonicMoE,
-and tilelang.
+TileLang and TileKernels. On Hopper, cuLA's native KDA forward and fused WY backward
+are built at a pinned commit by scripts/setup_cula_sm90.sh; --no-cula skips
+that build. Set MLOPS_BUILD_DIR to keep build files outside a quota-limited home.
 FlashAttention-3 is installed whatever the local GPU, and mlops activates it
 automatically on Hopper GPUs; Quack and SonicMoE serve Hopper and Blackwell.  FlashMLA's
 Hopper sparse-attention forward is built from source at a pinned commit by
@@ -52,6 +55,10 @@ while (($#)); do
         *) echo "--expert-parallel must be quack, te, or both" >&2; exit 2 ;;
       esac
       shift 2
+      ;;
+    --no-cula)
+      cula=0
+      shift
       ;;
     --no-flashmla)
       flashmla=0
@@ -97,37 +104,44 @@ if [[ ! -x "${python_executable}" ]]; then
   exit 1
 fi
 
-echo "[1/5] Installing PyTorch 2.13 with backend '${torch_backend}'"
+echo "[1/6] Installing PyTorch 2.13 with backend '${torch_backend}'"
 "${uv_executable}" pip install \
   --python "${python_executable}" \
   --torch-backend "${torch_backend}" \
   "torch>=2.13,<2.14"
 
-echo "[2/5] Installing mlops with every implementation provider"
+echo "[2/6] Installing mlops with every implementation provider"
 "${uv_executable}" pip install \
   --python "${python_executable}" \
   --torch-backend "${torch_backend}" \
   --editable "${project_root}[providers,dev]"
 
 if [[ "${flashmla}" == 1 ]]; then
-  echo "[3/5] Building FlashMLA's Hopper sparse-attention forward"
+  echo "[3/6] Building FlashMLA's Hopper sparse-attention forward"
   "${project_root}/scripts/setup_flashmla.sh" --python "${python_executable}"
 else
-  echo "[3/5] Skipping FlashMLA; mlops' Hopper sparse attention then keeps its TileLang forward"
+  echo "[3/6] Skipping FlashMLA; mlops' Hopper sparse attention then keeps its TileLang forward"
+fi
+
+if [[ "${cula}" == 1 ]] && "${python_executable}" -c 'import torch; raise SystemExit(0 if torch.cuda.is_available() and torch.cuda.get_device_capability() == (9, 0) else 1)'; then
+  echo "[4/6] Building cuLA's Hopper KDA training provider"
+  "${project_root}/scripts/setup_cula_sm90.sh" --python "${python_executable}"
+else
+  echo "[4/6] Skipping cuLA's SM90 build; fast FLA remains available"
 fi
 
 if [[ -n "${expert_parallel}" ]]; then
-  echo "[4/5] Installing the '${expert_parallel}' expert-parallel backends"
+  echo "[5/6] Installing the '${expert_parallel}' expert-parallel backends"
   # Last of the installs: installing torch restores the cuBLAS its wheel pins,
   # and Transformer Engine needs the newer one this step puts back.
   "${project_root}/scripts/setup_expert_parallel.sh" \
     --python "${python_executable}" \
     --backend "${expert_parallel}"
 else
-  echo "[4/5] Skipping the expert-parallel backends; --expert-parallel adds them"
+  echo "[5/6] Skipping the expert-parallel backends; --expert-parallel adds them"
 fi
 
-echo "[5/5] Verifying PyTorch, the accelerator, and the providers"
+echo "[6/6] Verifying PyTorch, the accelerator, and the providers"
 "${python_executable}" - <<'PY'
 from importlib import import_module
 from importlib.metadata import version
@@ -159,6 +173,21 @@ for module_name, package_name in (
 ):
     import_module(module_name)
     print(f"{package_name}: {version(package_name)}")
+
+# cuDNN 1.30 supplies the preferred SM90 pooled indexer, including FP32 weights.
+import_module("cudnn.deepseek_sparse_attention.indexer_forward.indexer_fwd_sm90")
+print("cuDNN SM90 pooled indexer: installed")
+try:
+    import_module("cula.ops.kda.sm90.bwd_wy_dqkg")
+except ImportError:
+    print("cuLA SM90 KDA: not installed; fast FLA is available")
+else:
+    try:
+        import_module("cula._cudac_sm90")
+    except ImportError:
+        print("cuLA SM90 KDA: FLA forward + fused WY backward")
+    else:
+        print("cuLA SM90 KDA: native forward + recomputed cuLA/FLA backward")
 
 # Importing FA3 loads its CUDA extension without running a kernel, so on any
 # GPU it shows whether Hopper could use this install. The wheel is the CUDA 13

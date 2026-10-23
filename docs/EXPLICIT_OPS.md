@@ -41,8 +41,10 @@ forms. Gated RMSNorm accepts `activation="silu"` (default) or `"sigmoid"`.
 Use matching options in forward and backward.
 
 `explicit.kimi_delta_attention.forward` returns output, cumulative gates and
-two intra-chunk matrices; its backward consumes these plus the original inputs
-and explicit sequence metadata. `explicit.sparse_latent_attention.forward`
+two provider-owned intra-chunk residuals; its backward consumes these plus the
+original inputs and explicit sequence metadata. Native cuLA returns empty matrix
+placeholders and recomputes them during backward. Keep the same implementation
+selection for forward and backward. `explicit.sparse_latent_attention.forward`
 returns output and log-sum-exp; its backward combines key and value contributions
 into one gradient for the shared latent bank. These paths share the ordinary
 registry and artifact bootstrap. See [the attention guide](ATTENTION.md).
