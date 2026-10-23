@@ -43,7 +43,7 @@ if triton is not None:
             return tl.where(tl.abs(high) == float("inf"), value.to(dtype), chosen)
         return value.to(dtype)
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["step"])
     def _adamw_torch_kernel(
         parameter,
         master_parameter,
@@ -66,6 +66,7 @@ if triton is not None:
         weight_decay,
         decay_factor,
         salt,
+        HOST_STEP: tl.constexpr,
         MAXIMIZE: tl.constexpr,
         PARAMETER_STOCHASTIC: tl.constexpr,
         STATE_STOCHASTIC: tl.constexpr,
@@ -87,10 +88,14 @@ if triton is not None:
         variance = old_variance.to(tl.float32)
         master_f32 = old_master.to(tl.float32)
         commit = lr != 0.0
+        if HOST_STEP:
+            old_step = step
+        else:
+            old_step = tl.load(step)
         if PARAMETER_STOCHASTIC or STATE_STOCHASTIC:
             # Counter-based bits, a function of the step, the tensor and the
             # element alone: every implementation of the update draws the same.
-            seed = tl.load(step).to(tl.int64) * 1000003 + salt
+            seed = old_step.to(tl.int64) * 1000003 + salt
             master_bits, mean_bits, variance_bits, _ = tl.randint4x(seed, offsets)
         else:
             master_bits = offsets
@@ -133,7 +138,7 @@ if triton is not None:
             mask=mask,
         )
 
-        next_step = tl.load(step).to(tl.float32) + 1.0
+        next_step = old_step.to(tl.float32) + 1.0
         correction1 = 1.0 - libdevice.pow(beta1, next_step)
         correction2 = 1.0 - libdevice.pow(beta2, next_step)
         step_size = lr / correction1
@@ -175,7 +180,7 @@ if triton is not None:
             mask=mask,
         )
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["step"])
     def _adamw_internal_fp32_kernel(
         parameter,
         master_parameter,
@@ -198,6 +203,7 @@ if triton is not None:
         weight_decay,
         decay_factor,
         salt,
+        HOST_STEP: tl.constexpr,
         MAXIMIZE: tl.constexpr,
         PARAMETER_STOCHASTIC: tl.constexpr,
         STATE_STOCHASTIC: tl.constexpr,
@@ -219,10 +225,14 @@ if triton is not None:
         variance = old_variance.to(tl.float32)
         master_f32 = old_master.to(tl.float32)
         commit = lr != 0.0
+        if HOST_STEP:
+            old_step = step
+        else:
+            old_step = tl.load(step)
         if PARAMETER_STOCHASTIC or STATE_STOCHASTIC:
             # Counter-based bits, a function of the step, the tensor and the
             # element alone: every implementation of the update draws the same.
-            seed = tl.load(step).to(tl.int64) * 1000003 + salt
+            seed = old_step.to(tl.int64) * 1000003 + salt
             master_bits, mean_bits, variance_bits, _ = tl.randint4x(seed, offsets)
         else:
             master_bits = offsets
@@ -249,7 +259,7 @@ if triton is not None:
             mask=mask,
         )
 
-        next_step = tl.load(step).to(tl.float32) + 1.0
+        next_step = old_step.to(tl.float32) + 1.0
         correction1 = tl.where(
             next_step == 1.0,
             1.0 - beta1,
@@ -301,8 +311,10 @@ def _validate_state(
     if triton is None:
         raise RuntimeError("mlops AdamW requires Triton")
     tensors = (parameter, master_parameter, gradient, exp_avg, exp_avg_sq)
-    if any(value.device.type != "cuda" for value in (*tensors, step)):
-        raise ValueError("mlops AdamW requires CUDA tensors")
+    if any(value.device.type != "cuda" for value in tensors):
+        raise ValueError("mlops AdamW requires CUDA parameter, gradient, and moments")
+    if step.device.type not in {"cpu", "cuda"}:
+        raise ValueError("AdamW step must be on CPU or CUDA")
     if any(value.dtype not in _FLOAT_DTYPES for value in tensors):
         raise ValueError(
             "AdamW parameter, gradient, master, and moments must be floating"
@@ -363,6 +375,15 @@ def _adamw_master_out_raw(
         ):
             raise ValueError("AdamW destination ABI differs from source")
 
+    host_step = step.device.type == "cpu"
+    if host_step and torch.cuda.is_current_stream_capturing():
+        raise RuntimeError(
+            "CPU AdamW counters cannot advance during CUDA graph replay; "
+            "use AdamW(capturable=True) or supply a CUDA step tensor"
+        )
+    # Read inside the custom op, on every execution, not while Dynamo traces it.
+    # This is a launch argument: no H2D copy and no device synchronization.
+    step_argument = step.item() if host_step else step
     beta1, beta2 = betas
     block = 1024
     kernel[(triton.cdiv(parameter.numel(), block),)](
@@ -371,7 +392,7 @@ def _adamw_master_out_raw(
         gradient,
         exp_avg,
         exp_avg_sq,
-        step,
+        step_argument,
         out_parameter,
         out_master,
         out_exp_avg,
@@ -387,13 +408,18 @@ def _adamw_master_out_raw(
         float(weight_decay),
         float(1.0 - lr * weight_decay),
         int(rounding_salt),
+        HOST_STEP=host_step,
         MAXIMIZE=bool(maximize),
         PARAMETER_STOCHASTIC=bool(parameter_stochastic),
         STATE_STOCHASTIC=bool(opt_state_stochastic),
         BLOCK=block,
     )
-    # Every main-grid block must read the old scalar before it is overwritten.
-    _increment_scalar_kernel[(1,)](step, out_step, float(lr))
+    if host_step:
+        # Preserve functional/out/in-place semantics, including the lr=0 probe.
+        out_step.fill_(step_argument + (lr != 0.0))
+    else:
+        # Every main-grid block must read the old scalar before it is overwritten.
+        _increment_scalar_kernel[(1,)](step, out_step, float(lr))
     return out
 
 

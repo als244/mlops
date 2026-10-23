@@ -81,6 +81,22 @@ For the same reason, options are validated where they are set -- at
 construction, and when a group is added -- rather than on every step: comparing
 a setting held in a tensor is a branch on data a capture cannot resolve.
 
+### Step counters
+
+The default `capturable=False` keeps each INT64 step counter on CPU. The custom
+op reads its current value at execution time and passes it as a runtime Triton
+argument; it then updates the CPU counter. There is no step-tensor transfer,
+GPU increment kernel, or per-step recompilation. Bias correction and stochastic
+rounding still use the same device arithmetic and old-step seed as before.
+Functional and explicit-output APIs accept CPU or CUDA counters (INT64 or FP32).
+
+`capturable=True` keeps counters on the parameter's device for CUDA graph
+replay. Python does not run during replay, so a CPU counter is rejected inside
+CUDA graph capture. Host hyperparameters have their capture-time values during
+CUDA graph replay; ordinary `torch.compile` execution reads them on every call.
+Checkpoint restore puts the counter on the device selected by the saved
+`capturable` setting, independently of the moment dtype.
+
 ### Zero-learning-rate diagnostic steps
 
 For every MLOps AdamW surface, `lr=0` runs the update kernels but preserves the
