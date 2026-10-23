@@ -80,6 +80,7 @@ def _causal_silu_input_bwd(
     BT: tl.constexpr,
     BC: tl.constexpr,
     BR: tl.constexpr,
+    CHANNEL_OFFSET: tl.constexpr = 0,
 ):
     ci, ti = tl.program_id(0), tl.program_id(1)
     if PACKED:
@@ -100,11 +101,13 @@ def _causal_silu_input_bwd(
     for tap in tl.static_range(W):
         source = row + tap - W + 1
         x = tl.load(
-            X + source[:, None] * SX0 + col[None, :] * SX1,
+            X + source[:, None] * SX0 + (col[None, :] + CHANNEL_OFFSET) * SX1,
             (active & (source >= begin))[:, None] & (col[None, :] < D),
             other=0,
         ).to(tl.float32)
-        weight = tl.load(WGT + col * SW0 + tap * SW1, col < D, other=0).to(tl.float32)
+        weight = tl.load(
+            WGT + (col + CHANNEL_OFFSET) * SW0 + tap * SW1, col < D, other=0
+        ).to(tl.float32)
         pre += x * weight[None, :]
     # FLA's backward recomputes and stores preactivation in the input dtype.
     # Keep that rounding boundary even though this kernel avoids the store.
@@ -121,9 +124,9 @@ def _causal_silu_input_bwd(
     for tap in tl.static_range(W):
         index = (out_local[:, None] + tap) + tl.full((1, BC), 0, tl.int32)
         shifted = tl.gather(dpre, index, axis=0)
-        weight = tl.load(WGT + col * SW0 + (W - 1 - tap) * SW1, col < D, other=0).to(
-            tl.float32
-        )
+        weight = tl.load(
+            WGT + (col + CHANNEL_OFFSET) * SW0 + (W - 1 - tap) * SW1, col < D, other=0
+        ).to(tl.float32)
         dx += shifted * weight[None, :]
     out_row = begin + tile * BT + out_local
     tl.store(
@@ -164,3 +167,144 @@ def causal_silu_input_backward(grad_output, x, weight, cumulative, chunk_indices
             num_warps=4,
         )
     return dx
+
+
+@triton.jit
+def _causal_silu_qkv_input_bwd(
+    X,
+    WGT,
+    DQ,
+    DK,
+    DV,
+    DXQ,
+    DXK,
+    DXV,
+    CU,
+    CHUNKS,
+    T,
+    SX0: tl.constexpr,
+    SX1: tl.constexpr,
+    SQ0: tl.constexpr,
+    SQ1: tl.constexpr,
+    SK0: tl.constexpr,
+    SK1: tl.constexpr,
+    SV0: tl.constexpr,
+    SV1: tl.constexpr,
+    SW0: tl.constexpr,
+    SW1: tl.constexpr,
+    CQ: tl.constexpr,
+    CK: tl.constexpr,
+    CV: tl.constexpr,
+    W: tl.constexpr,
+    PACKED: tl.constexpr,
+    BT: tl.constexpr,
+    BC: tl.constexpr,
+    BR: tl.constexpr,
+):
+    part = tl.program_id(2)
+    if part == 0:
+        _causal_silu_input_bwd(
+            X,
+            WGT,
+            DQ,
+            DXQ,
+            CU,
+            CHUNKS,
+            T,
+            SX0,
+            SX1,
+            SQ0,
+            SQ1,
+            SW0,
+            SW1,
+            CQ,
+            W,
+            PACKED,
+            BT,
+            BC,
+            BR,
+            CHANNEL_OFFSET=0,
+        )
+    elif part == 1:
+        _causal_silu_input_bwd(
+            X,
+            WGT,
+            DK,
+            DXK,
+            CU,
+            CHUNKS,
+            T,
+            SX0,
+            SX1,
+            SK0,
+            SK1,
+            SW0,
+            SW1,
+            CK,
+            W,
+            PACKED,
+            BT,
+            BC,
+            BR,
+            CHANNEL_OFFSET=CQ,
+        )
+    else:
+        _causal_silu_input_bwd(
+            X,
+            WGT,
+            DV,
+            DXV,
+            CU,
+            CHUNKS,
+            T,
+            SX0,
+            SX1,
+            SV0,
+            SV1,
+            SW0,
+            SW1,
+            CV,
+            W,
+            PACKED,
+            BT,
+            BC,
+            BR,
+            CHANNEL_OFFSET=CQ + CK,
+        )
+
+
+def causal_silu_qkv_input_backward(dq, dk, dv, packed, weight, cumulative, chunks=None):
+    """No gradient concatenation or projection-gradient repacking buffers."""
+    is_packed = cumulative.numel() != 0
+    if is_packed and chunks is None:
+        from fla.ops.utils import prepare_chunk_indices
+
+        chunks = prepare_chunk_indices(cumulative, 64)
+    tiles = len(chunks) if is_packed else triton.cdiv(packed.shape[0], 64)
+    grads = (dq, dk, dv)
+    channels = tuple(g.shape[1] for g in grads)
+    outputs = tuple(torch.empty(g.shape, device=g.device, dtype=g.dtype) for g in grads)
+    if tiles:
+        _causal_silu_qkv_input_bwd[(triton.cdiv(max(channels), 32), tiles, 3)](
+            packed,
+            weight,
+            *grads,
+            *outputs,
+            cumulative,
+            chunks,
+            packed.shape[0],
+            *packed.stride(),
+            *dq.stride(),
+            *dk.stride(),
+            *dv.stride(),
+            weight.stride(0),
+            weight.stride(-1),
+            *channels,
+            weight.shape[-1],
+            is_packed,
+            BT=64,
+            BC=32,
+            BR=triton.next_power_of_2(64 + weight.shape[-1] - 1),
+            num_warps=4,
+        )
+    return outputs

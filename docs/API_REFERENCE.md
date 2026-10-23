@@ -41,6 +41,9 @@ are general `mlops` tensor functions. [ATTENTION.md](ATTENTION.md) explains thei
 precision, explicit metadata and optional accelerator dependencies.
 Clipped SwiGLU and sigmoid-gated RMSNorm are options on existing functions.
 All registered operators load through `mlops.bootstrap`.
+`causal_conv_silu_qkv` exposes the packed convolution of separate Q/K/V
+projections as a semantic composition, with a separate-gradient input VJP for
+frozen weights; see [its contract](OPS.md#causal_conv_silu_qkv).
 The mHC semantic boundaries are `mhc_pre` (including Sinkhorn) and
 `mhc_combine` (the complete post operation). They currently expose autograd,
 without public explicit VJP entrypoints; see the

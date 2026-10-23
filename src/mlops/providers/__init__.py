@@ -39,6 +39,8 @@ _CATALOG = (
     "mlops.providers.builtin.lora_head",
     "mlops.providers.native_torch.lora_head",
     "mlops.providers.fla.hybrid",
+    "mlops.providers.fla.causal_conv_qkv",
+    "mlops.providers.builtin.causal_conv_qkv",
     "mlops.providers.fla.kda",
     "mlops.providers.cula.kda",
     "mlops.providers.cula.kda_native",

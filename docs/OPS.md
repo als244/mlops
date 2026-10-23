@@ -33,6 +33,7 @@ The stable model-facing import surface is:
 from mlops import (
     build_rope_tables,
     causal_conv_silu,
+    causal_conv_silu_qkv,
     cross_entropy,
     dsa_attention,
     dsa_indexer_key_norm,
@@ -185,6 +186,7 @@ replay is correct.
 | `mhc_combine` | residual streams | mixed streams | TileKernels post on SM90/SM100; builtin/native fallback |
 | `mhc_normalize_streams`, `mhc_coefficients` | composition helpers | normalized streams / coefficients | composed PyTorch |
 | `causal_conv_silu` | hybrid mixer | shape of input | `fla.causal_conv_silu` |
+| `causal_conv_silu_qkv` | hybrid mixer | three projection shapes | `fla.causal_conv_silu_qkv` for supported frozen weights |
 | `linear_attention` | hybrid mixer | shape of V | `fla.linear_attention.gated_delta_rule` |
 | `linear_mixer` | graph-layout policy | shape of hidden | `builtin.linear_mixer.packed` |
 | `prepare_packed_sequence_metadata` | reusable sequence metadata | cumulative lengths and chunk indices | construction helper |
@@ -1336,6 +1338,77 @@ is false. Its input-only backward handles widths up to eight without a global
 preactivation buffer; wider widths fall back to FLA. The explicit backward
 continues to return both input and weight gradients.
 
+### `causal_conv_silu_qkv`
+
+**Status:** Public semantic operation; ordinary autograd, no explicit VJP façade.
+
+**Signature**
+
+```python
+causal_conv_silu_qkv(q, k, v, weight, cumulative, chunk_indices=None)
+    -> tuple[Tensor, Tensor, Tensor]
+```
+
+**Purpose**
+
+The concatenate/convolve/split operation on three projections, with sequence
+resets and SiLU identical to `causal_conv_silu`. This boundary lets backward
+consume separate output gradients and write projection gradients directly.
+Projection weights, Q/K normalization and attention gates stay outside it.
+
+**Parameters**
+
+| Name | Type/shape | Description |
+|---|---|---|
+| `q`, `k`, `v` | `[T,Cq]`, `[T,Ck]`, `[T,Cv]` | same token count, dtype and device; channel widths may differ |
+| `weight` | `[Cq+Ck+Cv,1,Wc]` | Q, then K, then V convolution channels |
+| `cumulative`, `chunk_indices` | as in `causal_conv_silu` | caller-owned sequence boundaries and optional chunk map |
+
+**Returns**
+
+Three tensors matching the projection shapes. They may be disjoint views of
+one newly allocated convolution output; none aliases a caller input.
+
+**Autograd and effects**
+
+For frozen convolution weights, the FLA implementation saves the packed
+projection input, weight and sequence metadata. Its private input VJP reads
+separate Q/K/V gradients and returns three contiguous gradients, avoiding a
+packed gradient allocation and subsequent projection-layout copies. FP32
+accumulation and the FLA preactivation rounding boundary are preserved.
+Trainable convolution weights use the ordinary differentiable composition.
+No caller tensor is mutated. Higher-order gradients are not supported.
+
+**Constraints and exceptions**
+
+Inputs must be matrices with positive channel widths. Invalid shape/device
+relationships raise `ValueError`. Metadata must describe the token rows, as
+for `causal_conv_silu`; metadata contents are not copied to the host to validate.
+The optimized input VJP supports CUDA BF16/FP16/FP32 and frozen kernels of
+width at most eight. Other cases retain the ordinary convolution composition.
+
+**Implementations**
+
+`fla.causal_conv_silu_qkv` (priority 100, supported frozen weights) and
+`builtin.causal_conv_silu_qkv.composed` (portable fallback, priority 0).
+The FLA provider wraps three existing convolution calls in an opaque multi-output
+forward with registered autograd, so `torch.export` and later AOT differentiation
+preserve the separate-gradient VJP. A private packed-input residual is saved for
+backward. Both operators register fake behavior and logical FLOP formulas. The
+portable fallback is the ordinary differentiable concatenate/convolve/split
+composition. Canonical cost estimates count the same arithmetic as packed
+convolution and exclude layout copies; `weight_gradient=False` excludes the
+frozen-weight gradient work.
+
+**Example**
+
+```python
+q, k, v = causal_conv_silu_qkv(
+    q_proj(x), k_proj(x), v_proj(x), conv.weight, cumulative, chunks
+)
+q, k = l2_norm(q.reshape(T, H, D)), l2_norm(k.reshape(T, H, D))
+```
+
 ### `prepare_packed_sequence_metadata`
 
 **Status:** Public preparation helper
@@ -2184,6 +2257,7 @@ order.
 | `head_loss` | `builtin.head_loss.chunked` | `native_torch.head_loss` |
 | `lora_head_loss` | `builtin.lora_head_loss.chunked` | `native_torch.lora_head_loss` |
 | `causal_conv_silu` | `fla.causal_conv_silu` | `native_torch.causal_conv_silu` |
+| `causal_conv_silu_qkv` | `fla.causal_conv_silu_qkv` for supported frozen weights | `builtin.causal_conv_silu_qkv.composed` |
 | `l2_norm` | `fla.l2_norm` | `native_torch.l2_norm` |
 | `gated_rms_norm` | `fla.gated_rms_norm` | `native_torch.gated_rms_norm` |
 | `kimi_delta_attention` | `cula.kimi_delta_attention.sm90.recompute`, `cula.kimi_delta_attention.sm90`, `fla.kimi_delta_attention.chunk` (IEEE opt-in) | none |
@@ -2350,6 +2424,7 @@ positions, routing indices, and sequence metadata are non-differentiable.
 | `sparse_latent_attention` | shared-latent attention output | output and LSE; retain selected indices | Q, combined KV |
 | `kimi_delta_attention` | recurrent output | cumulative gates, Aqk, Akk and sequence metadata | Q, K, V, log decay, beta |
 | `causal_conv_silu` | convolution output | caller retains cumulative sequence lengths | input, weight |
+| `causal_conv_silu_qkv` | separate Q/K/V outputs | provider retains packed input and sequence metadata | Q, K, V; weight via fallback if trainable |
 | `linear_attention` | recurrent output | FLA gate/matrix and sequence metadata | seven continuous inputs |
 | `moe` | routed output and diagnostics | complete route/dispatch state | hidden, residual, router, expert weights |
 | `head_loss` | scalar loss | seed-one hidden/head VJPs | scaled hidden/head VJPs |

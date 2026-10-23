@@ -1,7 +1,7 @@
 """Public semantic tensor operations with ordinary PyTorch autograd."""
 
 from . import optim as optim
-from .causal_conv import causal_conv_silu
+from .causal_conv import causal_conv_silu, causal_conv_silu_qkv
 from .cross_entropy import cross_entropy
 from .dispatch.context import apply_environment_overrides
 from .dsa import (
@@ -49,6 +49,7 @@ _environment_choices = apply_environment_overrides()
 __all__ = [
     "build_rope_tables",
     "causal_conv_silu",
+    "causal_conv_silu_qkv",
     "cross_entropy",
     "dsa_attention",
     "dsa_indexer_key_norm",

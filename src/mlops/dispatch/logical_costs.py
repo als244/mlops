@@ -304,9 +304,25 @@ def causal_conv_silu(
 ) -> CostHints:
     """A depthwise causal convolution of width ``weight.shape[-1]``, then SiLU."""
     del cumulative, chunk_indices
-    elements = x.numel()
+    return _causal_conv_silu_cost(
+        x.numel(), _bytes(x), weight, entrypoint, weight_gradient
+    )
+
+
+def causal_conv_silu_qkv(
+    q, k, v, weight, cumulative, chunk_indices=None, *,
+    entrypoint="forward", weight_gradient=True, **_kwargs,
+) -> CostHints:
+    """The same convolution on three projections; packing adds no arithmetic."""
+    del cumulative, chunk_indices
+    return _causal_conv_silu_cost(
+        sum(t.numel() for t in (q, k, v)), _bytes(q, k, v),
+        weight, entrypoint, weight_gradient,
+    )
+
+
+def _causal_conv_silu_cost(elements, activation, weight, entrypoint, weight_gradient):
     taps = weight.shape[-1]
-    activation = _bytes(x)
     weight_bytes = _bytes(weight)
     if _entrypoint(entrypoint):
         return CostHints(
@@ -736,6 +752,7 @@ for _name, _estimator in (
     ("flash_attention", flash_attention),
     ("dsa_attention", dsa_attention),
     ("causal_conv_silu", causal_conv_silu),
+    ("causal_conv_silu_qkv", causal_conv_silu_qkv),
     ("linear_attention", linear_attention),
     ("moe", moe),
     ("cross_entropy", cross_entropy),
@@ -751,6 +768,7 @@ __all__ = [
     "LINEAR_ATTENTION_CHUNK",
     "adamw",
     "causal_conv_silu",
+    "causal_conv_silu_qkv",
     "cross_entropy",
     "dsa_attention",
     "embedding",
