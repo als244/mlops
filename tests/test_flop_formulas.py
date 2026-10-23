@@ -49,6 +49,8 @@ OPAQUE_OPERATIONS = frozenset(
         "sparse_latent_attention",
         "pooled_topk",
         "moe",
+        "mhc_pre",
+        "mhc_combine",
         "packed_swiglu",
         "partial_rope",
         "rms_norm",
@@ -540,3 +542,24 @@ def test_lora_head_counts_only_requested_weight_gradients(fake):
     assert trainable - frozen == 2 * 7 * 16 * 31
     estimate = estimate_implementation("lora_head_loss", hidden, head, a, b, targets)
     assert estimate.logical_flops == frozen
+
+
+def test_mhc_provider_counts_include_post_vjps_and_sinkhorn_replay(fake):
+    b, x, p, m = _tensor(8, 128), _tensor(8, 4, 128), _f32(8, 4), _f32(8, 4, 4)
+    forward = 2 * 8 * 4 * 4 * 128 + 2 * 8 * 4 * 128
+    assert _count(ops.mhc_post_four, b, x, p, m) == forward
+    first = _count(ops.mhc_post_four_input_grads, x, p, m)
+    second = _count(ops.mhc_post_four_coefficient_grads, x, b, x)
+    assert first + second == 2 * forward
+    bt, xt, pt, mt = b.unsqueeze(0), x.unsqueeze(0), p.view(1, 8, 4, 1), m.unsqueeze(0)
+    assert _count(ops.mhc_post_tilekernels, bt, xt, pt, mt) == forward
+    assert _count(ops.mhc_post_tilekernels_backward, xt, bt, xt, pt, mt) == 2 * forward
+    assert _count(ops.mhc_sinkhorn_tilekernels, m, 20, 1e-6) > 0
+    assert _count(ops.mhc_sinkhorn_tilekernels_backward, m, m, 20, 1e-6) > _count(
+        ops.mhc_sinkhorn_tilekernels, m, 20, 1e-6
+    )
+    cost = estimate_implementation("mhc_combine", b, x, p, m)
+    assert cost.logical_flops == forward
+    assert cost.logical_bytes_accessed == sum(
+        t.numel() * t.element_size() for t in (b, x, p, m, x)
+    )

@@ -9,6 +9,9 @@ _REGISTERED = False
 # Keep package-owned discovery explicit. Third-party entry-point discovery can
 # be added later without changing the operation or implementation identities.
 _CATALOG = (
+    "mlops.providers.native_torch.hyper_connection",
+    "mlops.providers.builtin.hyper_connection",
+    "mlops.providers.tilekernels.hyper_connection",
     "mlops.providers.builtin.adamw",
     "mlops.providers.builtin.cross_entropy",
     "mlops.providers.native_torch.cross_entropy",

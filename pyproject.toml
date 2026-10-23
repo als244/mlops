@@ -20,14 +20,20 @@ fa3 = [
   "flash-attn-3 @ https://download.pytorch.org/whl/cu130/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_34_aarch64.whl ; sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
 # cuDNN Frontend's CuTe DSL kernels: its DeepSeek-sparse-attention backward is
-# the Hopper sparse latent attention provider's backward. The pin matches the
+# the Hopper sparse latent attention provider's backward, and its SM90
+# indexer is the preferred pooled-top-k scorer/selector. The pin matches the
 # Transformer Engine step's; the DSL it needs comes with Quack.
 cudnn = ["nvidia-cudnn-frontend==1.30.0"]
 # KDA calls tested private FLA kernel interfaces.
 fla = ["flash-linear-attention==0.5.2", "fla-core==0.5.2"]
 # TileLang backs fla's gated-delta-rule backward on Hopper (fla enables it by
 # default on sm90 with Triton >= 3.4.0).
-tilelang = ["tilelang==0.1.14"]
+tilelang = ["tilelang==0.1.15"]
+# mHC Sinkhorn and fused post kernels; dispatch is restricted to SM90/SM100.
+tilekernels = [
+  "tile-kernels @ git+https://github.com/deepseek-ai/TileKernels.git@c1cf914a82e6901c679445f872051ce44ac2cc63",
+  "mlops[tilelang]",
+]
 # Quack's GEMMs are CUTLASS CuTe DSL kernels (Linux wheels only); SonicMoE's
 # MoE kernels build on them. Both run on Hopper and Blackwell GPUs.
 quack = [
@@ -38,7 +44,10 @@ sonicmoe = [
   "mlops[quack]",
   "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@7396f3e604827d8186c2e16e64b28ee33d3defd0 ; sys_platform == 'linux'",
 ]
-providers = ["mlops[cudnn,fa3,fla,quack,sonicmoe,tilelang]"]
+# cuLA is built separately by scripts/setup_cula_sm90.sh: upstream metadata
+# constrains CuTe <4.7 for its SM100 private APIs, while our SM90 adapter is
+# validated with the public CuTe APIs in 4.7.1. setup.sh adds it on Hopper.
+providers = ["mlops[cudnn,fa3,fla,quack,sonicmoe,tilelang,tilekernels]"]
 dev = ["pytest", "ruff"]
 # MoonEP is installed separately by scripts/setup_expert_parallel.sh: its
 # upstream metadata pins an older Cutlass DSL than the supported Quack stack.

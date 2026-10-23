@@ -170,6 +170,7 @@ for module_name, package_name in (
     ("quack", "quack-kernels"),
     ("sonicmoe", "sonic-moe"),
     ("tilelang", "tilelang"),
+    ("tile_kernels", "tile_kernels"),
 ):
     import_module(module_name)
     print(f"{package_name}: {version(package_name)}")

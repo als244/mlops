@@ -49,3 +49,14 @@ The existing SwiGLU kernels accept a compile-time clipping limit in both directi
 the default avoids the clipping branches. Gated RMSNorm threads the selected
 activation into FLA's fused normalization kernels. These variations share their
 existing registrations and explicit interfaces. See [ATTENTION.md](ATTENTION.md).
+
+
+### mHC private kernels
+
+`kernels/hyper_connection.py` contains four-stream mixing and fused post
+forward/input-VJP/coefficient-VJP kernels. All allocations are invocation-local;
+providers own custom-op registration. Post kernels read reduced-precision activations and small
+FP32 coefficients, accumulate in FP32 and write reduced-precision activations;
+there is no full FP32 activation workspace. The activation-coefficient option
+uses the separate legacy mixing primitive and a decomposable epilogue.
+TileKernels calls are adapted in `providers/tilekernels/hyper_connection.py`.

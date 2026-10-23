@@ -21,7 +21,12 @@ from .flash_attention import flash_attention
 from .gated_rms_norm import gated_rms_norm
 from .gelu import gelu
 from .head import head_loss
-from .hyper_connection import mhc_coefficients, mhc_combine, mhc_normalize_streams
+from .hyper_connection import (
+    mhc_coefficients,
+    mhc_combine,
+    mhc_normalize_streams,
+    mhc_pre,
+)
 from .kda import kda_decay, kimi_delta_attention
 from .l2_norm import l2_norm
 from .layer_norm import layer_norm
@@ -64,6 +69,7 @@ __all__ = [
     "mhc_coefficients",
     "mhc_combine",
     "mhc_normalize_streams",
+    "mhc_pre",
     "mla_attention",
     "moe",
     "packed_swiglu",

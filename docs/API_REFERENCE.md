@@ -41,6 +41,10 @@ are general `mlops` tensor functions. [ATTENTION.md](ATTENTION.md) explains thei
 precision, explicit metadata and optional accelerator dependencies.
 Clipped SwiGLU and sigmoid-gated RMSNorm are options on existing functions.
 All registered operators load through `mlops.bootstrap`.
+The mHC semantic boundaries are `mhc_pre` (including Sinkhorn) and
+`mhc_combine` (the complete post operation). They currently expose autograd,
+without public explicit VJP entrypoints; see the
+[hyper-connection contract](OPS.md#hyper-connections).
 
 ## Optimizer APIs
 

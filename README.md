@@ -43,9 +43,12 @@ dependency.
 ```
 
 The script creates `.venv`, installs the supported PyTorch, installs mlops
-editable with every implementation provider — FlashAttention-3,
-flash-linear-attention, Quack, SonicMoE, and tilelang — and the
-development tools, and verifies the installation. FlashAttention-3 is
+editable with cuDNN Frontend, FlashAttention-3, flash-linear-attention,
+Quack, SonicMoE, TileLang, TileKernels and development tools, then verifies the installation.
+On Hopper it also builds cuLA's pinned native KDA forward and fused WY backward
+provider; `--no-cula` skips that build. Set `MLOPS_BUILD_DIR` to place source
+builds outside a quota-limited home directory. See [the attention guide](docs/ATTENTION.md)
+for provider geometry, precision and fallback behavior. FlashAttention-3 is
 installed whatever the local GPU and activated automatically on Hopper GPUs.
 To use an existing virtual or Conda environment:
 
@@ -156,3 +159,16 @@ and the pruned candidate list. Tuning on a single operand set backs up only
 read/write operands and output/input aliases for supported GEMMs; read-only
 weights and overwritten outputs need no host copies. Unknown kernels retain
 conservative preservation.
+
+
+## Hyper-connections
+
+`mlops.mhc_pre` includes normalization, coefficient projection, gates, Sinkhorn
+and branch-input collapse. `mlops.mhc_combine` includes residual mixing,
+branch expansion and addition. Parameters remain caller-owned tensors.
+Both use the standard semantic/autograd and provider-dispatch interfaces.
+FP32 coefficients are the default; `coefficient_precision="activation"` opts
+into reduced coefficient rounding. TileKernels providers are eligible on
+SM90/SM100, with builtin/native fallbacks. See the
+[API contract](docs/OPS.md#hyper-connections) and
+[provider contract](docs/PROVIDERS.md#hyper-connection-implementations).

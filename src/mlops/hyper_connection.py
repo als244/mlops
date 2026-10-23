@@ -1,6 +1,12 @@
-"""Stateless mHC coefficients and residual mixing; ordinary differentiable math."""
+"""mHC preprocessing and postprocessing with provider-dispatched autograd.
+
+The branch (attention/MLP) is outside both operations. Implementations may fuse
+within either boundary; the native graph remains decomposable for recomputation.
+"""
 
 import torch
+
+from .dispatch import resolve_implementation
 
 
 def mhc_normalize_streams(streams, *, eps=1e-5):
@@ -47,12 +53,78 @@ def mhc_coefficients(
     return post, mixing, collapsed
 
 
-def mhc_combine(branch, streams, post, mixing):
-    dtype = streams.dtype
-    return (
-        post.to(dtype).unsqueeze(-1) * branch.unsqueeze(-2)
-        + mixing.to(dtype).transpose(-1, -2) @ streams
+def mhc_pre(
+    streams: torch.Tensor,
+    projection: torch.Tensor,
+    bias: torch.Tensor,
+    scale: torch.Tensor,
+    *,
+    eps: float = 1e-5,
+    sinkhorn_eps: float = 1e-6,
+    iterations: int = 20,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return ``(post, mixing, branch_input)`` before attention or the MLP.
+
+    ``streams`` has shape [..., n, d]; ``projection`` is [n*(n+2), n*d],
+    ``bias`` is [n*(n+2)], and ``scale`` is [3]. Parameters retain their storage
+    dtypes. Normalization, projection, gates and Sinkhorn compute in FP32;
+    the collapsed branch input has the streams' dtype. The ordering matches
+    ``mhc_coefficients``. All four tensor inputs are differentiable.
+
+    This is a semantic boundary, not a requirement to materialize normalized
+    streams or to launch a separate kernel for each Sinkhorn iteration.
+    """
+    impl = resolve_implementation(
+        "mhc_pre",
+        streams,
+        projection,
+        bias,
+        scale,
+        eps=eps,
+        sinkhorn_eps=sinkhorn_eps,
+        iterations=iterations,
+        surface="semantic",
+    )
+    return impl.apply(
+        streams,
+        projection,
+        bias,
+        scale,
+        eps=eps,
+        sinkhorn_eps=sinkhorn_eps,
+        iterations=iterations,
     )
 
 
-__all__ = ["mhc_coefficients", "mhc_combine", "mhc_normalize_streams"]
+def mhc_combine(
+    branch: torch.Tensor,
+    streams: torch.Tensor,
+    post: torch.Tensor,
+    mixing: torch.Tensor,
+    *,
+    coefficient_precision: str = "fp32",
+) -> torch.Tensor:
+    """Expand the branch, mix residual streams, and add: the mHC post operation.
+
+    ``mixing[..., i, j]`` sends input stream i to output stream j. Coefficients
+    and accumulation stay FP32 by default, with one cast of the final result
+    to the activation dtype. Optimized providers do not materialize FP32
+    activation copies. Use ``coefficient_precision="activation"`` for the
+    checkpoint reference's reduced coefficients and intermediate rounding.
+    All four inputs are differentiable. Sinkhorn belongs to ``mhc_pre``.
+    """
+    impl = resolve_implementation(
+        "mhc_combine",
+        branch,
+        streams,
+        post,
+        mixing,
+        surface="semantic",
+        coefficient_precision=coefficient_precision,
+    )
+    return impl.apply(
+        branch, streams, post, mixing, coefficient_precision=coefficient_precision
+    )
+
+
+__all__ = ["mhc_coefficients", "mhc_combine", "mhc_normalize_streams", "mhc_pre"]

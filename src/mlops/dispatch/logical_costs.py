@@ -653,7 +653,69 @@ def adamw(
     )
 
 
+def mhc_post_flops(streams, *, backward=False):
+    """Mixing plus expanded branch addition; backward computes all four VJPs."""
+    return (4 if backward else 2) * (streams.shape[-2] + 1) * streams.numel()
+
+
+def mhc_sinkhorn_flops(logits, iterations, *, backward=False, recompute=False):
+    """Scalar-operation estimate; each transcendental counts as one operation."""
+    passes = 2 * iterations - 1
+    forward = logits.numel() * (4 + 3 * passes)
+    if not backward:
+        return forward
+    return logits.numel() * (5 + 7 * passes) + (forward if recompute else 0)
+
+
+def mhc_combine(branch, streams, post, mixing, *, entrypoint="forward", **_kwargs):
+    forward = _entrypoint(entrypoint)
+    inputs = _bytes(branch, streams, post, mixing)
+    return CostHints(
+        logical_flops=mhc_post_flops(streams, backward=not forward),
+        logical_bytes_accessed=inputs * (1 if forward else 2) + _bytes(streams),
+        notes=(
+            "all four input gradients counted; minimum tensor traffic excludes provider scratch",
+        ),
+    )
+
+
+def mhc_pre(
+    streams, projection, bias, scale, *, iterations=20, entrypoint="forward", **_kwargs
+):
+    n, d = streams.shape[-2:]
+    tokens = streams.numel() // (n * d)
+    coefficients = n * (n + 2)
+    projection_flops = 2 * tokens * n * d * coefficients
+    sinkhorn_passes = 2 * iterations - 1
+    if _entrypoint(entrypoint):
+        flops = (
+            projection_flops
+            + 6 * streams.numel()
+            + 3 * tokens
+            + tokens * (14 * n + n * n * (6 + 3 * sinkhorn_passes))
+        )
+        output_bytes = tokens * ((n + n * n) * 4 + d * streams.element_size())
+        traffic = _bytes(streams, projection, bias, scale) + output_bytes
+    else:
+        flops = (
+            2 * projection_flops
+            + 14 * streams.numel()
+            + tokens * (24 * n + n * n * (11 + 7 * sinkhorn_passes))
+        )
+        output_bytes = tokens * ((n + n * n) * 4 + d * streams.element_size())
+        traffic = 2 * _bytes(streams, projection, bias, scale) + output_bytes
+    return CostHints(
+        logical_flops=flops,
+        logical_bytes_accessed=traffic,
+        notes=(
+            "scalar-operation estimate; counts all parameter gradients and no recomputation",
+        ),
+    )
+
+
 for _name, _estimator in (
+    ("mhc_pre", mhc_pre),
+    ("mhc_combine", mhc_combine),
     ("rms_norm", rms_norm),
     ("layer_norm", layer_norm),
     ("l2_norm", l2_norm),
@@ -692,6 +754,10 @@ __all__ = [
     "layer_norm",
     "linear_attention",
     "lora_head_loss",
+    "mhc_combine",
+    "mhc_post_flops",
+    "mhc_pre",
+    "mhc_sinkhorn_flops",
     "moe",
     "moe_finish",
     "moe_prepare",
