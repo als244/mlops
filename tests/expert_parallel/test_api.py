@@ -50,10 +50,15 @@ class Block(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, Block())
 import torch
 import mlops
-from mlops.expert_parallel import QuackMoEConfig, TEMoEConfig, LoRAConfig, create_buffer
+from mlops.expert_parallel import QuackMoE, QuackMoEConfig, TEMoEConfig, LoRAConfig, create_buffer
 from mlops.expert_parallel.parameters import BF16ComputeWeight
 from mlops.expert_parallel.reference import expert_computation, route
 from mlops.expert_parallel.reference.lora import expert_computation_lora
+config = QuackMoEConfig(ep_size=2, num_experts=8, top_k=2, model_dim=256,
+                       expert_hidden_dim=128, tokens_per_rank=32)
+model = QuackMoE.from_resource(config, "test.portable", device="meta")
+assert all(p.is_meta for p in model.parameters())
+model.close()
 assert not torch.cuda.is_initialized()
 """
     subprocess.run(

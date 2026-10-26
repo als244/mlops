@@ -31,7 +31,6 @@ def _initialize():
 
 def __getattr__(name):
     if name in ("MoELayer", "QuackMoE"):
-        _initialize()
         return import_module(f"{__name__}.layer").QuackMoE
     if name == "QuackMoELoRA":
         _initialize()

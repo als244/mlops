@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 from torch import nn
 
 from ...kernels.router import routed_logits
@@ -12,15 +11,25 @@ from ..parameters import BF16ComputeWeight
 from .buffers import bind_buffer
 from .config import config_signature
 from .operators import _forward
-from .parameters.initialization import compute_parameter, initialize_expert_parameter
-from .registry import _REGISTRY_LOCK, _RUNTIMES, _register_runtime, _runtime
+from .parameters import components  # noqa: F401
+from .parameters.construction import independent_experts, local_parameters
+from .parameters.initialization import initialize_expert_parameter
+from .registry import (
+    _REGISTRY_LOCK,
+    _RUNTIMES,
+    _register_runtime,
+    _runtime,
+    resource_handle,
+)
 from .router import route_op
-from .runtime import _Runtime
 from .shared_operators import _forward as _shared_forward
 
 
 class QuackMoE(nn.Module):
     def __init__(self, config, ep_group=None, *, buffer, device=None):
+        from . import _initialize
+
+        _initialize()
         nn.Module.__init__(self)
         device = torch.device(device or f"cuda:{torch.cuda.current_device()}")
         if device.index is None:
@@ -29,28 +38,8 @@ class QuackMoE(nn.Module):
         self.config, self.ep_group, self._device = config, ep_group, device
         self._spec, self._closed = config_signature(config), False
         c = config
-        router_data = torch.empty(
-            c.num_experts, c.model_dim, device=device, dtype=c.router_dtype
-        ).normal_(0, c.init_std)
-        self.router_weight = nn.Parameter(
-            BF16ComputeWeight(router_data, dtype=c.router_weight_grad_dtype)
-            if c.router_dtype != c.router_weight_grad_dtype
-            else router_data
-        )
-        for name, shape in [
-            ("shared_gate_weight", (c.shared_width, c.model_dim)),
-            ("shared_up_weight", (c.shared_width, c.model_dim)),
-            ("shared_down_weight", (c.model_dim, c.shared_width)),
-        ]:
-            if c.shared_width:
-                data = torch.empty(shape, device=device, dtype=torch.bfloat16).normal_(
-                    0, c.init_std
-                )
-                self.register_parameter(
-                    name, compute_parameter(data, c.weight_grad_dtype)
-                )
-            else:
-                self.register_parameter(name, None)
+        self._portable = False
+        local_parameters(self, c, device)
         # MoonEP exchanges CPU handle tensors. A surrounding model may set a
         # CUDA default device; resource factories select GPU devices explicitly.
         with torch.device("cpu"):
@@ -63,7 +52,36 @@ class QuackMoE(nn.Module):
             self.register_parameter(name, initialize_expert_parameter(c, bank))
         self.synchronize_replicated_parameters()
 
+    @classmethod
+    def from_resource(cls, config, name, *, device="meta"):
+        """Construct tensor geometry without a group or live communication buffer.
+
+        The caller initializes a matching named runtime separately before execution.
+        Parameters remain ordinary module state and may be moved or initialized by
+        the training engine. No broadcast or CUDA allocation occurs on meta/CPU.
+        """
+        if cls is not QuackMoE:
+            raise NotImplementedError(
+                "portable construction currently supports QuackMoE"
+            )
+        if config.tokens_per_rank is None:
+            raise ValueError("portable construction requires tokens_per_rank")
+        layer = cls.__new__(cls)
+        nn.Module.__init__(layer)
+        layer.config, layer.ep_group, layer._device = config, None, None
+        layer._spec, layer._closed, layer._portable = (
+            config_signature(config),
+            False,
+            True,
+        )
+        layer._handle = resource_handle(name)
+        local_parameters(layer, config, device)
+        independent_experts(layer, config, device)
+        return layer
+
     def _create_runtime(self, config, group, device, buffer):
+        from .runtime import _Runtime
+
         return _Runtime(config, group, device, buffer)
 
     def expert_parameters(self):
@@ -93,7 +111,7 @@ class QuackMoE(nn.Module):
             raise RuntimeError("Layer is closed")
         if (
             x.dtype != torch.bfloat16
-            or x.device != self._device
+            or (x.device.type != "cuda" if self._portable else x.device != self._device)
             or x.shape[-1] != self.config.model_dim
         ):
             raise ValueError("Expected BF16 input on the configured CUDA device")
@@ -187,6 +205,8 @@ class QuackMoE(nn.Module):
 
     @torch.no_grad()
     def synchronize_replicated_parameters(self):
+        if self._portable:
+            raise RuntimeError("portable parameters are initialized by their owner")
         src = 0 if self.ep_group is None else dist.get_global_rank(self.ep_group, 0)
         for p in self.replicated_parameters():
             dist.broadcast(
@@ -198,6 +218,8 @@ class QuackMoE(nn.Module):
     @torch.no_grad()
     def synchronize_replicated_gradients(self):
         """SUM once per accumulation window. Do NOT reduce expert shards over EP."""
+        if self._portable:
+            raise RuntimeError("portable gradients are reduced by their owner")
         for p in self.replicated_parameters():
             if p.grad is None:
                 p.grad = torch.zeros_like(p)
@@ -208,15 +230,15 @@ class QuackMoE(nn.Module):
         if type(enabled) is not bool:
             raise ValueError("enabled must be bool")
         r = _runtime(self._handle)
-        torch.cuda.synchronize(self._device)
+        torch.cuda.synchronize(r.device)
         values = [None] * self.config.ep_size
-        dist.all_gather_object(values, enabled, group=self.ep_group)
+        dist.all_gather_object(values, enabled, group=r.group)
         if len(set(values)) != 1:
             raise ValueError("Every EP rank must select the same overlap mode")
         r.overlap_enabled = enabled
 
     def _apply(self, fn, recurse=True):
-        if hasattr(self, "_handle"):
+        if hasattr(self, "_handle") and not self._portable:
             raise RuntimeError(
                 "Fixed runtime mappings: construct with the intended device/dtype, do not call .to() afterwards"
             )
@@ -224,6 +246,9 @@ class QuackMoE(nn.Module):
 
     def close(self):
         if not self._closed:
+            if self._portable:
+                self._closed = True
+                return
             _runtime(self._handle).close()
             with _REGISTRY_LOCK:
                 _RUNTIMES.pop(self._handle, None)

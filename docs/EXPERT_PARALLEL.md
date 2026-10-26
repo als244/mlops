@@ -86,6 +86,8 @@ Initialize one process per GPU and an NCCL group before creating buffers. Load
 the selected layer after selecting its compute device. A caller that installs a
 custom device allocator must install it before loading the GPU implementation.
 Importing the namespace and configuration classes alone loads no GPU backend.
+`QuackMoE` also supports the portable construction described below; importing
+that class does not load MoonEP or create CUDA resources.
 
 TE layers initialize their shared GEMM workspaces during construction, before
 the first forward. Transformer Engine caches these by device, group count and
@@ -117,8 +119,51 @@ try:
     y.backward(torch.randn_like(y))
 finally:
     layer.close()
-    buffer.destroy()
+buffer.destroy()
 ```
+
+### Portable Quack construction
+
+`QuackMoE.from_resource(config, name, device="meta")` creates local parameter
+geometry without a process group, MoonEP buffer, or initialized CUDA context.
+Its operators retain a stable name-derived identifier. A later process can bind
+that identifier to a new runtime; module parameters remain independently owned
+by the caller. This path currently supports Quack full training, not the LoRA
+or Transformer Engine subclasses.
+
+```python
+from mlops.expert_parallel import QuackMoE, QuackMoEConfig
+from mlops.expert_parallel.quack.config import config_signature
+
+config = QuackMoEConfig(
+    ep_size=2, num_experts=8, top_k=2, model_dim=256,
+    expert_hidden_dim=128, tokens_per_rank=32, gemm_tuned=False,
+)
+layer = QuackMoE.from_resource(config, "layers.0.experts")
+options = {"layers": [
+    {"name": "layers.0.experts", "config": config_signature(config)},
+]}
+```
+
+The importable factory `mlops.expert_parallel.quack.resources:initialize` takes
+keyword arguments `name`, `device`, `groups`, and `options`. `groups["exchange"]`
+is the caller's resolved NCCL group. It returns an object with `close()`, creating
+one shared token buffer and the named layer runtimes. The caller owns the group
+and closes these resources before destroying it. All participating ranks must
+initialize and close them in the same order.
+
+Multiple layers may share this resource when their buffer geometry is compatible.
+The factory creates backend scratch and compute banks, not model parameters or
+optimizer state; the caller supplies and initializes parameter tensors. It also
+owns replicated-parameter synchronization and gradient reduction in this mode.
+Calling `layer.close()` does not destroy the separately owned resource.
+
+This interface has no ShadowSpill dependency. A training engine can serialize
+the factory path, plain `options`, and logical group description, then recreate
+them around build finalization, profiling or execution. Current portable setup
+requires fixed GEMM policies (`gemm_tuned=False`); saved Quack tuning choices are
+separate pending work. CPU/meta geometry, stable naming and optional imports are
+tested. Fresh-process multi-GPU transport qualification remains pending.
 
 `create_buffer` is a convenience function. An already-created compatible MoonEP
 buffer can be passed directly. The supplied buffer fixes the local token
