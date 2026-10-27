@@ -227,6 +227,9 @@ gradients. The router's logits are formed as every MoE path here forms them
 (`mlops.kernels.router`): the operands at the activation's dtype (bf16), the
 sums and the logits in fp32, the weight's gradient summed in fp32 from two
 bf16 pieces of the cotangent and returned at `router_weight_grad_dtype`.
+`routed_logits` uses the registered `mlops_router::logits` autograd boundary.
+Export keeps a packed BF16 router as a parameter; its payload is exposed only
+during dispatch/lowering, preserving FP32 gradients without an FP32 weight copy.
 There is no layer-owned master-parameter or optimizer-state dtype.
 Quack's expert GEMM and cross-rank reduction scratch is FP32 even when returned
 gradients are BF16. Bank alignment applies to each rank's complete allocation,

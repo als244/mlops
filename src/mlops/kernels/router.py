@@ -110,32 +110,6 @@ def router_weight_gradient(
     return gradient.to(dtype)
 
 
-class _RouterLogits(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, hidden, weight, bias, weight_grad_dtype):
-        ctx.save_for_backward(hidden, weight)
-        ctx.has_bias = bias is not None
-        ctx.weight_grad_dtype = (
-            weight.dtype if weight_grad_dtype is None else weight_grad_dtype
-        )
-        return router_logits(hidden, weight, bias)
-
-    @staticmethod
-    def backward(ctx, grad_logits):
-        hidden, weight = ctx.saved_tensors
-        grad_logits = grad_logits.contiguous()
-        grad_hidden = grad_weight = grad_bias = None
-        if ctx.needs_input_grad[0]:
-            grad_hidden = router_input_gradient(grad_logits, weight, hidden)
-        if ctx.needs_input_grad[1]:
-            grad_weight = router_weight_gradient(
-                grad_logits, hidden, ctx.weight_grad_dtype
-            )
-        if ctx.has_bias and ctx.needs_input_grad[2]:
-            grad_bias = grad_logits.sum(0)
-        return grad_hidden, grad_weight, grad_bias, None
-
-
 def routed_logits(
     hidden: torch.Tensor,
     weight: torch.Tensor,
@@ -146,7 +120,9 @@ def routed_logits(
     """`router_logits` with its backward, for trace-visible compositions and
     layers: the weight's gradient at ``weight_grad_dtype`` (its own dtype
     by default), the activation's at the activation's dtype."""
-    return _RouterLogits.apply(hidden, weight, bias, weight_grad_dtype)
+    from .router_op import logits
+
+    return logits(hidden, weight, bias, weight_grad_dtype)
 
 
 __all__ = [
