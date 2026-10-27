@@ -230,6 +230,9 @@ bf16 pieces of the cotangent and returned at `router_weight_grad_dtype`.
 `routed_logits` uses the registered `mlops_router::logits` autograd boundary.
 Export keeps a packed BF16 router as a parameter; its payload is exposed only
 during dispatch/lowering, preserving FP32 gradients without an FP32 weight copy.
+Its backward uses `mlops_router::gradients` with the same GEMM math, keeping
+FP32-output `addmm` outside Inductor's unsupported dtype-overload lowering.
+Only requested gradients are computed.
 There is no layer-owned master-parameter or optimizer-state dtype.
 Quack's expert GEMM and cross-rank reduction scratch is FP32 even when returned
 gradients are BF16. Bank alignment applies to each rank's complete allocation,

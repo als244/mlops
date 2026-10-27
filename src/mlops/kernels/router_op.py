@@ -29,8 +29,51 @@ def _fake(hidden, weight, bias, weight_grad_dtype):
 
 
 def _dispatch(cls, func, types, args, kwargs):
-    hidden, weight, bias, dtype = args
-    return logits(hidden, weight._data, bias, dtype)
+    return func(
+        *(
+            value._data if isinstance(value, BF16ComputeWeight) else value
+            for value in args
+        ),
+        **kwargs,
+    )
+
+
+@torch.library.custom_op(
+    "mlops_router::gradients",
+    mutates_args=(),
+    schema="(Tensor grad_logits, Tensor hidden, Tensor weight, ScalarType weight_grad_dtype, "
+    "bool needs_hidden, bool needs_weight, bool needs_bias) -> (Tensor?, Tensor?, Tensor?)",
+)
+def gradients(
+    grad_logits: torch.Tensor,
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+    weight_grad_dtype: torch.dtype,
+    needs_hidden: bool,
+    needs_weight: bool,
+    needs_bias: bool,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    # Keep dtype-output GEMMs behind this boundary as well: current Inductor
+    # lowers aten.addmm.dtype through a handler with the ordinary addmm schema.
+    grad_logits = grad_logits.contiguous()
+    return (
+        router_input_gradient(grad_logits, weight, hidden) if needs_hidden else None,
+        router_weight_gradient(grad_logits, hidden, weight_grad_dtype)
+        if needs_weight
+        else None,
+        grad_logits.sum(0) if needs_bias else None,
+    )
+
+
+@gradients.register_fake
+def _fake_gradients(
+    grad_logits, hidden, weight, dtype, needs_hidden, needs_weight, needs_bias
+):
+    return (
+        torch.empty_like(hidden) if needs_hidden else None,
+        weight.new_empty(weight.shape, dtype=dtype) if needs_weight else None,
+        grad_logits.new_empty((grad_logits.shape[1],)) if needs_bias else None,
+    )
 
 
 def _setup(ctx, inputs, output):
@@ -42,16 +85,20 @@ def _setup(ctx, inputs, output):
 
 def _backward(ctx, grad_logits):
     hidden, weight = ctx.saved_tensors
-    grad_logits = grad_logits.contiguous()
-    grad_hidden = grad_weight = grad_bias = None
-    if ctx.needs_input_grad[0]:
-        grad_hidden = router_input_gradient(grad_logits, weight, hidden)
-    if ctx.needs_input_grad[1]:
-        grad_weight = router_weight_gradient(grad_logits, hidden, ctx.weight_grad_dtype)
-    if ctx.has_bias and ctx.needs_input_grad[2]:
-        grad_bias = grad_logits.sum(0)
-    return grad_hidden, grad_weight, grad_bias, None
+    return (
+        *gradients(
+            grad_logits,
+            hidden,
+            weight,
+            ctx.weight_grad_dtype,
+            ctx.needs_input_grad[0],
+            ctx.needs_input_grad[1],
+            ctx.has_bias and ctx.needs_input_grad[2],
+        ),
+        None,
+    )
 
 
 logits.register_autograd(_backward, setup_context=_setup)
 logits.register_torch_dispatch(BF16ComputeWeight, _dispatch)
+gradients.register_torch_dispatch(BF16ComputeWeight, _dispatch)
