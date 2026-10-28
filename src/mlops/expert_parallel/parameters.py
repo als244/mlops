@@ -92,11 +92,18 @@ class BF16ComputeWeight(torch.Tensor):
                 func(*physical, **kwargs),
             )
             return return_and_correct_aliasing(func, args, kwargs, out)
-        if func in (
-            aten.empty_like.default,
-            aten.zeros_like.default,
-            aten.ones_like.default,
-        ):
+        if func is aten.empty_like.default:
+            # A module move (`to_empty`, `_apply`) asks for an empty tensor
+            # like the parameter: at the logical dtype that is a new compute
+            # weight, so the move keeps the BF16 component rather than
+            # leaving a plain tensor at the gradient dtype behind. An explicit
+            # other dtype is an ordinary empty tensor.
+            requested = kwargs.get("dtype", first.dtype)
+            if requested == first.dtype:
+                options = dict(kwargs, dtype=torch.bfloat16)
+                return cls(func(first._data, **options), dtype=first.dtype)
+            return func(first._data, **kwargs)
+        if func in (aten.zeros_like.default, aten.ones_like.default):
             options = dict(kwargs)
             options.setdefault("dtype", first.dtype)
             return func(first._data, **options)
