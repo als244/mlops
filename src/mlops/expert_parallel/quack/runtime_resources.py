@@ -117,11 +117,13 @@ class RuntimeResources:
             raise ValueError("Compute weight components must be on the runtime device")
         if c.compute_precision == "bf16":
             for w, b in zip(params, self.banks):
-                if (
-                    w.shape != (c.local_experts, b.out_features, b.in_features)
-                    or w.dtype != torch.bfloat16
-                ):
-                    raise ValueError("BF16 compute component shape/dtype mismatch")
+                expected = (c.local_experts, b.out_features, b.in_features)
+                if w.shape != expected or w.dtype != torch.bfloat16:
+                    raise ValueError(
+                        "BF16 compute component shape/dtype mismatch: "
+                        f"{type(w).__name__} {tuple(w.shape)} {w.dtype} "
+                        f"where the bank expects {expected} torch.bfloat16"
+                    )
                 if (
                     not w.is_contiguous()
                     and w.stride() != b.weight_state.parameter_data.stride()
