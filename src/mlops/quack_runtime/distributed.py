@@ -21,7 +21,7 @@ import torch.distributed as dist
 def check_disk_cache(tuner, tuning_key, configs, bench_fn):
     from quack import autotuner as quack
 
-    from .sweeps import _failed, _positive_setting
+    from .sweeps import _failed, _positive_setting, native_allocator
 
     if not dist.is_available() or not dist.is_initialized():
         raise RuntimeError("distributed Quack tuning requires an initialized DP group")
@@ -103,7 +103,7 @@ def check_disk_cache(tuner, tuning_key, configs, bench_fn):
             global_winner = min(local_winners, key=lambda row: (row[1], labels.index(row[0])))
             tuner.bench_time = time.monotonic() - started
             if rank == 0:
-                if not _failed(value for _, value in rows):
+                if not _failed(value for _, value in rows) and native_allocator():
                     cache.put(
                         json.dumps({
                             "key": str(tuning_key),

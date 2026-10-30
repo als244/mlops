@@ -170,6 +170,81 @@ def test_a_failed_sweep_is_not_cached_and_a_cached_failure_is_tuned_again(
     assert [timing[0] for _, timing in timings] == [2.0, 1.0, INF]
 
 
+def _replaced(monkeypatch):
+    """An allocator that replaces PyTorch's, as a runtime installing its own
+    pool as the process allocator does."""
+    monkeypatch.setattr(torch.cuda.memory, "get_allocator_backend", lambda: "pluggable")
+
+
+def test_a_replacement_allocator_holds_no_copies(monkeypatch):
+    mib = 1 << 20
+    _l2(monkeypatch, 50 * mib)
+    assert sweeps.rotation_count((_bytes(mib),), {}) == sweeps.MAX_SETS
+    _replaced(monkeypatch)
+    assert sweeps.rotation_count((_bytes(mib),), {}) == 1
+
+
+def test_a_replacement_allocator_times_candidates_without_a_graph(monkeypatch):
+    """A capture would hand the replacement its allocations mid-capture, and
+    its own threads' event polls would break it: the calls run eagerly."""
+    _replaced(monkeypatch)
+    launches = []
+
+    class Event:
+        # Elapsed time is the calls launched between two records, 1 ms each.
+        def __init__(self, enable_timing=False):
+            self.at = None
+
+        def record(self):
+            self.at = len(launches)
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return float(other.at - self.at)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a replacement allocator must not capture a CUDA graph")
+
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", refuse)
+    monkeypatch.setattr(torch.cuda, "graph", refuse)
+    timing = sweeps.benchmark_rotation(
+        lambda *args, **kwargs: launches.append(args),
+        [(1,)],
+        [{}],
+        {},
+        warmup_target_ms=2,
+        timed_target_ms=3,
+        samples=3,
+    )
+    assert timing == pytest.approx(1.0) and len(launches) > 4
+
+
+def test_a_replacement_allocators_sweep_stays_in_its_process(monkeypatch, tmp_path):
+    monkeypatch.setenv("QUACK_CACHE_DIR", str(tmp_path))
+    monkeypatch.delenv("QUACK_FORCE_CACHE_UPDATE", raising=False)
+    configs = [_Config("a"), _Config("b")]
+    key = (("shape", 4096, 512), torch.bfloat16)
+    tuner = _tuner()
+
+    def bench():
+        tuner.configs_timings = dict(zip(configs, [[2.0] * 3, [1.0] * 3], strict=True))
+        tuner.cache[key] = min(tuner.configs_timings, key=tuner.configs_timings.get)
+
+    _replaced(monkeypatch)
+    sweeps.check_disk_cache(tuner, key, configs, bench)
+    # The winner serves this process; the disk keeps graph-timed sweeps only.
+    assert tuner.cache[key] is configs[1] and _cached(tmp_path) == []
+    monkeypatch.undo()
+    monkeypatch.setenv("QUACK_CACHE_DIR", str(tmp_path))
+    tuner.cache.clear()
+    sweeps.check_disk_cache(tuner, key, configs, bench)
+    assert len(_cached(tmp_path)) == 1
+
+
 def test_the_runtime_installs_the_sweeps():
     import quack.autotuner as tuner
 

@@ -24,7 +24,15 @@ process runs the first-listed config untuned. Changes:
   overrides MLOPS_QUACK_TUNE_WARMUP_MS, MLOPS_QUACK_TUNE_TIME_MS, and
   MLOPS_QUACK_TUNE_SAMPLES adjust this search cost;
 * a per-key file lock serializes cache misses, so simultaneous DP ranks
-  reuse one kernel configuration and its workspace contract.
+  reuse one kernel configuration and its workspace contract;
+* under an allocator that replaces PyTorch's own (``native_allocator``), no
+  CUDA graph: Quack captures each candidate's calls in one, and PyTorch's
+  allocator serves allocations made during the capture from the graph's
+  private pool, while a replacement serves them itself and its own threads
+  may poll CUDA events, which a capture forbids process-wide. Such a process
+  times candidates on the call's own tensors in an eager loop and keeps the
+  winner in memory rather than in the disk cache, which then holds only
+  graph-timed sweeps.
 """
 
 import builtins
@@ -74,10 +82,19 @@ def _tensors(args, kwargs):
     ]
 
 
+def native_allocator():
+    """Whether PyTorch's own caching allocator serves this process, the one
+    that can serve allocations made during CUDA graph capture."""
+    return torch.cuda.memory.get_allocator_backend() == "native"
+
+
 def rotation_count(args, kwargs, target_ratio=L2_ROUNDS, max_buffers=MAX_SETS):
     """Copy sets per rotation round: enough that a round moves
     ``target_ratio`` L2s of bytes, at most ``max_buffers``; one -- the call's
-    own tensors, not copied -- when a single set already does."""
+    own tensors, not copied -- when a single set already does, or when an
+    allocator that replaces PyTorch's would have to hold the copies."""
+    if not native_allocator():
+        return 1
     tensor_bytes = sum(
         tensor.numel() * tensor.element_size() for tensor in _tensors(args, kwargs)
     )
@@ -190,6 +207,8 @@ def benchmark_rotation(
     continue until CUDA events reach each requested budget, so tiny kernels
     still receive the full measurement time without an enormous graph.
     Budgets are targets: a window can exceed its target by one graph replay.
+    Under an allocator that replaces PyTorch's, the same calls run eagerly in
+    place of each replay: no graph is captured.
     """
     warmup_target_ms = _positive_setting(
         warmup_target_ms, "MLOPS_QUACK_TUNE_WARMUP_MS", 50.0
@@ -218,17 +237,24 @@ def benchmark_rotation(
     estimate = max(begin.elapsed_time(end), 1e-3)
     chunk_ms = min(50.0, warmup_target_ms, timed_target_ms / samples)
     calls = calls_for_budget(estimate, chunk_ms, count)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        for index in range(calls):
-            launch(index)
-    torch.cuda.synchronize()
+    if native_allocator():
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            for index in range(calls):
+                launch(index)
+        torch.cuda.synchronize()
+        replay = graph.replay
+    else:
+
+        def replay():
+            for index in range(calls):
+                launch(index)
 
     def window(target_ms):
         elapsed, executions = 0.0, 0
         while elapsed < target_ms:
             begin.record()
-            graph.replay()
+            replay()
             end.record()
             end.synchronize()
             duration = begin.elapsed_time(end)
@@ -324,6 +350,10 @@ def check_disk_cache(self, tuning_key, configs, bench_fn):
                     file=sys.stderr,
                 )
                 return
+            if not native_allocator():
+                # Timed eagerly under a replacement allocator: this process
+                # keeps the winner; the disk cache holds graph-timed sweeps.
+                return
             cache.put(
                 json.dumps(
                     {
@@ -385,6 +415,7 @@ __all__ = [
     "SavedTensors",
     "apply",
     "check_disk_cache",
+    "native_allocator",
     "restoring",
     "rotation_count",
     "rotation_sets",
