@@ -10,7 +10,7 @@ from ...dispatch.costs import flop_formula
 from ...dispatch.registry import Implementation, SupportResult, register_implementation
 from ...dsa import _validate_sparse_latent
 
-# Hopper (sm90) tiles, chosen by docs/plans/sparse_attention_1019 measurements.
+# Hopper (sm90) tiles, chosen by measurement.
 FWD_HEAD_TILE = 64
 FWD_BLOCK = 64
 FWD_THREADS = 256
@@ -21,9 +21,20 @@ BWD_BLOCK = 32
 def _tiles(device):
     """Kernel tiles by architecture: upstream's Hopper tiles on sm90, the SM120 tiles elsewhere."""
     if torch.cuda.get_device_capability(device) == (9, 0):
-        return dict(block_I=FWD_BLOCK, threads=FWD_THREADS, head_tile=FWD_HEAD_TILE,
-                    bwd_block=BWD_BLOCK, bwd_head_tile=BWD_HEAD_TILE)
-    return dict(block_I=32, threads=128, head_tile=16, bwd_block=32, bwd_head_tile=16)
+        return {
+            "block_I": FWD_BLOCK,
+            "threads": FWD_THREADS,
+            "head_tile": FWD_HEAD_TILE,
+            "bwd_block": BWD_BLOCK,
+            "bwd_head_tile": BWD_HEAD_TILE,
+        }
+    return {
+        "block_I": 32,
+        "threads": 128,
+        "head_tile": 16,
+        "bwd_block": 32,
+        "bwd_head_tile": 16,
+    }
 
 
 def _physical(q, kv, indices, q_rope=None, k_rope=None, block=32):

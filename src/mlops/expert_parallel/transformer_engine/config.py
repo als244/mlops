@@ -54,7 +54,7 @@ class MoEConfig:
 
     def __post_init__(self):
         if self.share_expert_banks and self.compute_precision != "bf16":
-            raise ValueError("Shared TE expert banks currently require BF16 compute")
+            raise ValueError("Shared TE expert banks require BF16 compute")
         for name in (
             "ep_size",
             "num_experts",

@@ -30,7 +30,7 @@ class LoRAConfig:
             raise ValueError("LoRA alpha must be finite and positive")
         if self.compute_dtype != torch.bfloat16:
             raise ValueError(
-                "LoRA currently supports BF16 compute, independent of base precision"
+                "LoRA supports BF16 compute only, independent of base precision"
             )
         if self.gradient_dtype not in (torch.float32, torch.bfloat16):
             raise ValueError("LoRA gradient_dtype must be FP32 or BF16")

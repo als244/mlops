@@ -61,9 +61,7 @@ class QuackMoE(nn.Module):
         the training engine. No broadcast or CUDA allocation occurs on meta/CPU.
         """
         if cls is not QuackMoE:
-            raise NotImplementedError(
-                "portable construction currently supports QuackMoE"
-            )
+            raise NotImplementedError("portable construction supports QuackMoE only")
         if config.tokens_per_rank is None:
             raise ValueError("portable construction requires tokens_per_rank")
         layer = cls.__new__(cls)

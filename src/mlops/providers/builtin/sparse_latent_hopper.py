@@ -1,9 +1,9 @@
 """Hopper sparse latent attention: FlashMLA or pipelined TileLang forward, cuDNN DSA backward.
 
 On SM90 the generic TileLang kernels in ``sparse_latent.py`` leave most of the
-GPU idle: measured in isolation (docs/plans/sparse_attention_1019) the forward
-reaches about 120 effective TFLOPS at 16K tokens and the backward about 35,
-against 420 and 360 for the kernels used here. The forward is DeepSeek's
+GPU idle: measured in isolation, the forward reaches about 120 effective TFLOPS
+at 16K tokens and the backward about 35, against 420 and 360 for the kernels
+used here. The forward is DeepSeek's
 FlashMLA sparse prefill kernel (sm90a, built by scripts/setup_flashmla.sh) when
 it is installed, else tile-ai/tilelang's warp-specialized
 ``sparse_mla_fwd_pipelined`` (``kernels/sparse_mla/forward_pipelined.py``, three

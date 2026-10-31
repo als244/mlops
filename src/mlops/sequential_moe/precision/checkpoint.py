@@ -102,9 +102,7 @@ class HFWeights:
             if self.group != expected:
                 raise ValueError(f"{self.encoding} requires group_size={expected}")
         if sys.byteorder != "little" and self.encoding == "int4":
-            raise ValueError(
-                "INT4 int32 unpacking currently requires a little-endian host"
-            )
+            raise ValueError("INT4 int32 unpacking requires a little-endian host")
 
     def _get(self, name, *, meta=False):
         return self.source.tensor(name, meta=meta).contiguous()

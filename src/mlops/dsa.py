@@ -56,7 +56,7 @@ def _validate_sparse_latent(q, kv, indices):
     ):
         raise ValueError("Expected integer selected indices [tokens, selected_keys]")
     if q.dtype != torch.bfloat16 or kv.dtype != q.dtype:
-        raise ValueError("Sparse TileLang attention currently requires BF16 Q and KV")
+        raise ValueError("Sparse TileLang attention requires BF16 Q and KV")
     if not all(t.is_cuda and t.device == q.device for t in (q, kv, indices)):
         raise ValueError("Sparse attention inputs must share one CUDA device")
 

@@ -109,7 +109,9 @@ if triton is not None:
         BLOCK: tl.constexpr,
         LIMIT: tl.constexpr = None,
     ):
-        """Historical pre-fix kernel, retained only for ablation studies."""
+        """The ``triton_legacy`` variant, kept for ablation studies: Triton's
+        sigmoid and a right-associated SiLU derivative rather than PyTorch
+        CUDA's rounding order."""
         offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         mask = offsets < size
         gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
@@ -239,7 +241,7 @@ if triton is not None:
         BLOCK: tl.constexpr,
         LIMIT: tl.constexpr = None,
     ):
-        """Packed form of the historical pre-fix backward kernel."""
+        """Packed form of the ``triton_legacy`` backward kernel."""
         row = tl.program_id(0).to(tl.int64)
         block = tl.program_id(1).to(tl.int64)
         columns = block * BLOCK + tl.arange(0, BLOCK).to(tl.int64)

@@ -9,9 +9,9 @@ forms its logits through these functions, so they all route the same way:
   in fp32 and the logits written in fp32 -- cuBLAS's bf16 GEMM with an fp32
   output, the form of Megatron-Core's ``moe_router_dtype="fp32"`` and of
   torchtitan's router gate. Scores and top-k then run in fp32 (the routing
-  kernels' business). The old form, both operands taken to the weight's
-  fp32 and a SIMT GEMM, cost 1.1 ms per 32K-token step on an H100; this one
-  about a tenth of that, and keeps no fp32 copy of the activation;
+  kernels' business). Taking both operands to the weight's fp32 instead
+  would mean a SIMT GEMM, about ten times the time, and an fp32 copy of the
+  activation;
 * **the activation's gradient**: the logits' cotangent taken to the
   activation's dtype, one GEMM against the weight at that dtype, summed in
   fp32 and added into the activation's gradient at its own dtype;

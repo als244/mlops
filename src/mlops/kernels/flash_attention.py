@@ -67,7 +67,7 @@ def native_torch_attention(
     if not isinstance(sequences, torch.Tensor):
         sequences = tuple(int(length) for length in sequences)
     if not causal:
-        raise ValueError("reference packed SDPA currently requires causal=True")
+        raise ValueError("reference packed SDPA requires causal=True")
     repeat = q.shape[1] // k.shape[1]
     query = q.transpose(0, 1).unsqueeze(0)
     key = k.repeat_interleave(repeat, dim=1).transpose(0, 1).unsqueeze(0)

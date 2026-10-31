@@ -14,7 +14,7 @@ from functools import lru_cache, wraps
 _applied = False
 
 # Nine measured additions from 162 GLM-shaped GEMM searches: BF16/FP8,
-# full/LoRA (rank 32), 2K..64K tokens, SM90. Together with the old defaults,
+# full/LoRA (rank 32), 2K..64K tokens, SM90. Together with the stock candidates,
 # their best recorded times are within 4.6% of the 192-candidate exploration
 # pool for every measured shape (0.5% geometric-mean slowdown). Each row is
 # one exact config; do not expand it across all cluster/swap combinations.

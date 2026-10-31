@@ -47,8 +47,8 @@ def _intra(q, k, gates, beta, daqk, dakk, dq, dk, dbeta, dg, cumulative, chunks,
     tile_width = min(32, triton.next_power_of_2(width))
     subchunks = chunk_size // subchunk_size
     width_tiles = triton.cdiv(width, tile_width)
-    # Preserve FP32 accumulation, but store at the public gradient dtype.
-    # This is the same rounding boundary as the former trailing .to(q/k).
+    # Preserve FP32 accumulation, but store at the public gradient dtype:
+    # the same one rounding as an FP32 result converted with .to(q/k).
     dq_out = torch.empty_like(q)
     dk_out = torch.empty_like(k)
     dbeta_parts = beta.new_empty(width_tiles, *beta.shape, dtype=torch.float32)

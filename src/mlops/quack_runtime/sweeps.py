@@ -4,8 +4,8 @@ stay unchanged.
 Quack's autotuner times each candidate config on copies of the call's
 tensors, rotated so that L2 cannot serve them: at least four copy sets, as
 many as half the device's free memory holds. Under an allocator that owns a
-fixed pool -- a ShadowSpill execution pool -- the device's free memory says
-nothing about the pool, and four copies of GiB-scale operands do not fit:
+fixed pool -- a replacement for PyTorch's allocator -- the device's free memory
+says nothing about the pool, and four copies of GiB-scale operands do not fit:
 every candidate fails, the pool runs out of memory in the middle of a
 measurement, and the sweep's all-infinite timings are cached, so every later
 process runs the first-listed config untuned. Changes:

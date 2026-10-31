@@ -34,7 +34,7 @@ class FrozenLinear(nn.Module):
         if spec.format in DENSE:
             raise ValueError("Use nn.Linear for ordinary floating-point weights")
         if gemm_precision not in ("bf16", "fp16"):
-            raise ValueError("FrozenLinear currently supports BF16/FP16 GEMMs")
+            raise ValueError("FrozenLinear supports BF16/FP16 GEMMs only")
         spec.validate(parts)
         self.spec = spec
         self.gemm_precision = gemm_precision

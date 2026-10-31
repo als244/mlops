@@ -90,7 +90,7 @@ class _TEBackend:
         self.hw = validate_te_hardware_precision(cfg)
         if cfg.compute_precision == "fp8_block" and 2 * cfg.local_experts > 64:
             raise NotImplementedError(
-                "FP8 block scaling currently supports at most 64 home/replica groups; "
+                "FP8 block scaling supports at most 64 home/replica groups; "
                 "larger grouped slices require rebased block-scale metadata. "
                 "BF16 and FP8 current scaling support chunked groups."
             )

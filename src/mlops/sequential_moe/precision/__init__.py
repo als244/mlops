@@ -56,7 +56,7 @@ def validate_device(config, device):
     if device.type == "meta":
         return
     if device.type != "cuda" or not torch.cuda.is_available():
-        raise ValueError("SequentialMoE currently requires a CUDA device")
+        raise ValueError("SequentialMoE requires a CUDA device")
     major, minor = torch.cuda.get_device_capability(device)
     if (
         config.activation_dtype == torch.bfloat16
@@ -103,14 +103,14 @@ def validate_weights(config, specs, components):
             128,
         ):
             raise ValueError(
-                "FP8 GEMMs currently require 128x128 weight blocks; "
+                "FP8 GEMMs require 128x128 weight blocks; "
                 "use BF16/FP16 GEMMs for per-channel/per-tensor FP8 checkpoints"
             )
         if config.gemm_precision == "nvfp4" and (
             (spec.block_rows, spec.block_cols) != (16, 16) or spec.global_rows
         ):
             raise ValueError(
-                "NVFP4 GEMMs currently require the prototype's 16x16 scale blocks. "
+                "NVFP4 GEMMs require the prototype's 16x16 scale blocks. "
                 "Checkpoint 1x16 scales support BF16/FP16 GEMMs; a lossless "
                 "NVFP4 backward transpose is not available for that layout."
             )

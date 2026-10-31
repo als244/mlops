@@ -47,7 +47,7 @@ def initialize(*, name, device, groups, options):
         raise ValueError("runtime resource names must be unique")
     configs = [_configuration(item["config"]) for item in descriptions]
     if any(c.gemm_tuned for c in configs):
-        raise ValueError("portable runtimes currently require fixed GEMM policies")
+        raise ValueError("portable runtimes require fixed GEMM policies")
     if any(c.tokens_per_rank is None for c in configs):
         raise ValueError("portable runtimes require tokens_per_rank")
     group = groups["exchange"]

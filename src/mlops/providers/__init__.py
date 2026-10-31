@@ -6,8 +6,8 @@ from importlib import import_module
 
 _REGISTERED = False
 
-# Keep package-owned discovery explicit. Third-party entry-point discovery can
-# be added later without changing the operation or implementation identities.
+# Package-owned discovery is explicit: these are the modules that register an
+# implementation, imported in this order, and nothing is found by entry points.
 _CATALOG = (
     "mlops.providers.native_torch.hyper_connection",
     "mlops.providers.builtin.hyper_connection",
