@@ -22,9 +22,9 @@ Meta construction declares physical weight components without allocating or quan
 
 `mlops.sequential_moe.precision.checkpoint.HFWeights` reads local safetensors incrementally, including explicit per-projection mixed NVFP4/FP8 recipes. `projection(..., meta=True)` validates component geometry without reading weight payloads. Gate/up packing preserves independently stored scales. NVFP4's inverse global weight scale is converted to a dequantization multiplier.
 
-BF16/FP16 GEMMs can decode the supported dense, FP8, NVFP4, MXFP4 and symmetric INT4 layouts. FP8 GEMMs use the existing block-quantized recipe. NVFP4 GEMMs currently require 16x16 weight scales; the external 1x16 checkpoint layout must use BF16/FP16 GEMMs until its low-precision recipe is implemented. AWQ/GPTQ/NF4 encodings are not inferred from a four-bit dtype.
+BF16/FP16 GEMMs can decode the supported dense, FP8, NVFP4, MXFP4 and symmetric INT4 layouts. FP8 GEMMs use the existing block-quantized recipe. NVFP4 GEMMs require 16x16 weight scales; the external 1x16 checkpoint layout uses BF16/FP16 GEMMs. AWQ/GPTQ/NF4 encodings are not inferred from a four-bit dtype.
 
-`FrozenLinear` uses the same physical formats for frozen dense projections. It permits input gradients and currently uses BF16/FP16 GEMMs.
+`FrozenLinear` uses the same physical formats for frozen dense projections. It permits input gradients and uses BF16/FP16 GEMMs.
 
 ## Ownership and integration
 

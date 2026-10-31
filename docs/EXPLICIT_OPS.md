@@ -32,12 +32,13 @@ math, and a selected implementation silently resolving again.
 
 Only operation-level VJPs belong here. Blocks and models intentionally remain
 ordinary forward-only `nn.Module` compositions; manual block/model backward
-methods would recreate the frontend this project is replacing.
+methods would duplicate what autograd derives from those compositions.
 
 ## Options and attention residuals
 
 The explicit SwiGLU functions accept the same optional `limit` as their semantic
-forms. Gated RMSNorm accepts `activation="silu"` (default) or `"sigmoid"`.
+forms. Gated RMSNorm accepts `activation="silu"` (default) or `"sigmoid"`, and
+RMSNorm the same `zero_centered` flag as its semantic form.
 Use matching options in forward and backward.
 
 `explicit.kimi_delta_attention.forward` returns output, cumulative gates and
@@ -55,7 +56,7 @@ query, combined latent KV, positional query, and positional key.
 
 ## Semantic compositions without explicit entrypoints
 
-`mhc_pre` and `mhc_combine` currently expose ordinary autograd only. Their
+`mhc_pre` and `mhc_combine` expose ordinary autograd only. Their
 providers register private fake/autograd/VJP operations where needed, but do
 not advertise the public `explicit` surface. Direct private-op calls are not
 a supported substitute. This leaves the native preprocessing composition

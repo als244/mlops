@@ -69,9 +69,13 @@ Small, source-checked compatibility patches are isolated in this package's
 `_compat/` and, for Quack, in `mlops/quack_runtime/` (shared with the
 SonicMoE provider):
 MoonEP singleton support, its planner compiler compatibility fix, Quack's
-one-stage SM90 pipeline correction, and its
-extended autotuning candidates. They apply in memory and never edit dependency
-files. Unsupported dependency revisions produce explicit errors.
+one-stage SM90 pipeline correction, its
+extended autotuning candidates, and its tuning sweeps, which bound rotation
+copies, preserve only the operands a candidate can overwrite and, under a
+device allocator that replaces PyTorch's own, time candidates eagerly without a
+CUDA graph and keep their winners out of the disk cache. They apply in memory
+and never edit dependency files. Unsupported dependency revisions produce
+explicit errors.
 
 For DSL 4.7.1, the MoonEP planner alone uses PTXAS optimization level 2.
 The default level produces an illegal address in stock MoonEP for configurations
@@ -128,8 +132,9 @@ buffer.destroy()
 geometry without a process group, MoonEP buffer, or initialized CUDA context.
 Its operators retain a stable name-derived identifier. A later process can bind
 that identifier to a new runtime; module parameters remain independently owned
-by the caller. This path currently supports Quack full training, not the LoRA
-or Transformer Engine subclasses.
+by the caller. This path supports Quack full training, not the LoRA or
+Transformer Engine layers, and requires `tokens_per_rank`, since no buffer fixes
+the token capacity.
 
 ```python
 from mlops.expert_parallel import QuackMoE, QuackMoEConfig
@@ -158,12 +163,12 @@ optimizer state; the caller supplies and initializes parameter tensors. It also
 owns replicated-parameter synchronization and gradient reduction in this mode.
 Calling `layer.close()` does not destroy the separately owned resource.
 
-This interface has no ShadowSpill dependency. A training engine can serialize
+This interface depends on no training engine. A training engine can serialize
 the factory path, plain `options`, and logical group description, then recreate
-them around build finalization, profiling or execution. Current portable setup
-requires fixed GEMM policies (`gemm_tuned=False`); saved Quack tuning choices are
-separate pending work. CPU/meta geometry, stable naming and optional imports are
-tested. Fresh-process multi-GPU transport qualification remains pending.
+them around build finalization, profiling or execution. Portable runtimes
+require fixed GEMM policies (`gemm_tuned=False`); the factory rejects tuned
+configurations. CPU/meta geometry, stable naming and optional imports are
+tested; no GPU check exercises this path.
 
 `create_buffer` is a convenience function. An already-created compatible MoonEP
 buffer can be passed directly. The supplied buffer fixes the local token
@@ -179,7 +184,7 @@ returned gradients remain independently owned. The same option supports
 QuackMoELoRA; closing one layer leaves resources used by other layers alive.
 The default single-layer path keeps parameter storage in its private bank.
 
-Use `TEMoEConfig` and `TEMoE` for Transformer Engine. TE currently uses one chunk,
+Use `TEMoEConfig` and `TEMoE` for Transformer Engine. TE uses one chunk,
 one buffer and BF16 activation transport. Quack supports BF16 or opt-in FP8
 activation transport (`activation_transport="fp8"`). Both support BF16 and
 `fp8_current` expert computation; TE additionally supports `fp8_block`.
@@ -207,7 +212,7 @@ hidden widths must be multiples of 128; top-k is at most 32.
 | `profile_ranges` | `True` | Emit layer/phase NVTX ranges |
 | Quack `num_chunks`, `num_buffers` | `1`, `1` | Equal token chunks and reusable caller-owned buffers |
 | Quack `activation_transport` | `"bf16"` | Optional `"fp8"` transport with FP8 expert computation |
-| Quack `share_expert_banks` | `False` | Reuse publication/reduction scratch across matching layers on the same token buffer |
+| `share_expert_banks` | `False` | Reuse publication/reduction scratch across matching layers on the same token buffer (TE: BF16 only) |
 | Quack `gemm_tuned` | `False` | Opt into autotuning instead of the fixed shape-dependent GEMM policy |
 | TE `gemm_sm_margin` | `32` | SM headroom requested from Transformer Engine GEMMs |
 
@@ -242,7 +247,8 @@ precision. Full configuration definitions, including diagnostic/experimental
 options, are in [Quack configuration](../src/mlops/expert_parallel/quack/config.py)
 and [TE configuration](../src/mlops/expert_parallel/transformer_engine/config.py).
 New callers should use the buffer's token capacity and `weight_grad_dtype`;
-`tokens_per_rank` and `parameter_dtype` remain compatibility aliases.
+`tokens_per_rank` and `parameter_dtype` remain compatibility aliases, though
+portable construction, which has no buffer, requires `tokens_per_rank`.
 
 ## Precision, routing and ownership
 
@@ -267,7 +273,11 @@ reference equations. It supports fixed-route output/gradient checks.
 
 FP8 weights wrap quantized payloads and scales. BF16 compute with FP32 returned
 weight gradients also uses a wrapper, separating compute storage from the logical
-gradient dtype. An external state manager must preserve
+gradient dtype. Module moves keep that wrapper: `to` and `to_empty` at the
+logical dtype give a new compute weight with a BF16 payload on the target
+device, an explicit other dtype gives an ordinary tensor, and `zeros_like` and
+`ones_like` give ordinary logical tensors, so optimizer state stays plain.
+An external state manager must preserve
 `__tensor_flatten__`/`__tensor_unflatten__` components and ordinary logical
 gradients; treating the wrapper as one ordinary storage is insufficient.
 
@@ -285,7 +295,7 @@ FP8 parameters also support optimizer publication through
 `compute_weight.copy_(dense_master)`. Dense masters are owned by the caller's
 optimizer, and `dense_master.copy_(compute_weight)` initializes them from the
 compute representation. Quack publishes both independently scaled orientations
-with its Triton quantizers (`kernels/quantize_transpose.py::quantize_weights_fp8`:
+with its Triton quantizers (`kernels/quack_moe/quantize_transpose.py::quantize_weights_fp8`:
 the row quantizer and a batched transposing one, at HBM bandwidth). TE weight quantizers expose a mutating custom
 operation over their payloads and scales and call TE's GPU quantization;
 the CPU path supports checkpoint restoration. Publication happens in the
@@ -323,7 +333,7 @@ All implementation code lives in `src/mlops/expert_parallel/`:
 | Directory / file | Responsibility |
 | --- | --- |
 | `__init__.py`, `buffers.py` | Public exports and caller-owned communication buffer construction |
-| `quack/` | Quack layer, operators, routing, expert math and compute-weight representations |
+| `quack/` | Quack layer, operators, routing, compute-weight representations and named runtime resources; its `experts/` and `kernels/` modules are import aliases of `mlops.kernels.quack_moe`, which holds the local expert math |
 | `quack/pipeline/` | Chunk scheduling, buffer resources, transport and BF16/FP8 execution |
 | `transformer_engine/` | TE layer, operators, communication and grouped expert math |
 | Each backend's `lora/` | LoRA layer, factor storage and forward/backward integration |
@@ -352,7 +362,8 @@ python -m pytest -q -s tests/expert_parallel --run-expert-parallel \
 ```
 
 The gate runs 28 model configurations plus public-API coexistence, MoonEP
-planning, shared expert-bank reuse and large-offset FP8 quantizer checks. It covers
+planning, shared expert-bank reuse, FP8 parameter publication, FP8 group
+quantizer and large-offset FP8 quantizer checks. It covers
 full training and LoRA, save/recompute, BF16 and FP8-current, TE FP8-block, and
 Quack's four-chunk/two-buffer path (including FP8 dispatch). LoRA checks both
 eager and compiled execution. Full-training checks use compiled entrypoints.
@@ -392,4 +403,5 @@ For BF16 `TEMoE`, `share_expert_banks=True` reuses the three projection
 communication banks across matching layers supplied with the same MoonEP buffer.
 Model parameters remain independent allocations. Each forward/backward publishes
 its own weights before expert work; the banks are weakly cached by the buffer
-and owned by live layers. FP8 sharing is not yet qualified and is rejected.
+and owned by live layers. A configuration that combines it with FP8 compute is
+rejected.

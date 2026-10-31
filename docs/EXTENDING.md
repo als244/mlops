@@ -56,8 +56,8 @@ The FLA-backed operations demonstrate that a library call may be an opaque
 interior region while still composing normally with surrounding operations.
 The `moe` operation demonstrates the opposite extreme: it is deliberately
 larger than one grouped GEMM because callers need one stable routed-MoE
-contract, while the builtin and a future SonicMoE implementation may use
-different sorting, scatter/gather, residual, and VJP mechanics internally.
+contract, while the builtin and SonicMoE implementations use different
+sorting, scatter/gather, residual, and VJP mechanics internally.
 That semantic scope does not require one opaque dispatcher target. The
 default composed builtin keeps the single public `moe` contract while
 exposing a preparation region (routing/dispatch/`w13`) and a finish region
@@ -295,12 +295,16 @@ above.
    installs the source-checked Quack patches and the tuning-cache default
    before the first compile, and `autotune.sonicmoe_functional()` imports
    SonicMoE without adopting its global Quack tuning policy. One patch,
-   `sweeps`, fits Quack's tuning sweeps to a bounded allocator such as a
-   ShadowSpill execution pool: the call's tensors are copied only as far as
-   L2 rotation needs -- not at all once one set moves three L2s, when the
-   sweep times the call's own tensors and restores them from a host copy
-   after each candidate -- and a sweep in which every candidate failed is
-   neither cached nor read back.
+   `sweeps`, fits Quack's tuning sweeps to a bounded allocator such as an
+   engine's fixed execution pool: the call's tensors are copied only as far
+   as L2 rotation needs -- not at all once one set moves three L2s, when the
+   sweep times the call's own tensors and restores the ones a candidate can
+   overwrite from host copies after each candidate -- and a sweep in which
+   every candidate failed is neither cached nor read back. Under an allocator
+   that replaces PyTorch's own (`sweeps.native_allocator()` is false), the
+   candidates run eagerly on the call's own tensors rather than under a CUDA
+   graph, and the winner stays in the process instead of the disk cache
+   ([timing and caching](sonicmoe-autotuning.md#timing-and-caching)).
 5. **Weights are used as they are.** The canonical `w13 [E,2I,H]` (gate rows,
    then up rows) and `w2 [E,H,I]` are SonicMoE's native `[E, out, in]`
    storage with its concatenated gate/up layout; the adapter only takes
@@ -336,12 +340,10 @@ package can register any subset of implementations independently. In this
 example it contributes `quack.rms_norm` and `quack.cross_entropy` to two
 existing exact operations.
 
-Cross entropy became a standalone operation when mlops was separated from its
-first model consumer. Earlier code had only private cross-entropy mechanics
-inside the chunked head. The public `cross_entropy` contract now owns reusable
-logits-to-loss math, while `head_loss` remains a larger bounded-logits
-projection/loss operation. A QuACK cross-entropy kernel cannot substitute for
-`head_loss` because it does not own projection or chunking.
+Cross entropy is a standalone operation: the public `cross_entropy` contract
+owns reusable logits-to-loss math, while `head_loss` is a larger
+bounded-logits projection/loss operation. A QuACK cross-entropy kernel cannot
+substitute for `head_loss` because it does not own projection or chunking.
 
 As with SonicMoE, the initial QuACK adapters must support **only SM90 and
 SM100**, represented by `(9, 0)` and `(10, 0)`. Upstream may expose other
@@ -361,9 +363,9 @@ The integration would proceed as follows.
 
    The records share provider metadata and dependency checks but resolve,
    override, trace, estimate, and fail independently.
-2. **Add one optional dependency and focused provider package.** Pin the
-   reviewed `quack-kernels` release in a `quack` optional-dependency group and
-   create:
+2. **Reuse the `quack` extra and add a focused provider package.** The
+   `quack` optional-dependency group pins the reviewed `quack-kernels`
+   revision that SonicMoE uses; create:
 
    ```text
    src/mlops/providers/quack/
@@ -400,10 +402,11 @@ The integration would proceed as follows.
 4. **Adapt QuACK RMSNorm's low-level pair.** Call its `rmsnorm_fwd` with the
    documented RMSNorm semantics: FP32 reduction, normalized activations rounded
    to the input dtype before applying the affine weight, no bias/residual,
-   caller `eps`, stored FP32 `rstd`, and weight offset zero. Call
-   `rmsnorm_bwd` with `x`, `weight`, `grad_output`, and `rstd`. Do not use
-   QuACK's `nn.Module`, monkey patching, or `RMSNormFunction` as the mlops
-   boundary.
+   caller `eps`, stored FP32 `rstd`, and weight offset zero; decline
+   `zero_centered=True`, whose `1 + weight` scale applies in FP32 before that
+   rounding. Call `rmsnorm_bwd` with `x`, `weight`, `grad_output`, and
+   `rstd`. Do not use QuACK's `nn.Module`, monkey patching, or
+   `RMSNormFunction` as the mlops boundary.
 5. **Own an mlops RMSNorm custom-op pair.** Register functional
    `mlops::rms_norm_quack_fwd` and `mlops::rms_norm_quack_bwd` targets with fake
    functions and registered autograd. Their adapter calls the same raw
@@ -476,7 +479,7 @@ The integration would proceed as follows.
 
 This example establishes two useful rules: a provider directory may register
 multiple operations, and shared availability checks do not imply shared
-selection. It also records the earlier API lesson: private kernel mechanics do
+selection. It also applies the API rule that private kernel mechanics do
 not become a reusable public operation until a canonical contract, provider
 records, explicit VJP, tests, and documentation exist.
 

@@ -24,7 +24,7 @@ python -m pip install -e '.[fla,tilelang]'
 python -m pytest -ra tests/operations
 ```
 
-The optional extras pin the tested FLA/fla-core 0.5.2 and TileLang 0.1.14
+The optional extras pin the tested FLA/fla-core 0.5.2 and TileLang 0.1.15
 interfaces. The package otherwise uses the normal MLOps PyTorch/Triton
 environment. Importing `mlops` or `mlops.bootstrap` does not load FLA or TileLang.
 FLA and TileLang load only when their kernels are called.
@@ -55,13 +55,14 @@ math, not by a model family.
 | `routing.py` | `sigmoid_topk` |
 | Existing activation/normalization APIs | `swiglu(..., limit=...)`, `packed_swiglu(..., limit=...)`, `gated_rms_norm(..., activation="sigmoid")` |
 
-KDA, tied-latent sparse attention, and pooled selection use the normal
+KDA, tied-latent sparse attention, pooled selection and mHC use the normal
 implementation registry. Their dispatcher operators live under `torch.ops.mlops`;
 import `mlops.bootstrap` before loading exported artifacts in a fresh process.
 Differentiable atomic attention operations also expose
 `mlops.explicit.kimi_delta_attention` and
 `mlops.explicit.sparse_latent_attention` for caller-managed forward residuals and
-backward calls. Pooled top-k is non-differentiable; the remaining functions compose
+backward calls. Pooled top-k is non-differentiable; `mhc_pre` and `mhc_combine`
+differentiate through autograd alone; the remaining functions compose
 ordinary differentiable PyTorch operations.
 
 See [OPS.md](OPS.md) for signatures and [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -127,7 +128,7 @@ features are not silently advertised by this wrapper.
 
 `gated_rms_norm(x, gate, weight, eps=..., activation="sigmoid")` uses
 the existing gated normalization API and FLA fused forward/backward. The default
-`activation="silu"` preserves existing callers. Both choices compute the norm
+is `activation="silu"`. Both choices compute the norm
 and gate in FP32, then cast the result to the input dtype.
 
 The optional Hopper provider
@@ -163,9 +164,8 @@ Use `setup_cula_sm90.sh wy-only` to skip the native extension, or `--python PATH
 to target an existing environment. The helper clones the pinned revision under
 `MLOPS_BUILD_DIR` (default `~/.cache/mlops/build`); `CULA_SOURCE` or `--source`
 selects an existing checkout. Both providers
-have been tested with CuTe 4.7.1. SM100 currently falls back to FLA; cuLA's
-SM100 private API/dependency integration has not been validated on this H100
-reservation.
+are validated with CuTe 4.7.1. They accept SM90 alone, so SM100 dispatch uses
+FLA.
 
 ## Pooled indexing
 
@@ -196,12 +196,22 @@ causal, and confined to the query's sequence; padding is -1. The indexer
 provides these content guarantees. Static shape/dtype errors fail at the
 entrypoint; inspecting GPU index contents would require additional validation.
 
+On SM90, `builtin.sparse_latent_attention.hopper` (priority 110) serves
+512-wide latents with heads in multiples of 64 when TileLang and cuDNN
+Frontend's DSA module import. Its forward is FlashMLA's sparse prefill kernel
+when `scripts/setup_flashmla.sh` has installed it, else TileLang's pipelined
+forward; its backward is cuDNN Frontend's SM90 sparse-attention backward.
+Other devices and shapes use `builtin.sparse_latent_attention.tilelang`
+(priority 100).
+
 Supplying both already-rotated positional tails, `q_rope[T,H,64]` and
 `k_rope[T,64]`, adds their dot product to the scores before applying `scale`.
 They must share Q's BF16 dtype and device. Values and outputs keep latent width
 L. Autograd returns gradients for Q, the combined latent KV, and both positional
-tails. This variant uses `builtin.sparse_latent_attention.rope.tilelang` and the
-same selected-key constraints; the caller owns RoPE angles and packed positions.
+tails. This variant uses `builtin.sparse_latent_attention.rope.tilelang`, or
+`builtin.sparse_latent_attention.rope.hopper` where the Hopper provider
+applies, and the same selected-key constraints; the caller owns RoPE angles
+and packed positions.
 
 `sparse_mla(query, latent, key_projection, value_projection, indices,
 *, scale)` composes MLA projection absorption with the sparse core. Projections remain
@@ -218,7 +228,7 @@ with FP32 atomics; bitwise deterministic results are not promised.
 
 | Operation | Arithmetic and output precision |
 |---|---|
-| Sigmoid router | Requires FP32 logits and correction bias; scores and combination weights stay FP32 |
+| Sigmoid router | Requires FP32 logits; the correction bias is promoted to FP32; scores and combination weights stay FP32 |
 | KDA inputs | BF16/FP16 Q/K/V, FP32 log decay; beta may be BF16, FP16 or FP32 |
 | KDA decay transform | Casts projected gates and decay parameters to FP32 for exponential and sigmoid arithmetic |
 | Gated RMSNorm | FP32 normalization and SiLU/sigmoid gate; output casts to the input dtype |
@@ -264,7 +274,7 @@ to an all-FP32 oracle or bitwise deterministic gradients.
 ## Validation and scope
 
 Tests run offline against a checked-in, SHA256-verified Hugging Face source
-snapshot; they do not download weights or depend on `experimental/`.
+snapshot; they do not download weights.
 GPU checks are gated on CUDA/SM80+ and the particular optional dependency.
 The validated GPU is an RTX 5090 (SM120), using PyTorch 2.13.0+cu130,
 Triton 3.7.1, FLA/fla-core 0.5.2 and TileLang 0.1.14.
@@ -275,10 +285,11 @@ sequence metadata, NoPE projection absorption, mHC and full/LoRA KDA blocks.
 The reference recurrence uses FP32, so tests use explicit numerical tolerances.
 
 These are reusable operations. Whole-model checkpoint loading, model
-composition, SequentialMoE integration and planned end-to-end training are
-separate work. Pooled indexing has bounded-workspace Triton and SM90 cuDNN
-implementations. Exact top-k tie identity and removal of the sparse
-kernel's zero positional tail remain optimization/compatibility work.
+composition, SequentialMoE integration and end-to-end training belong to their
+callers. Pooled indexing has bounded-workspace Triton and SM90 cuDNN
+implementations. Top-k selection need not match another implementation's
+choice among tied scores, and the TileLang sparse kernels give a latent
+without positional tails a zero 64-wide tail in temporary workspace.
 Quantized attention projections and an indexer-training objective are not
 implemented by these APIs.
 
@@ -286,7 +297,14 @@ implemented by these APIs.
 
 - cuLA commit `bee137a998f822e8fa84f26ffd7f7103a3bbdcba` supplies the optional
   SM90 fused WY backward kernel (imported, not copied).
-- cuDNN Frontend 1.30.0 supplies the SM90 index scorer and radix selection.
+- cuDNN Frontend 1.30.0 supplies the SM90 index scorer and radix selection,
+  and the SM90 sparse-attention backward.
+- FlashMLA commit `ba89a3466e9470ad08ab39738d4e7bb66989e1e7` supplies the
+  optional SM90 sparse-attention forward (built from source, imported, not
+  copied).
+- TileKernels commit `c1cf914a82e6901c679445f872051ce44ac2cc63` and DeepGEMM
+  commit `5081f8513af57e61696de4f4f04b0e707ffb503e` supply the optional
+  SM90/SM100 mHC kernels (imported, not copied).
 - FLA 0.5.2 supplies the KDA training algorithm. Adapted intra-chunk kernels and
   the MIT license live in `src/mlops/kernels/kda/`.
 - TileLang sparse MLA forward/backward derive from commit

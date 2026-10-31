@@ -18,8 +18,11 @@ modules directly.
 9. [Atomic example: FLA L2 norm](#atomic-example-fla-l2-norm)
 10. [Composite example: the composed builtin MoE](#composite-example-the-composed-builtin-moe)
 11. [SonicMoE](#sonicmoe)
-12. [Future QuACK compatibility](#future-quack-compatibility)
+12. [Multi-operation example: QuACK](#multi-operation-example-quack)
 13. [Acceptance checklist](#acceptance-checklist)
+14. [Expert-parallel modules](#expert-parallel-modules)
+15. [Hyper-connection implementations](#hyper-connection-implementations)
+16. [Packed linear-attention preparation](#packed-linear-attention-preparation)
 
 ## Choose the boundary
 
@@ -194,7 +197,7 @@ The public explicit façade has flat mathematical signatures:
 ```python
 output, residual = explicit.rms_norm.forward(x, weight, eps)
 grad_x, grad_weight = explicit.rms_norm.backward(
-    grad_output, x, weight, residual, eps
+    grad_output, x, weight, residual
 )
 ```
 
@@ -292,7 +295,7 @@ BF16 projections call Quack's `gemm_act`/`gemm`/`gemm_add` and fused backward
 pieces; they still use SonicMoE metadata and combination kernels. No monolithic
 upstream SonicMoE layer is called. Shared local expert kernels have a neutral
 module name, so profiler names do not imply EP communication during DP runs.
-Legacy `expert_parallel.quack.experts`/`kernels` module paths remain import
+The `expert_parallel.quack.experts`/`kernels` module paths are import
 aliases for saved artifacts; new code imports `mlops.kernels.quack_moe`.
 
 A `swiglu_limit` (GLM's clamped SwiGLU, `moe`'s option) runs in the same
@@ -318,7 +321,11 @@ Quack's tuning policy).
 
 Quack tunes each GEMM once per key (function, shapes, stride pattern,
 dtypes) and, with `QUACK_CACHE_AUTOTUNING=1` (the runtime's default),
-persists the choice under `QUACK_CACHE_DIR`; later processes read it. Two
+persists the choice under `QUACK_CACHE_DIR`; later processes read it. A
+process whose allocator replaces PyTorch's own times the candidates eagerly
+rather than under CUDA-graph capture and keeps its choice in memory: the
+cache holds only graph-timed sweeps
+([timing and caching](sonicmoe-autotuning.md#timing-and-caching)). Two
 things follow for anyone comparing runs across processes. Processes that
 tune independently can choose different tile configs, which accumulate in a
 different grouping and differ at an occasional bf16 rounding boundary. And
@@ -326,11 +333,10 @@ a process that ran the tuning sweep itself -- candidates compiled in Quack's
 worker pool and benchmarked under CUDA-graph capture -- computes a slightly
 different, deterministic result for the rest of its life than a process that
 reads the cache, even for the same config. Both are valid roundings of the
-same math; for bitwise agreement between processes, tune in a separate
-process first (shadowspill's numerical gate runs a warm-up process before
-its arms) and point every process at one cache directory. The file-by-file
-structure is in
-[Worked example: the SonicMoE implementations of `moe`](EXTENDING.md#worked-example-the-sonicmoe-implementations-of-moe)
+same math; for bitwise agreement between processes, tune first in a
+separate process on PyTorch's own allocator and point every process at one
+cache directory. The file-by-file structure is in
+[Worked example: the SonicMoE implementations of `moe`](EXTENDING.md#worked-example-the-sonicmoe-implementations-of-moe).
 
 FP8 expert weights are `QuackFP8Weight` containers, the expert-parallel
 path's parameter type (`expert_parallel/quack/parameters/fp8.py`): each
@@ -355,8 +361,8 @@ components). `compute_precision` names the GEMMs' precision apart from the
 weights: `"fp8_current"` on bf16 weights quantizes them per call (straight
 through for their gradients), `"bf16"` on containers dequantizes them per
 call -- in every implementation, which is how the builtin and native
-implementations take FP8 weights. SM100 is declined for FP8 math until the
-kernels are validated there.
+implementations take FP8 weights. SM100 is declined for FP8 math: the
+kernels are validated on SM90 only.
 
 Block-scaled FP8 weights are `BlockFP8Weight` containers (`mlops/block_fp8.py`):
 E4M3 stored once, in `nn.Linear` row order, with an FP32 scale per 128x128
@@ -383,17 +389,18 @@ gate and up halves are not whole 64-row groups runs on a grouped Triton
 kernel (`kernels/block_fp8.py`) and the SwiGLU row kernel instead. Weight
 gradients are the bf16 varlen-K GEMMs, as for the two-copy containers.
 
-## Future QuACK compatibility
+## Multi-operation example: QuACK
 
 [QuACK](https://github.com/Dao-AILab/quack) illustrates a provider that can
-contribute multiple exact implementations. A future adapter can register
+contribute multiple exact implementations. Its adapters would register
 `quack.rms_norm` for RMSNorm and `quack.cross_entropy` for the existing
-standalone logits-to-loss operation. These remain independent implementation
-choices even though they share a package and availability helper.
+standalone logits-to-loss operation; the catalog registers neither. These are
+independent implementation choices even though they share a package and
+availability helper.
 
-The initial adapters are deliberately limited to SM90 and SM100: their support
-functions accept exactly `(9, 0)` and `(10, 0)` and reject SM120 until it has
-separate validation. They should call QuACK's low-level forward/backward pairs,
+Such adapters would be deliberately limited to SM90 and SM100: their support
+functions accept exactly `(9, 0)` and `(10, 0)` and reject SM120, which has no
+separate validation. They would call QuACK's low-level forward/backward pairs,
 disable in-place backward, and own mlops custom-op/fake/registered-autograd
 boundaries. The complete two-operation workflow is documented in
 [Worked example: one QuACK provider for RMSNorm and cross entropy](EXTENDING.md#worked-example-one-quack-provider-for-rmsnorm-and-cross-entropy).
@@ -428,15 +435,16 @@ See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.m
 
 `hyper_connection.py` defines the public `mhc_pre` and `mhc_combine` contracts.
 Adapters live in `providers/native_torch/hyper_connection.py`,
-`providers/builtin/hyper_connection.py`, and
+`providers/builtin/hyper_connection.py`,
 `providers/tilekernels/hyper_connection.py`, and
 `providers/deepgemm/hyper_connection.py`; private Triton code lives in
 `kernels/hyper_connection.py` and `kernels/mhc_pre.py`. All adapters use the normal immutable registry,
 metadata support predicates and per-operation overrides. Optional imports occur
-only inside execution. Neither model nor ShadowSpill owns provider selection.
+only inside execution. Neither a model nor an engine built on mlops owns
+provider selection.
 
 Preprocessing includes Sinkhorn but excludes the attention/MLP branch.
-Postprocessing includes mixing, branch expansion and addition. The current
+Postprocessing includes mixing, branch expansion and addition. The
 adapters expose the semantic/autograd surface; they do not advertise public
 `mlops.explicit` entrypoints. Their private backward custom ops expose fake
 outputs, canonical FLOP formulas, and first-order VJPs with tensor-only saved
@@ -444,7 +452,7 @@ state. Native preprocessing stays decomposable for recomputation. TileKernels
 saves the small logits and reconstructs Sinkhorn iteration states on chip.
 
 TileKernels is eligible only on SM90/SM100 and when its dependency is present.
-Pre currently requires four streams and tokens divisible by eight; post requires
+Pre requires four streams and tokens divisible by eight; post requires
 BF16 contiguous activations, four streams, hidden width divisible by 128, and
 FP32 coefficient mode. SM90 has numerical/compiled forward/backward validation;
 SM100 eligibility follows upstream support, without local hardware validation.
@@ -471,7 +479,7 @@ available, the helper creates an isolated Conda build-dependency prefix.
 installed by the ordinary `providers` extra, at their pinned/minimum versions.
 DeepGEMM is built separately to avoid replacing the selected PyTorch dependency.
 
-`deepgemm.mhc_pre` uses the existing semantic interface and first-order custom
+`deepgemm.mhc_pre` uses the same semantic interface and first-order custom
 op VJP, fake outputs and FLOP formulas. It is gated to SM90/SM100 and compatible
 four-stream geometry; missing dependencies and unsupported geometry leave the
 other providers available. See the precision, saved-state and backward

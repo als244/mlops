@@ -40,12 +40,12 @@ KDA, tied-latent sparse attention, pooled indexing, mHC and sigmoid routing
 are general `mlops` tensor functions. [ATTENTION.md](ATTENTION.md) explains their
 precision, explicit metadata and optional accelerator dependencies.
 Clipped SwiGLU and sigmoid-gated RMSNorm are options on existing functions.
-All registered operators load through `mlops.bootstrap`.
+Every operator these operations register loads through `mlops.bootstrap`.
 `causal_conv_silu_qkv` exposes the packed convolution of separate Q/K/V
 projections as a semantic composition, with a separate-gradient input VJP for
 frozen weights; see [its contract](OPS.md#causal_conv_silu_qkv).
 The mHC semantic boundaries are `mhc_pre` (including Sinkhorn) and
-`mhc_combine` (the complete post operation). They currently expose autograd,
+`mhc_combine` (the complete post operation). They expose autograd,
 without public explicit VJP entrypoints; see the
 [hyper-connection contract](OPS.md#hyper-connections).
 
@@ -185,10 +185,12 @@ estimate of every operation with an opaque operator is registered under
 in `attention_costs.py`. `flop_formula`
 registers the decorated function as the FLOP count of one or more registered
 custom operators with PyTorch's flop counter, and `has_flop_formula` reports
-whether an operator has one; every operator this package registers does,
-forward and backward, delegating to its operation's canonical estimator.
+whether an operator has one; every operator this package registers under
+`torch.ops.mlops` does, forward and backward, delegating to its operation's
+canonical estimator.
 Gradcheck uses normal semantic calls and reports low-precision-only
-implementations as unsupported instead of substituting another backend.
+implementations as `skipped`, with their support reason, instead of
+substituting another backend.
 
 ## Private implementation boundary
 

@@ -9,6 +9,8 @@ experiment checkout or training framework is needed. See the
 | `test_api.py` | Configuration validation and import isolation |
 | `test_reference.py`, `test_lora_reference.py`, `test_math_cpu.py` | Independent PyTorch routing, expert and LoRA math |
 | `test_setup.py` | Optional dependency/toolkit setup |
+| `test_resources.py` | Portable Quack construction: meta geometry and stable names without a communicator or GPU payload |
+| `test_te_bank_pool.py` | Ownership of shared Transformer Engine communication scratch |
 | `test_gate.py` | Case selection, device mapping, failure logs and worker timeouts |
 | `test_gpu.py` | Explicitly enabled distributed GPU checks |
 | `_gate.py`, `conftest.py` | GPU matrix, CLI options and process lifecycle |
@@ -30,8 +32,11 @@ explicit `--run-expert-parallel` flag; selecting a marker alone does not launch
 workers. Use `--ep-backend quack|te|both`, `--ep-world-size 1|2|4|8`, and pytest
 `-k` for narrower checks. `--collect-only` lists cases without initializing CUDA.
 The 28-configuration matrix covers full/LoRA, save/recompute, all supported
-precisions and Quack chunking; an additional check loads all four public classes
-in one process. Configuration IDs show the selected backend, precision and mode.
+precisions and Quack chunking. Additional checks load all four public classes
+in one process, plan large-token MoonEP dispatch, compare FP8 parameter
+publication with the backend quantizers, quantize FP8 groups across changing
+expert distributions and share Quack expert banks between two layers.
+Configuration IDs show the selected backend, precision and mode.
 
 A Quack FP8 quantizer regression checks read/write addresses beyond `2**31`
 elements using guarded allocations (about 12 GiB per GPU). It is included only

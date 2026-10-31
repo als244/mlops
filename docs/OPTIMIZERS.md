@@ -87,7 +87,8 @@ The default `capturable=False` keeps each INT64 step counter on CPU. The custom
 op reads its current value at execution time and passes it as a runtime Triton
 argument; it then updates the CPU counter. There is no step-tensor transfer,
 GPU increment kernel, or per-step recompilation. Bias correction and stochastic
-rounding still use the same device arithmetic and old-step seed as before.
+rounding use the same device arithmetic and pre-update step seed as with a CUDA
+counter.
 Functional and explicit-output APIs accept CPU or CUDA counters (INT64 or FP32).
 
 `capturable=True` keeps counters on the parameter's device for CUDA graph
@@ -410,17 +411,18 @@ all update tensors share that dtype.
 
 Parameter bitwise identity is intentionally not promised for every PyTorch
 mode. Default non-capturable PyTorch computes bias-correction scalars from a
-host step using Python floating-point arithmetic. mlops keeps the step and
-update CUDA-resident so the operation remains asynchronous and suitable for
+host step using Python floating-point arithmetic. mlops computes them in FP32
+inside the update kernel, from a step passed as a launch argument or read from
+a CUDA counter, so the operation remains asynchronous and suitable for
 captured/lowered execution. Rare FP16 differences and FP32 last-bit
 differences can therefore remain. `fused=True`, `capturable=True`, mixed dtype
 policies, gradient scaling, a distinct master, and stochastic rounding are
 separate arithmetic contracts rather than bitwise-equivalence claims.
 
-The original kernel is retained in `mlops.kernels.adamw` as
-`adamw_out_internal_fp32_raw` and
-`adamw_master_out_internal_fp32_raw`. It keeps more intermediates in FP32 and
-is a developer-only accuracy/performance ablation; registered operations and
+`mlops.kernels.adamw` also holds a kernel that keeps more intermediates in
+FP32, `adamw_out_internal_fp32_raw` and
+`adamw_master_out_internal_fp32_raw`. It is a developer-only
+accuracy/performance ablation; registered operations and
 `mlops.optim.AdamW` use the PyTorch-compatible kernel by default.
 
 ### FP16 parameters and FP32 state

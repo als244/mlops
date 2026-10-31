@@ -9,8 +9,8 @@ layers over one set of implementation adapters:
   `mlops.explicit`;
 - exact, per-operation implementation selection under `mlops.dispatch`.
 
-It also provides standard `torch.optim.Optimizer` implementations under
-`mlops.optim`, beginning with allocation-free mixed-precision AdamW. Optimizers
+It also provides a standard `torch.optim.Optimizer` implementation under
+`mlops.optim`: allocation-free mixed-precision AdamW. Optimizers
 update local tensors; the caller or training engine owns gradient communication
 and parameter/state sharding.
 
@@ -48,6 +48,9 @@ Quack, SonicMoE, TileLang, TileKernels and development tools, then verifies the 
 It also builds pinned DeepGEMM for fused mHC preprocessing; `--no-deepgemm`
 skips it. This build needs a C++20 compiler with `<format>` and elfutils headers;
 see [provider setup](docs/PROVIDERS.md#deepgemm-mhc-preprocessing-setup).
+It also builds FlashMLA's Hopper sparse-attention forward at a pinned commit for
+the Hopper sparse latent attention provider; `--no-flashmla` skips it, and that
+provider then keeps its TileLang forward.
 On Hopper it also builds cuLA's pinned native KDA forward and fused WY backward
 provider; `--no-cula` skips that build. Set `MLOPS_BUILD_DIR` to place source
 builds outside a quota-limited home directory. See [the attention guide](docs/ATTENTION.md)
@@ -79,6 +82,7 @@ only their implementations unavailable.
 - [Raw kernel boundary](docs/KERNELS.md)
 - [Optimizer API reference](docs/OPTIMIZERS.md)
 - [Expert-parallel layers and GPU validation](docs/EXPERT_PARALLEL.md)
+- [LoRA modules](docs/LORA.md)
 - [Sequential experts and compressed checkpoint storage](docs/SEQUENTIAL_MOE.md)
 - [Attention, routing and residual mixing](docs/ATTENTION.md)
 
@@ -91,13 +95,16 @@ mlops/
 ├── src/mlops/              importable package
 │   ├── dispatch/           registry, resolution, overrides, cost/gradcheck APIs
 │   ├── <operation>.py      general tensor functions, including KDA and MLA/DSA
+│   ├── preparation/        graph-visible preparation behind public helpers
 │   ├── explicit/           public stateless forward/VJP entrypoints
 │   ├── expert_parallel/    optional Quack/TE MoE and LoRA layers
 │   ├── sequential_moe/     bounded sequential experts and LoRA
 │   ├── lora/               dense/expert LoRA configuration and modules
 │   ├── kernels/            private raw Torch/Triton/TileLang mechanics
 │   ├── optim/              PyTorch optimizers and functional/out=/in-place updates
-│   └── providers/          exact implementation adapters
+│   ├── providers/          exact implementation adapters
+│   └── quack_runtime/      process-wide Quack setup, candidates and tuning sweeps
+├── scripts/                setup and pinned provider builds
 ├── tests/                  standalone contract and numerical tests
 └── docs/                   API and contributor documentation
 ```
@@ -134,24 +141,27 @@ See [expert-parallel configuration, installation and examples](docs/EXPERT_PARAL
 
 ## Quack autotuning
 
-The SM90 default pool includes the existing N=96 tiles plus nine measured
-configurations, for 57 generic candidates before shape/epilogue pruning
-(previously 48). They apply to ordinary MLOps calls, including independent
-ShadowSpill profiling workers; distributed tuning is not required. See
+The SM90 default pool adds four N=96 tiles and nine measured configurations
+to Quack's stock candidates, for 57 generic candidates before shape/epilogue
+pruning. They apply to ordinary MLOps calls, including independent profiling
+workers; distributed tuning is not required. See
 [the selected configurations and evidence](docs/sonicmoe-autotuning.md).
 
 Candidate timing defaults to 50 ms of warmup and 180 ms of measurement across
 three timing windows, using CUDA-event budgets and bounded graph replays.
 Override with `MLOPS_QUACK_TUNE_WARMUP_MS`, `MLOPS_QUACK_TUNE_TIME_MS`, and
 `MLOPS_QUACK_TUNE_SAMPLES`. Existing valid tuning results are reused.
+Under a device allocator that replaces PyTorch's own (only PyTorch's serves
+allocations made during a CUDA graph capture), candidates run eagerly on the
+call's own tensors rather than in a graph over rotated copies; the winner stays
+in the process, and the disk cache keeps only graph-timed sweeps.
 
 `MLOPS_QUACK_TUNE_DISTRIBUTED=1` enables cooperative searches on an initialized
 PyTorch distributed group. The caller must provide identical tuning activations
 and enter identical tuner searches in identical order on every rank. Candidates
 are divided across ranks; local winners are collected, the global winner is
-broadcast, and the full score table is cached. Independent GPU workers must leave
-this off. ShadowSpill's MoE benchmark exposes `--distributed-tuning` and handles
-activation synchronization during warmup and restoration before measurement.
+broadcast, and under PyTorch's own allocator the full score table is cached.
+Independent GPU workers must leave this off.
 
 Quack's tuning results persist under `~/.quack/cache` (`QUACK_CACHE_DIR` overrides
 this path). Quack also applies `QUACK_CACHE_DIR` to its compiled-kernel cache,
@@ -171,7 +181,7 @@ and branch-input collapse. `mlops.mhc_combine` includes residual mixing,
 branch expansion and addition. Parameters remain caller-owned tensors.
 Both use the standard semantic/autograd and provider-dispatch interfaces.
 FP32 coefficients are the default; `coefficient_precision="activation"` opts
-into reduced coefficient rounding. TileKernels providers are eligible on
-SM90/SM100, with builtin/native fallbacks. See the
+into reduced coefficient rounding. DeepGEMM and TileKernels providers are
+eligible on SM90/SM100, with builtin/native fallbacks. See the
 [API contract](docs/OPS.md#hyper-connections) and
 [provider contract](docs/PROVIDERS.md#hyper-connection-implementations).

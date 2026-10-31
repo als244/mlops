@@ -1,8 +1,10 @@
 # Raw operation mechanics
 
-This private directory contains low-level Torch/Triton mechanics. It is not a
-public API and contains no implementation selection, fallback, custom-op
-registration, or model state.
+This private directory contains low-level Torch, Triton, TileLang and CuTe DSL
+mechanics. It is not a public API and contains no implementation selection,
+fallback, or model state. Its only custom operators are the router GEMM's
+autograd boundary (`router_op.py`, behind `router.routed_logits`) for
+trace-visible MoE compositions and layers.
 
 Rules:
 
@@ -35,15 +37,21 @@ the attributed TileLang forward/backward kernels. Pooled index selection lives
 in `src/mlops/kernels/pooled_indexer.py`: a Triton kernel that scores a chunk of
 queries against every pooled key with the head reduction fused, and a selection
 kernel that searches each query's FP32 scores for its cutoff and writes its
-selection. The SM90 priority provider in `pooled_indexer_cudnn.py` instead
-uses cuDNN 1.30's typed CuTe scorer (including FP32 head weights) and radix
-top-k, with the combined score/radix workspace capped at 256 MiB.
+selection. `pooled_indexer_cudnn.py`, behind the SM90 priority provider
+`cudnn.pooled_topk.sm90`, instead uses cuDNN 1.30's typed CuTe scorer
+(including FP32 head weights) and radix top-k, with the combined score/radix
+workspace capped at 256 MiB.
 
 FLA KDA uses fast dot precision by default; IEEE intra-chunk arithmetic is
 an explicit implementation override. The optional cuLA SM90 training provider
 replaces the fused WY backward stage while retaining call-local state metadata.
 Its native-forward variant rebuilds intra-chunk matrices inside backward and
 saves only the required prefix gates alongside caller inputs and metadata.
+
+The final KDA intra-chunk gradient kernel accumulates in FP32 and stores `dQ`
+and `dK` in their input dtypes: the cast happens in the store, avoiding full
+FP32 output buffers and separate conversion launches.
+The reverse gate scan and model gate derivative remain separate operations.
 
 The existing SwiGLU kernels accept a compile-time clipping limit in both directions;
 the default avoids the clipping branches. Gated RMSNorm threads the selected
@@ -58,7 +66,7 @@ forward/input-VJP/coefficient-VJP kernels. All allocations are invocation-local;
 providers own custom-op registration. Post kernels read reduced-precision activations and small
 FP32 coefficients, accumulate in FP32 and write reduced-precision activations;
 there is no full FP32 activation workspace. The activation-coefficient option
-uses the separate legacy mixing primitive and a decomposable epilogue.
+uses the separate mixing primitive and a decomposable epilogue.
 TileKernels calls are adapted in `providers/tilekernels/hyper_connection.py`.
 
 `kernels/mhc_pre.py` provides the private projection/input-gradient kernel for
@@ -82,10 +90,5 @@ helpers. SonicMoE DP and Quack EP adapters import the same implementations.
 It has no MoonEP or other communication dependency and does not select routed
 experts. Group offsets, gather indices, scales and GEMM policy are explicit
 caller inputs. The Quack runtime fingerprints this directory for its caches.
-The old private `expert_parallel/quack/experts/` and `kernels/` paths are aliases;
+The private `expert_parallel/quack/experts/` and `kernels/` paths are aliases;
 new kernels and callers belong here.
-
-The final KDA intra-chunk gradient kernel accumulates in FP32 and stores `dQ`
-and `dK` in their input dtypes. This moves the existing final cast into the
-store, avoiding full FP32 output buffers and separate conversion launches.
-The reverse gate scan and model gate derivative remain separate operations.

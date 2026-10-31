@@ -87,7 +87,7 @@ extra residuals required by registered autograd; model code must not call them.
 
 ## Reference-entry format
 
-Every public operation entry uses the same fields:
+Full reference entries use these fields:
 
 1. **Signature** — callable surface.
 2. **Purpose** — semantic behavior.
@@ -97,6 +97,9 @@ Every public operation entry uses the same fields:
 6. **Constraints and exceptions** — required relationships and expected errors.
 7. **Implementations** — exact registered implementation IDs.
 8. **Example** — minimal canonical use.
+
+Compact entries give the signature, shapes, gradients, and implementations in
+prose.
 
 Unless an entry says otherwise, operations are first-order differentiable,
 functional (`mutates_args=()` at registered boundaries), and return fresh
@@ -139,14 +142,15 @@ losses use FP32. Integer metadata is non-differentiable.
 `T`. Attention, convolution, and recurrent operations reset at each boundary
 and must not mix segments. Most semantic functions normalize it to a tuple or
 dispatcher `list[int]`; it is specialized graph metadata rather than a device
-tensor input. Gated linear attention additionally receives caller-owned device
-metadata prepared once per packed round by
+tensor input. Dense attention instead takes cumulative offsets `cu_seqlens`
+as a device tensor, and causal convolution and gated linear attention take
+caller-owned device metadata prepared once per packed round by
 `prepare_packed_sequence_metadata`; providers never derive host counts from
 CUDA tensors or retain metadata caches.
 
 ### Mutation, aliasing, and higher-order gradients
 
-All registered model-facing differentiable operations currently declare
+All registered model-facing differentiable operations declare
 `mutates_args=()`. Private kernels may fill outputs allocated inside the
 operation, but no caller input is written. Differentiable `*_fwd` operations
 register fake/meta behavior and a VJP. Opaque VJP work uses a separate
@@ -169,7 +173,7 @@ replay is correct.
 | `gated_rms_norm` | normalization/gating | `[...,D]` | `fla.gated_rms_norm` |
 | `swiglu`, `packed_swiglu` | activation | `[...,F]` | `builtin.*.triton` |
 | `gelu` | activation | shape of input | `builtin.gelu.aten_explicit_backward` |
-| `rope`, `partial_rope` | position | shape of input | `builtin.*.triton` |
+| `rope`, `partial_rope` | position | shape of input | `builtin.rope.triton_table` / `builtin.partial_rope.triton` |
 | `build_rope_tables` | reusable position tables | FP32 cosine/sine `[rows,rotary_dim]` | construction helper |
 | `flash_attention` | dense attention | `[T,Hq,Dh]` | `builtin.flash_attention.aten` |
 | `mla_attention` | latent attention | `[T,Hq,Dv]` | `builtin.mla_attention.flash` |
@@ -178,7 +182,7 @@ replay is correct.
 | `selection_mask` | selected causal mask | FP32 `[query_rows,key_rows]`, 0 or -inf | construction helper |
 | `dsa_selection_override` | diagnostic selection | context manager | caller-supplied selection |
 | `dsa_attention` | selected attention | `[T,Hq,Dv]` | `builtin.dsa_attention.sparse` |
-| `sparse_latent_attention`, `sparse_mla` | tied-latent attention / composition | `[T,H,L]` / `[T,H,Dv]` | `builtin.sparse_latent_attention.tilelang` / composed |
+| `sparse_latent_attention`, `sparse_mla` | tied-latent attention / composition | `[T,H,L]` / `[T,H,Dv]` | `builtin.sparse_latent_attention.hopper` on SM90 / TileLang fallback; composed |
 | `pooled_topk` | pooled causal selection | `[T,K+pool_size-1]` | `cudnn.pooled_topk.sm90` / Triton fallback |
 | `kimi_delta_attention`, `kda_decay` | recurrent attention / FP32 decay | `[T,H,D]` | cuLA SM90 / FLA fallback; composed decay |
 | `sigmoid_topk` | expert selection | IDs and weights `[T,K]` | composed PyTorch |
@@ -190,7 +194,7 @@ replay is correct.
 | `linear_attention` | hybrid mixer | shape of V | `fla.linear_attention.gated_delta_rule` |
 | `linear_mixer` | graph-layout policy | shape of hidden | `builtin.linear_mixer.packed` |
 | `prepare_packed_sequence_metadata` | reusable sequence metadata | cumulative lengths and chunk indices | construction helper |
-| `moe` | routed experts | output + diagnostics | `builtin.moe.grouped_gemm_composed` |
+| `moe` | routed experts | output + diagnostics | `sonicmoe.moe.composed` on 9.x/10.x / `builtin.moe.grouped_gemm_composed` |
 | `cross_entropy` | training loss | FP32 `[R]` or scalar | `builtin.cross_entropy.triton` |
 | `head_loss` | bounded-logits training epilogue | FP32 scalar | `builtin.head_loss.chunked` |
 | `lora_head_loss` | bounded-logits low-rank head | FP32 scalar | `builtin.lora_head_loss.chunked` |
@@ -495,8 +499,11 @@ Computes `silu(gate) * up` elementwise.
 **Autograd and effects**
 
 Saves `gate` and `up`; backward returns separate gradients. The default
-Triton VJP is the corrected implementation. `triton_legacy` retains the old
-backward only for historical ablation.
+Triton VJP rounds as PyTorch's CUDA SiLU backward does: an accurate exponential
+and round-to-nearest division for the sigmoid `s`, and the left-associated
+`(g * s) * (1 + x * (1 - s))` for the gate cotangent `g`. `triton_legacy` uses
+Triton's `tl.sigmoid` and the right-associated `g * (s * (1 + x * (1 - s)))`,
+for ablation only.
 
 **Constraints and exceptions**
 
@@ -515,7 +522,7 @@ activated = swiglu(gate_projection, up_projection)
 ```
 
 
-`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into the existing forward/backward kernels. Use the same limit in both explicit calls.
+`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into its forward/backward kernels. Use the same limit in both explicit calls.
 
 ### `packed_swiglu`
 
@@ -543,8 +550,8 @@ Splits one packed projection into equal gate/up halves and applies SwiGLU.
 
 **Autograd and effects**
 
-Saves `packed`; backward returns one `grad_packed[...,2F]`. Provider
-selection is shared with `swiglu`.
+Saves `packed`; backward returns one `grad_packed[...,2F]`. Its
+implementations mirror `swiglu`'s and are selected separately.
 
 **Constraints and exceptions**
 
@@ -562,7 +569,7 @@ activated = packed_swiglu(project(hidden))  # project width is 2F
 ```
 
 
-`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into the existing forward/backward kernels. Use the same limit in both explicit calls.
+`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into its forward/backward kernels. Use the same limit in both explicit calls.
 
 ### `gelu`
 
@@ -719,13 +726,14 @@ A fresh tensor matching `x`.
 
 **Autograd and effects**
 
-Saves positions and scalar metadata only. Backward inverse-rotates the leading
-gradient channels and passes the tail through.
+Saves `positions`, `cosine`, `sine`, and scalar metadata; no activation.
+Backward inverse-rotates the leading gradient channels and passes the tail
+through.
 
 **Constraints and exceptions**
 
-`0 <= rotary_dim <= Dh`; a nonzero rotary width must be even. Token metadata
-must match the flattened token extent.
+`0 < rotary_dim <= Dh`, and `rotary_dim` must be even. Token metadata must
+match the flattened token extent.
 
 **Implementations**
 
@@ -806,9 +814,11 @@ as a constant with no guard, which is what keeps the read from breaking a
 `fullgraph` capture, so the converse also holds: a compiled graph cached from
 a run without the request is reused unchanged rather than recompiled under it.
 A caller that compiles across the boundary wants a compile cache per setting. Requesting it
-without the `flash-attn-3` wheel raises `RuntimeError` rather than quietly
-returning unordered gradients; `native_torch.flash_attention` is ordered
-already and ignores the request.
+on a Hopper GPU without the `flash-attn-3` wheel raises `RuntimeError` rather
+than quietly returning unordered gradients. FA3's kernels do not run on other
+GPUs, where the request falls back to the aten backward without the ordering
+guarantee. `native_torch.flash_attention` is ordered already and ignores the
+request.
 
 **Constraints and exceptions**
 
@@ -822,7 +832,9 @@ already and ignores the request.
   on the device and are not read on the host, so these are the caller's to
   guarantee.
 
-Violations detected by the varlen boundary raise `ValueError`.
+Offsets that are not one-dimensional int32 on the queries' device leave no
+implementation supported, so dispatch raises `RuntimeError`. The shape
+relationships are left to the kernels, which raise their own errors.
 
 **Implementations**
 
@@ -865,7 +877,7 @@ mla_attention(
 
 Runs attention on already assembled MLA query, key, and value heads.
 Low-rank projections, normalization, and decoupled RoPE belong to the
-surrounding `MLAProjections` block.
+caller's surrounding block.
 
 **Parameters**
 
@@ -883,14 +895,15 @@ surrounding `MLAProjections` block.
 
 **Autograd and effects**
 
-Uses the selected dense-attention implementation. When flash attention requires
-equal Q/K/V widths and `Dv < Dqk`, the operation zero-pads V internally and
-slices the public output/gradient back to `Dv`.
+`builtin.mla_attention.flash` launches the builtin flash-attention
+implementation, which requires equal Q/K/V widths: when `Dv < Dqk` it zero-pads
+V internally and slices the public output/gradient back to `Dv`.
 
 **Constraints and exceptions**
 
-`Dv <= Dqk`; otherwise `ValueError` is raised. Q/K token, head, and width
-dimensions must match, and `lengths` must cover `T`.
+`Dv <= Dqk`; otherwise no implementation supports the call and dispatch
+raises `RuntimeError`. Q/K token, head, and width dimensions must match, and
+`lengths` must cover `T`.
 
 **Implementations**
 
@@ -1240,12 +1253,18 @@ output = dsa_attention(query, key, value, indices, lengths)
 `indices[T,K]` contains unique causal key indices per sequence, with -1 padding;
 each query needs at least one key. H must be divisible by 16 and L one of
 64/128/256/512. `scale` is explicit. Backward returns dQ and the combined dKV.
-Implementation: `builtin.sparse_latent_attention.tilelang`.
-FP32 atomics in dKV mean bitwise deterministic gradients are not guaranteed.
+On SM90, for `L=512` and `H` a multiple of 64 with TileLang and cuDNN
+Frontend's DSA module installed, `builtin.sparse_latent_attention.hopper` is
+preferred: FlashMLA's sparse prefill forward when FlashMLA is installed, else
+TileLang's pipelined forward, and cuDNN Frontend's DSA backward. Every other
+call uses `builtin.sparse_latent_attention.tilelang`, whose backward
+accumulates dKV with FP32 atomics; neither guarantees bitwise deterministic
+gradients.
 
 Optional `q_rope[T,H,64]` and `k_rope[T,64]` must be supplied together, in the
 same BF16 dtype/device. Their already-rotated dot product contributes to the
 score, while values/output remain latent-width. This selects
+`builtin.sparse_latent_attention.rope.hopper` under the same conditions, else
 `builtin.sparse_latent_attention.rope.tilelang`; autograd also produces both
 positional gradients. The caller applies RoPE and chooses the combined
 query/key scale.
@@ -1336,7 +1355,7 @@ convolved = causal_conv_silu(projected, conv.weight, cumulative, chunks)
 The autograd path avoids weight-gradient computation when `weight.requires_grad`
 is false. Its input-only backward handles widths up to eight without a global
 preactivation buffer; wider widths fall back to FLA. The explicit backward
-continues to return both input and weight gradients.
+returns both input and weight gradients.
 
 ### `causal_conv_silu_qkv`
 
@@ -1596,7 +1615,9 @@ output = linear_mixer(self._forward_segment, hidden, lengths)
 `v` is `[T,H,Dv]` and `beta` is `[T,H]`. Q/K are already L2-normalized.
 Q/K/V share BF16 or FP16; `g` is FP32 bounded log decay in [-5,0].
 All inputs use one CUDA device. `cumulative` gives integer sequence boundaries
-and `chunks` gives integer (sequence, chunk) pairs for 64-token chunks.
+and `chunks` gives integer (sequence, chunk) pairs for 64-token chunks; both
+are nonempty even for one sequence, unlike the single-sequence sentinels of
+`prepare_packed_sequence_metadata`. `Dk` is 32, 64, 128, or 256.
 There is zero initial recurrent state and no returned final state.
 On SM90 with BF16 Q/K/V and D=128, dispatch prefers
 `cula.kimi_delta_attention.sm90.recompute` (native forward, recomputed
@@ -1613,8 +1634,8 @@ retained in a global cache.
 `kda_decay(raw, dt_bias, a_log, *, lower_bound=-5.0)` maps projected
 `raw[T,H,D]`, per-channel `dt_bias[H*D]`, and per-head `a_log[H]`
 to FP32 negative log decay. All exponential/sigmoid arithmetic uses FP32.
-A negative `lower_bound` bounds the result; the current KDA algorithm requires
-values in [-5,0]. The ordinary PyTorch expression differentiates all inputs.
+A negative `lower_bound` bounds the result; KDA requires values in [-5,0].
+The ordinary PyTorch expression differentiates all inputs.
 
 ## Mixture of experts
 
@@ -1691,10 +1712,11 @@ diagnostics.
 The registered path privately saves router logits, route weights/IDs, sorted
 assignment order, expert offsets, inverse slots, and packed pre-activation
 expert projections. Backward returns gradients for `h2`, `residual`,
-`router_weight`, `w13_experts`, and `w2_experts`; the builtin implementations
-return the weights' at
+`router_weight`, `w13_experts`, and `w2_experts`; the builtin and SonicMoE
+implementations return the weights' at
 [`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
-one is set. Router bias, counts,
+one is set. A router or expert weight that does not require a gradient
+receives none, and its weight-gradient GEMM is skipped. Router bias, counts,
 probability diagnostics, and discrete route metadata do not receive gradients.
 The operation itself does not update router-bias or round counters.
 
@@ -1710,8 +1732,9 @@ The operation itself does not update router-bias or round counters.
 - Sigmoid mode requires `shared_gate_weight`.
 - Group counts and `lengths` must be compatible with routing mode.
 
-Invalid shared-expert combinations raise `ValueError`; other incompatible
-shapes or implementations raise their backend error.
+Invalid shared-expert combinations, an unknown `compute_precision`, and a
+nonpositive `swiglu_limit` raise `ValueError`; other incompatible shapes or
+implementations raise their backend error.
 
 **Implementations**
 
@@ -1726,7 +1749,7 @@ without replaying the expert down projection. Routed expert activation remains
 part of the selected MoE implementation; it does not consult the standalone
 `swiglu` operation.
 
-The manual explicit forward/backward API continues to resolve to the opaque
+The manual explicit forward/backward API resolves to the opaque
 whole-operation implementation. Composition is a semantic compiler boundary,
 not a second public residual ABI. Select the opaque semantic control explicitly
 with `use_implementation("moe", "builtin.moe.grouped_gemm")`.
@@ -1749,8 +1772,8 @@ output, aux, counts, probability_sum = moe(
 
 `sigmoid_topk(logits, correction_bias, top_k, *, groups=1,
 selected_groups=1, scale=2.5, normalize=True)` returns expert IDs and weights.
-`logits[T,E]` and `correction_bias[E]` must be FP32. Selection can first
-restrict experts to `selected_groups` of the equal-sized `groups`.
+`logits[T,E]` must be FP32; `correction_bias[E]` is read in FP32. Selection
+can first restrict experts to `selected_groups` of the equal-sized `groups`.
 Bias affects selection only; differentiable weights come from unbiased sigmoid
 scores, optionally normalized then multiplied by `scale`.
 Dense router projection and any balancing objective remain caller-owned.
@@ -1806,9 +1829,10 @@ rounding of ordinary elementwise code).
 Implementations: `native_torch.mhc_combine`,
 `builtin.mhc_combine.four_stream`, and optional `tilekernels.mhc_combine`.
 TileKernels is preferred for supported FP32-coefficient calls on SM90/SM100;
-SM90 forward/backward are tested locally, SM100 is supported upstream but has
-not yet been hardware-tested here. Other architectures, unsupported shapes,
-and activation-precision mode fall back to the builtin/native providers.
+its SM90 forward/backward are hardware-tested, and SM100 eligibility follows
+upstream support without hardware testing. Other architectures, unsupported
+shapes, and activation-precision mode fall back to the builtin/native
+providers.
 
 ```python
 post, mixing, branch_input = mhc_pre(streams, fn, bias, scale)
@@ -1816,15 +1840,30 @@ branch = attention_or_mlp(branch_input)
 streams = mhc_combine(branch, streams, post, mixing)
 ```
 
-### Composition helpers
+### `mhc_normalize_streams`
 
-`mhc_normalize_streams(streams, *, eps=1e-5)` returns FP32 `[...,N*D]`.
+`mhc_normalize_streams(streams, *, eps=1e-5)` flattens `streams[...,N,D]` to
+`[...,N*D]` in FP32 and divides each row by its root mean square, with `eps`
+added to the mean square and no gain. The result is the input of a
+caller-owned coefficient projection. Ordinary PyTorch autograd differentiates
+it.
+
+### `mhc_coefficients`
+
 `mhc_coefficients(streams, projected, bias, scale, *, sinkhorn_eps=1e-6,
-iterations=20)` consumes externally projected FP32 logits and returns the
-same tuple as `mhc_pre`. They remain available for custom compositions;
-model code should use the two semantic boundaries to permit larger fusion.
-The private `mlops::mhc_mix_four` and TileKernels Sinkhorn operations are
-implementation details, not required model graph boundaries.
+iterations=20)` consumes externally projected FP32 logits
+`projected[...,N*(N+2)]`, with `bias[N*(N+2)]` and `scale[3]` as in `mhc_pre`,
+and returns the same `(post, mixing, branch_input)` tuple. Coefficients are
+FP32 whatever the bias and scale dtypes; `sinkhorn_eps` stabilizes the pre
+gates and the Sinkhorn normalization, and `iterations` counts its rounds.
+Logits that are not FP32, mismatched shapes, and `iterations < 1` raise
+`ValueError`. `native_torch.mhc_pre` is `mhc_coefficients` applied to
+`mhc_normalize_streams(streams, eps=eps)` projected by `projection` in FP32.
+
+Both helpers are available for custom compositions; model code should use the
+two semantic boundaries to permit larger fusion. The private
+`mlops::mhc_mix_four` and TileKernels Sinkhorn operations are implementation
+details, not required model graph boundaries.
 
 ## Language-model epilogues
 
@@ -1881,8 +1920,8 @@ cotangents are not mutated; first-order retained-graph replay is supported.
 `logits` must be rank two with nonempty `V`; `targets` must have shape `[R]`
 and share its device. Every target must equal `ignore_index` or lie in `[0,V)`.
 `weight`, when present, must have shape `[V]`, share the device, and not require
-gradients. The builtin Triton implementation currently rejects class weights,
-so weighted calls resolve to `native_torch.cross_entropy`.
+gradients. The builtin Triton implementation rejects class weights, so
+weighted calls resolve to `native_torch.cross_entropy`.
 
 **Implementations**
 
@@ -1987,9 +2026,10 @@ repeated first-order VJPs but not higher-order differentiation.
 
 **Constraints and exceptions**
 
-Hidden/target row counts must match; targets must lie in `[0,V)`;
-`chunk_size > 0`; `1 <= valid_rows <= R`; and `valid_rows` is not given with
-`reduction="sum"`. Detected chunked-path violations raise `ValueError`.
+Hidden/target row counts must match; targets must lie below `V`, a negative
+target being ignored; `chunk_size > 0`; `1 <= valid_rows <= R`; and
+`valid_rows` is not given with `reduction="sum"`. Detected chunked-path
+violations raise `ValueError`.
 
 **Implementations**
 
@@ -2006,9 +2046,9 @@ loss = head_loss(normalized, lm_head.weight, targets)
 Final normalization is deliberately a normal composition. RMSNorm clients call
 `rms_norm` before `head_loss`; LayerNorm clients call `layer_norm`. This keeps
 the head contract independent of architecture while preserving bounded logits.
-Compared with the former combined contract, ordinary autograd retains the norm
-input/statistics and executes its VJP separately. Save-versus-recompute policy
-belongs to graph lowering rather than to separate RMS/Layer head APIs.
+Ordinary autograd retains the norm input/statistics and executes its VJP
+separately. Save-versus-recompute policy belongs to graph lowering rather than
+to separate RMS/Layer head APIs.
 
 
 ### `lora_head_loss`
@@ -2142,7 +2182,9 @@ resolve_implementation(
 ```
 
 Filters support, then selects highest priority with exact ID as a deterministic
-tie-breaker. During capture it requires a frozen exact override.
+tie-breaker. During `torch.compile` or export capture it resolves from tensor
+metadata (device, dtype, shape, and strides) without reading tensor contents,
+and the captured graph keeps the selected implementation.
 
 ### `explain_implementation`
 
@@ -2158,6 +2200,13 @@ exact mapping and restores an outer mapping on exit.
 
 `use_implementations(mapping)` temporarily forces several exact operation
 mappings. Unknown operation/ID pairs fail before entering the context.
+
+### `set_implementations`
+
+`set_implementations(mapping)` applies the same validated mappings from that
+point on in the calling context, beside earlier selections. Importing `mlops`
+applies `MLOPS_IMPLEMENTATIONS`, comma-separated `operation=implementation_id`
+pairs, this way, so one environment variable chooses for a whole process tree.
 
 ### `capture_dispatch`
 
@@ -2260,15 +2309,18 @@ order.
 | `causal_conv_silu_qkv` | `fla.causal_conv_silu_qkv` for supported frozen weights | `builtin.causal_conv_silu_qkv.composed` |
 | `l2_norm` | `fla.l2_norm` | `native_torch.l2_norm` |
 | `gated_rms_norm` | `fla.gated_rms_norm` | `native_torch.gated_rms_norm` |
-| `kimi_delta_attention` | `cula.kimi_delta_attention.sm90.recompute`, `cula.kimi_delta_attention.sm90`, `fla.kimi_delta_attention.chunk` (IEEE opt-in) | none |
-| `sparse_latent_attention` | `builtin.sparse_latent_attention.tilelang` | none |
+| `kimi_delta_attention` | `cula.kimi_delta_attention.sm90.recompute`, `cula.kimi_delta_attention.sm90`, `fla.kimi_delta_attention.chunk` | `fla.kimi_delta_attention.chunk.ieee` (IEEE opt-in) |
+| `sparse_latent_attention` | `builtin.sparse_latent_attention.hopper` on SM90, `builtin.sparse_latent_attention.tilelang`; with positional tails, `builtin.sparse_latent_attention.rope.hopper`, `builtin.sparse_latent_attention.rope.tilelang` | none |
 | `pooled_topk` | `cudnn.pooled_topk.sm90`, `builtin.pooled_topk.triton` | none |
+| `mhc_pre` | `deepgemm.mhc_pre`, `tilekernels.mhc_pre.sinkhorn` on SM90/SM100 | `native_torch.mhc_pre` |
+| `mhc_combine` | `tilekernels.mhc_combine` on SM90/SM100, `builtin.mhc_combine.four_stream` | `native_torch.mhc_combine` |
 | `linear_attention` | `fla.linear_attention.gated_delta_rule` | `native_torch.linear_attention` |
 | `linear_mixer` | `builtin.linear_mixer.packed` | `native_torch.linear_mixer.per_sequence` |
 | `dsa_attention` | `builtin.dsa_attention.sparse` | `native_torch.dsa_attention` |
 | `dsa_indexer_key_norm` | `builtin.dsa_indexer_key_norm.layer_norm` | `native_torch.dsa_indexer_key_norm` |
 | `index_scores` | `builtin.index_scores.einsum` | `native_torch.index_scores` |
 | `moe` | `sonicmoe.moe.composed` on compute capability 9.x/10.x, else `builtin.moe.grouped_gemm_composed` | `sonicmoe.moe`, `builtin.moe.grouped_gemm`, `native_torch.moe` |
+| `adamw` | `builtin.adamw.triton` ([OPTIMIZERS.md](OPTIMIZERS.md)) | none |
 
 ## Private dispatcher boundary
 
@@ -2283,11 +2335,15 @@ outputs are visible to FakeTensor and AOTAutograd but hidden from model code.
 Their exact schema is implementation-specific and is therefore documented in
 the provider source rather than frozen as another public ABI.
 
-All dispatcher schemas are functional (`mutates_args=()`), and the contract
-suite runs `torch.library.opcheck` over every registered opaque forward. Target
-names include operation, provider, and variant—for example
-`l2_norm_fla_fwd` and `moe_builtin_grouped_gemm_fwd`—so captured graphs retain exact
-implementation identity.
+Every forward and backward schema is functional (`mutates_args=()`), and the
+contract suite runs `torch.library.opcheck` over every registered opaque
+forward. The mutable schemas are auxiliary: the optimizer update targets in
+[OPTIMIZERS.md](OPTIMIZERS.md), and
+`moe_builtin_grouped_gemm_finish_bwd_donate_h13`, a deployment-only VJP that
+writes `grad_h13` into an `h13` a compiler has proven dead and that no mlops
+call path reaches. Target names include operation, provider, and variant—for
+example `l2_norm_fla_fwd` and `moe_builtin_grouped_gemm_fwd`—so captured graphs
+retain exact implementation identity.
 
 ## Operation-package example
 
@@ -2346,11 +2402,7 @@ The contract is deliberately flat:
 - calls are functional: they do not mutate or alias caller arguments; and
 - explicit backward is first-order only.
 
-The current surface allocates and returns fresh output tensors. A future
-standalone operations package may add a separate caller-owned-buffer launch
-ABI without changing these mathematical signatures. Such an execution-only
-`out=` surface must not replace the differentiable functional custom ops used
-by models.
+The surface allocates and returns fresh output tensors.
 
 These entry points use the same implementation resolver and raw implementation math
 as the semantic surface; they are not a second copy of dispatch. Select an
@@ -2374,7 +2426,7 @@ grad_x, grad_weight = rms_norm.backward(
 )
 ```
 
-The semantic API remains unchanged:
+The semantic API keeps the residuals inside registered autograd:
 
 ```python
 from mlops import rms_norm
@@ -2424,7 +2476,6 @@ positions, routing indices, and sequence metadata are non-differentiable.
 | `sparse_latent_attention` | shared-latent attention output | output and LSE; retain selected indices | Q, combined KV |
 | `kimi_delta_attention` | recurrent output | cumulative gates, Aqk, Akk and sequence metadata | Q, K, V, log decay, beta |
 | `causal_conv_silu` | convolution output | caller retains cumulative sequence lengths | input, weight |
-| `causal_conv_silu_qkv` | separate Q/K/V outputs | provider retains packed input and sequence metadata | Q, K, V; weight via fallback if trainable |
 | `linear_attention` | recurrent output | FLA gate/matrix and sequence metadata | seven continuous inputs |
 | `moe` | routed output and diagnostics | complete route/dispatch state | hidden, residual, router, expert weights |
 | `head_loss` | scalar loss | seed-one hidden/head VJPs | scaled hidden/head VJPs |
@@ -2449,7 +2500,8 @@ backward(
 `forward` performs table lookup. `backward` returns the deterministic dense
 table gradient, including accumulation for repeated IDs. There is no gradient
 for integer `tokens`; the caller supplies `weight.shape[0]` as
-`num_embeddings`.
+`num_embeddings`. Unlike the other modules' backward, this one takes `tokens`
+before the cotangent.
 
 ### Normalization
 
@@ -2549,7 +2601,8 @@ backward(
 ) -> tuple[Tensor[...,D], Tensor[...,D], Tensor[D]]
 ```
 
-The operation computes `silu(gate) * RMSNorm(x) * weight`. Backward returns
+The operation computes `silu(gate) * RMSNorm(x) * weight`, with
+`sigmoid(gate)` under `activation="sigmoid"`. Backward returns
 `(grad_x, grad_gate, grad_weight)`.
 
 
@@ -2585,11 +2638,11 @@ backward(
 ```
 
 Returns `silu(gate) * up`; backward returns `(grad_gate, grad_up)`. Force
-`builtin.swiglu.triton` or the historical
+`builtin.swiglu.triton` or the ablation variant
 `builtin.swiglu.triton_legacy` around both calls when selecting a variant.
 
 
-`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into the existing forward/backward kernels. Use the same limit in both explicit calls.
+`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into its forward/backward kernels. Use the same limit in both explicit calls.
 
 #### `explicit.packed_swiglu`
 
@@ -2605,7 +2658,7 @@ backward(
 The first half of `packed` is the gate and the second is the up projection.
 
 
-`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into the existing forward/backward kernels. Use the same limit in both explicit calls.
+`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into its forward/backward kernels. Use the same limit in both explicit calls.
 
 #### `explicit.rope`
 
@@ -2669,10 +2722,14 @@ backward(
 ```
 
 `output` has shape `[T,Hq,Dh]`; `lse` is FP32 `[Hq,T]`.
-`cu_seqlens` contains caller-constructed packed boundaries. Unlike the semantic
-surface, the explicit interface does not prepare this metadata for the caller.
-The explicit surface currently accepts `builtin.flash_attention.aten`; apply-only
-`native_torch.flash_attention` is rejected rather than replaying autograd.
+`cu_seqlens` contains caller-constructed packed boundaries and `lengths` the
+same boundaries as host integers. Both calls raise `ValueError` unless the
+lengths are positive and cover `T`, `cu_seqlens` is one-dimensional INT32 with
+one more entry, `max_seqlen` is the longest length, and the inputs are
+contiguous; unlike the semantic surface, no sequence may be empty. The explicit
+surface accepts `builtin.flash_attention.aten`; apply-only
+`native_torch.flash_attention` is rejected rather than replaying autograd. The
+explicit backward does not read `deterministic_kernels`.
 
 #### `explicit.dsa_attention`
 
@@ -2768,7 +2825,6 @@ forward(
     routed_scaling: float = 1.0, lengths=None,
     weight_precision: str = "float32",
     swiglu_implementation: str = "builtin.packed_swiglu.triton",
-    swiglu_limit: float | None = None,
 ) -> tuple[
     output, aux, counts, probability_sum, logits, route_weights,
     route_ids, order, offsets, slots, h13,
@@ -2784,7 +2840,6 @@ backward(
     logits, route_weights, route_ids, order, offsets, slots, h13,
     *, top_k: int, routing_mode: str, lengths: Sequence[int],
     swiglu_implementation: str = "builtin.packed_swiglu.triton",
-    swiglu_limit: float | None = None,
 ) -> tuple[grad_h2, grad_residual, grad_router, grad_w13, grad_w2]
 ```
 
@@ -2794,8 +2849,8 @@ backward(
 Backward requires cotangents for the differentiable public `output`, `aux`, and
 `probability_sum` roots. `counts` and discrete routing/dispatch metadata have
 no VJP. Forward and backward must use the same `top_k`, `routing_mode`, packed
-lengths, builtin routed-SwiGLU implementation and `swiglu_limit` (the
-semantic `moe`'s clamp).
+lengths, and builtin routed-SwiGLU implementation. The explicit entry points
+take no `swiglu_limit`: their routed SwiGLU is unclamped.
 
 This atomic operation covers the routed expert path only. Shared-expert
 composition remains ordinary block/model computation and is not reproduced in
@@ -2893,8 +2948,10 @@ Not every model-facing helper is an atomic differentiable operation:
 |---|---|
 | `mla_attention` | composition of padding/slicing and explicit flash attention |
 | `linear_mixer` | graph-layout/control-flow selection around a caller function |
-| `dsa_indexer_key_norm`, `index_scores` | ordinary differentiable PyTorch compositions |
-| `topk_indices`, `selection_mask` | discrete selection with no mathematical VJP |
+| `dsa_indexer_key_norm`, `index_scores`, `sparse_mla`, `sigmoid_topk`, `kda_decay`, `mhc_normalize_streams`, `mhc_coefficients` | ordinary differentiable PyTorch compositions |
+| `causal_conv_silu_qkv`, `mhc_pre`, `mhc_combine` | semantic-only: no implementation registers explicit forward/backward, and ordinary autograd differentiates them |
+| `topk_indices`, `selection_mask`, `pooled_topk` | discrete selection with no mathematical VJP |
+| `build_rope_tables`, `prepare_packed_sequence_metadata` | construction helpers with no differentiable outputs |
 | implementation/diagnostic context managers | execution policy rather than tensor operations |
 
 The package does not hand-author composite block or model backward functions.
@@ -2903,7 +2960,8 @@ may generate stage graph pairs when needed.
 
 ### Adding an explicit operation
 
-When adding an opaque differentiable `*_fwd` custom op:
+When an operation gains its first implementation with explicit `forward` and
+`backward`:
 
 1. Add `mlops/explicit/<operation>.py` in the same change.
 2. Export exactly `forward` and `backward` from that module.
@@ -2920,5 +2978,5 @@ When adding an opaque differentiable `*_fwd` custom op:
 9. Test that outputs have no `grad_fn`, no input `.grad` is populated, and a
    repeated backward leaves every supplied argument unchanged.
 
-The coverage test intentionally fails if an opaque forward custom op exists
-without a corresponding explicit module.
+The coverage test fails unless the explicit modules are exactly the
+operations with such an implementation.

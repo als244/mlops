@@ -60,7 +60,7 @@ the lower tensor API, where ownership is explicit.
 
 Optimizer updates use ordinary local tensors. Gradient communication, state
 sharding, and master-weight ownership belong to the caller or training engine.
-The optimizer advertises `supports_parameter_sharding=True` because AdamW updates
+The optimizer advertises `supports_flat_parameter_shards=True` because AdamW updates
 are coordinate-wise; an engine can pass owned slices through the same local
 update operation. MLOps creates no process groups, communication buffers, or
 optimizer-specific streams.
@@ -95,13 +95,17 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 | `src/mlops/providers/<source>/` | exact implementation adapters; opaque custom-op/fake/autograd registration |
 | `src/mlops/kernels/` | raw Torch/Triton/TileLang mechanics; no selection or fallback |
 | `src/mlops/optim/` | standard optimizers plus functional, `out=`, and in-place update entrypoints |
+| `src/mlops/preparation/` | private graph-visible preparation targets behind public helpers such as `prepare_packed_sequence_metadata` |
+| `src/mlops/lora/` | LoRA configuration, model-independent conversion and low-rank modules |
+| `src/mlops/expert_parallel/`, `src/mlops/sequential_moe/` | optional MoE layer packages with their own documentation |
 | `src/mlops/kernels/kda/`, `kernels/sparse_mla/` | attributed attention kernels, imported lazily by standard registrations |
 | `src/mlops/quack_runtime/` | process-wide Quack setup shared by the expert-parallel layers and the SonicMoE provider: source-checked patches, the tuning-cache default, kernel-source fingerprint registration, and SonicMoE imports that keep Quack's tuning policy |
 | `src/mlops/bootstrap.py` | registers custom-op targets before artifact loading |
 
-`provider` is source metadata (`builtin`, `native_torch`, `fla`, or
-`sonicmoe`). Selection always uses an exact implementation ID such
-as `builtin.rms_norm.triton`; there is no provider-wide switch.
+`provider` is source metadata (`builtin`, `native_torch`, `fla`, `cula`,
+`cudnn`, `deepgemm`, `tilekernels`, or `sonicmoe`). Selection always uses an
+exact implementation ID such as `builtin.rms_norm.triton`; there is no
+provider-wide switch.
 
 ## Implementation selection
 
@@ -122,10 +126,12 @@ highest priority, and uses exact implementation ID as a deterministic
 tie-breaker. An exact override either runs or fails with its rejection reason;
 raw implementations never choose another implementation silently.
 
-Capture is a two-phase operation: run one ordinary warmup under
-`capture_dispatch()`, convert the trace to an exact manifest, then export under
-`use_implementations(manifest)`. During compiler capture the resolver accepts
-only that frozen mapping, so environment discovery cannot alter an artifact.
+Compiler capture resolves implementations itself: support checks read tensor
+metadata only, and the captured graph contains the selected implementation. To
+fix identities explicitly, run one ordinary warmup under `capture_dispatch()`,
+convert the trace to an exact manifest with `dispatch_manifest`, then export
+under `use_implementations(manifest)`; those choices are checked for support
+during capture too.
 
 ## PyTorch custom operations and autograd
 
@@ -135,7 +141,7 @@ registered regions. The last form preserves one public semantic operation
 while exposing natural residual-lifetime boundaries to AOT. Every opaque
 differentiable forward region has:
 
-- a truthful functional schema (`mutates_args=()` in the current package);
+- a truthful functional schema (`mutates_args=()` in this package);
 - a fake implementation with matching count, shape, dtype, device, and layout;
 - a `register_autograd` adapter;
 - `setup_context` saves containing only tensors needed by its VJP; and
@@ -185,11 +191,11 @@ No registry, resolver, override, trace, or implementation adapter may retain a
 tensor beyond the normal returned-output/autograd-context ownership above.
 
 Provider-prepared metadata needed by backward is an ordinary residual, not
-hidden registry state. For example, semantic variable-length attention creates
-its compact device offsets inside the opaque forward and returns them through
-the private registered boundary so `setup_context` can save them. The public
-semantic result remains only the attention output; explicit callers continue
-to supply offsets directly.
+hidden registry state. For example, semantic variable-length attention returns
+its log-sum-exp from the opaque forward as a second, non-differentiable output
+of the private registered boundary so `setup_context` can save it. The public
+semantic result remains only the attention output; explicit callers receive
+the log-sum-exp from `forward` and pass it to `backward`.
 
 ## Cost hints
 
@@ -212,9 +218,9 @@ every assignment as one row of dense expert work. Exact implementations overlay
 physical FLOPs, physical bytes, and invocation-local workspace through their
 own `estimate`.
 
-The same arithmetic reaches PyTorch's flop counter. Every registered custom
-operator, forward and backward, carries a flop formula, registered with
-`flop_formula(...)` beside the operator and delegating to the operation's
+The same arithmetic reaches PyTorch's flop counter. Every custom operator in
+the `mlops` namespace, forward and backward, carries a flop formula, registered
+with `flop_formula(...)` beside the operator and delegating to the operation's
 canonical estimator, so `torch.utils.flop_counter.FlopCounterMode` counts an
 mlops operator as it counts `aten.mm`, on fake tensors as readily as real ones.
 A consumer that prices a graph by arithmetic intensity -- a partitioner
@@ -274,9 +280,13 @@ these checks. See [configuration, installation and validation](EXPERT_PARALLEL.m
 
 KDA, sparse latent attention and pooled indexing follow the same semantic →
 registration → kernel structure as other operations. Their implementation IDs are
-`fla.kimi_delta_attention.chunk`, `builtin.sparse_latent_attention.tilelang`, and
-`builtin.pooled_topk.triton`. Normal bootstrap registers their custom operations
-without importing FLA or TileLang. The accelerator libraries load at execution.
+`cula.kimi_delta_attention.sm90.recompute`, `cula.kimi_delta_attention.sm90`,
+`fla.kimi_delta_attention.chunk` and `fla.kimi_delta_attention.chunk.ieee`;
+`builtin.sparse_latent_attention.hopper`, `builtin.sparse_latent_attention.tilelang`
+and their positional `builtin.sparse_latent_attention.rope.*` counterparts; and
+`cudnn.pooled_topk.sm90` and `builtin.pooled_topk.triton`. Normal bootstrap
+registers their custom operations without importing FLA, cuLA, TileLang,
+FlashMLA or cuDNN Frontend. The accelerator libraries load at execution.
 
 KDA stays distinct from Gated DeltaNet because it has per-channel decay and a
 different residual/gradient contract. Tied-latent attention stays distinct from
