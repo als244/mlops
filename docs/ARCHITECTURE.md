@@ -100,7 +100,7 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 | `src/mlops/expert_parallel/`, `src/mlops/sequential_moe/` | optional MoE layer packages with their own documentation |
 | `src/mlops/kernels/kda/`, `kernels/sparse_mla/` | attributed attention kernels, imported lazily by standard registrations |
 | `src/mlops/quack_runtime/` | process-wide Quack setup shared by the expert-parallel layers and the SonicMoE provider: source-checked patches, the tuning-cache default, kernel-source fingerprint registration, and SonicMoE imports that keep Quack's tuning policy |
-| `src/mlops/bootstrap.py` | registers custom-op targets before artifact loading |
+| `src/mlops/bootstrap.py` | registers custom-op targets before artifact loading: the implementation catalog's and the LoRA, router and sequential-MoE operators; expert-parallel operators register when the modules defining them are imported, and accessing a layer class imports its own |
 
 `provider` is source metadata (`builtin`, `native_torch`, `fla`, `cula`,
 `cudnn`, `deepgemm`, `tilekernels`, or `sonicmoe`). Selection always uses an
