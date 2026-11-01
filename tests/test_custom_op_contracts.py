@@ -789,7 +789,9 @@ def test_dependency_layers_do_not_bypass_semantic_operations():
     for path in (PACKAGE_ROOT / "kernels").glob("*.py"):
         source = path.read_text()
         assert "provider_registry" not in source, path
-        assert "torch.library.custom_op" not in source, path
+        # KERNELS.md: the only custom ops here are the router GEMM's autograd boundary.
+        if path.name != "router_op.py":
+            assert "torch.library.custom_op" not in source, path
 
 
 @pytest.mark.parametrize("name", sorted(set(FORWARD_OPERATORS) | BACKWARD_OPERATORS))
