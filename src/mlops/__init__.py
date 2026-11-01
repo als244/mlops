@@ -33,7 +33,7 @@ from .layer_norm import layer_norm
 from .linear_attention import linear_attention
 from .linear_mixer import linear_mixer
 from .lora_head import lora_head_loss
-from .mla import mla_attention, sparse_mla
+from .mla import sparse_mla
 from .moe import moe
 from .partial_rope import partial_rope
 from .rms_norm import rms_norm
@@ -71,7 +71,6 @@ __all__ = [
     "mhc_combine",
     "mhc_normalize_streams",
     "mhc_pre",
-    "mla_attention",
     "moe",
     "packed_swiglu",
     "partial_rope",

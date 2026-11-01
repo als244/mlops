@@ -50,7 +50,7 @@ math, not by a model family.
 |---|---|
 | `kda.py` | `kimi_delta_attention`, `kda_decay` |
 | `dsa.py`, `dsa_indexer.py` | `sparse_latent_attention`, `pooled_topk` alongside existing DSA APIs |
-| `mla.py` | `sparse_mla` alongside existing `mla_attention` |
+| `mla.py` | `sparse_mla` |
 | `hyper_connection.py` | `mhc_pre`, `mhc_combine` (plus composition helpers) |
 | `routing.py` | `sigmoid_topk` |
 | Existing activation/normalization APIs | `swiglu(..., limit=...)`, `packed_swiglu(..., limit=...)`, `gated_rms_norm(..., activation="sigmoid")` |

@@ -55,7 +55,6 @@ from mlops import (
     mhc_combine,
     mhc_normalize_streams,
     mhc_pre,
-    mla_attention,
     moe,
     packed_swiglu,
     partial_rope,
@@ -176,7 +175,6 @@ replay is correct.
 | `rope`, `partial_rope` | position | shape of input | `builtin.rope.triton_table` / `builtin.partial_rope.triton` |
 | `build_rope_tables` | reusable position tables | FP32 cosine/sine `[rows,rotary_dim]` | construction helper |
 | `flash_attention` | dense attention | `[T,Hq,Dh]` | `builtin.flash_attention.aten` |
-| `mla_attention` | latent attention | `[T,Hq,Dv]` | `builtin.mla_attention.flash` |
 | `index_scores`, `topk_indices` | DSA selection | `[T,T]`, `[T,K]` | `builtin.index_scores.einsum` / not dispatched |
 | `dsa_indexer_key_norm` | indexer normalization | shape of key | `builtin.dsa_indexer_key_norm.layer_norm` |
 | `selection_mask` | selected causal mask | FP32 `[query_rows,key_rows]`, 0 or -inf | construction helper |
@@ -854,65 +852,6 @@ wheel, the primitive keeps its stock kernels.
 ```python
 cu_seqlens = torch.tensor([0, 731, 943, 1024, 1024], dtype=torch.int32, device=q.device)
 attended = flash_attention(q, k, v, cu_seqlens, 2048)  # [T,Hq,Dh], T=1024
-```
-
-### `mla_attention`
-
-**Status:** Public
-
-**Signature**
-
-```python
-mla_attention(
-    q: Tensor,
-    k: Tensor,
-    v: Tensor,
-    lengths: Sequence[int],
-    *,
-    deterministic: bool | None = None,
-) -> Tensor
-```
-
-**Purpose**
-
-Runs attention on already assembled MLA query, key, and value heads.
-Low-rank projections, normalization, and decoupled RoPE belong to the
-caller's surrounding block.
-
-**Parameters**
-
-| Name | Type/shape | Description |
-|---|---|---|
-| `q` | `Tensor[T,Hq,Dqk]` | assembled MLA queries |
-| `k` | `Tensor[T,Hq,Dqk]` | assembled MLA keys |
-| `v` | `Tensor[T,Hq,Dv]` | values |
-| `lengths` | `Sequence[int]` | packed boundaries |
-| `deterministic` | `Optional[bool]` | forwarded to `flash_attention`, which this operation launches |
-
-**Returns**
-
-`Tensor[T,Hq,Dv]`.
-
-**Autograd and effects**
-
-`builtin.mla_attention.flash` launches the builtin flash-attention
-implementation, which requires equal Q/K/V widths: when `Dv < Dqk` it zero-pads
-V internally and slices the public output/gradient back to `Dv`.
-
-**Constraints and exceptions**
-
-`Dv <= Dqk`; otherwise no implementation supports the call and dispatch
-raises `RuntimeError`. Q/K token, head, and width dimensions must match, and
-`lengths` must cover `T`.
-
-**Implementations**
-
-`builtin.mla_attention.flash` (default) or `native_torch.mla_attention`.
-
-**Example**
-
-```python
-latent_output = mla_attention(query, key, value, lengths)
 ```
 
 ### `sparse_mla`
@@ -2302,7 +2241,6 @@ order.
 | `rope` | `builtin.rope.triton_table` | `builtin.rope.triton_analytic`, `native_torch.rope` |
 | `partial_rope` | `builtin.partial_rope.triton` | `native_torch.partial_rope` |
 | `flash_attention` | `builtin.flash_attention.aten` | `native_torch.flash_attention` |
-| `mla_attention` | `builtin.mla_attention.flash` | `native_torch.mla_attention` |
 | `head_loss` | `builtin.head_loss.chunked` | `native_torch.head_loss` |
 | `lora_head_loss` | `builtin.lora_head_loss.chunked` | `native_torch.lora_head_loss` |
 | `causal_conv_silu` | `fla.causal_conv_silu` | `native_torch.causal_conv_silu` |
@@ -2946,7 +2884,6 @@ Not every model-facing helper is an atomic differentiable operation:
 
 | Semantic helper | Reason there is no explicit module |
 |---|---|
-| `mla_attention` | composition of padding/slicing and explicit flash attention |
 | `linear_mixer` | graph-layout/control-flow selection around a caller function |
 | `dsa_indexer_key_norm`, `index_scores`, `sparse_mla`, `sigmoid_topk`, `kda_decay`, `mhc_normalize_streams`, `mhc_coefficients` | ordinary differentiable PyTorch compositions |
 | `causal_conv_silu_qkv`, `mhc_pre`, `mhc_combine` | semantic-only: no implementation registers explicit forward/backward, and ordinary autograd differentiates them |

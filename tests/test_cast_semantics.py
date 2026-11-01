@@ -7,13 +7,10 @@ import itertools
 import pytest
 import torch
 
-from mlops.flash_attention import flash_attention
+from mlops.dispatch import use_implementation
 from mlops.embedding import embedding
+from mlops.flash_attention import flash_attention
 from mlops.head import head_loss
-from mlops.mla import mla_attention
-from mlops.l2_norm import l2_norm
-from mlops.rope import rope
-from mlops.rms_norm import rms_norm
 from mlops.kernels.layer_norm import (
     layer_norm_backward,
     layer_norm_forward,
@@ -27,7 +24,9 @@ from mlops.kernels.rms_norm import (
     rms_norm_forward,
 )
 from mlops.kernels.swiglu import swiglu_backward
-from mlops.dispatch import use_implementation
+from mlops.l2_norm import l2_norm
+from mlops.rms_norm import rms_norm
+from mlops.rope import rope
 
 
 def _cosine_similarity(left: torch.Tensor, right: torch.Tensor) -> float:
@@ -234,61 +233,6 @@ def test_reference_sdpa_ablation_matches_packed_raw_attention_and_backward():
             optimized_q, optimized_k, optimized_v, offsets, max(lengths)
         )
 
-    assert torch.equal(raw_output, optimized_output)
-    grad = torch.randn_like(raw_output)
-    raw_output.backward(grad)
-    optimized_output.backward(grad)
-    assert torch.equal(raw_q.grad, optimized_q.grad)
-    assert torch.equal(raw_k.grad, optimized_k.grad)
-    assert torch.equal(raw_v.grad, optimized_v.grad)
-
-
-def test_native_torch_attention_preserves_mla_value_width():
-    torch.manual_seed(8106)
-    lengths = (9, 6)
-    tokens = sum(lengths)
-    raw_q = torch.randn(
-        tokens,
-        4,
-        64,
-        device="cuda",
-        dtype=torch.bfloat16,
-        requires_grad=True,
-    )
-    raw_k = torch.randn_like(raw_q, requires_grad=True)
-    raw_v = torch.randn(
-        tokens,
-        4,
-        32,
-        device="cuda",
-        dtype=torch.bfloat16,
-        requires_grad=True,
-    )
-    optimized_q = raw_q.detach().clone().requires_grad_(True)
-    optimized_k = raw_k.detach().clone().requires_grad_(True)
-    optimized_v = raw_v.detach().clone().requires_grad_(True)
-    mask = torch.full((tokens, tokens), float("-inf"), device="cuda")
-    start = 0
-    for length in lengths:
-        stop = start + length
-        mask[start:stop, start:stop] = torch.triu(
-            torch.full((length, length), float("-inf"), device="cuda"),
-            diagonal=1,
-        )
-        start = stop
-    raw_output = (
-        torch.nn.functional.scaled_dot_product_attention(
-            raw_q.transpose(0, 1).unsqueeze(0),
-            raw_k.transpose(0, 1).unsqueeze(0),
-            raw_v.transpose(0, 1).unsqueeze(0),
-            attn_mask=mask.to(raw_q.dtype),
-        )
-        .squeeze(0)
-        .transpose(0, 1)
-    )
-    with use_implementation("mla_attention", "native_torch.mla_attention"):
-        optimized_output = mla_attention(optimized_q, optimized_k, optimized_v, lengths)
-    assert optimized_output.shape[-1] == 32
     assert torch.equal(raw_output, optimized_output)
     grad = torch.randn_like(raw_output)
     raw_output.backward(grad)

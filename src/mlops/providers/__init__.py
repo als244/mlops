@@ -32,8 +32,6 @@ _CATALOG = (
     "mlops.providers.native_torch.partial_rope",
     "mlops.providers.builtin.flash_attention",
     "mlops.providers.native_torch.flash_attention",
-    "mlops.providers.builtin.mla_attention",
-    "mlops.providers.native_torch.mla_attention",
     "mlops.providers.builtin.head",
     "mlops.providers.native_torch.head",
     "mlops.providers.builtin.lora_head",
