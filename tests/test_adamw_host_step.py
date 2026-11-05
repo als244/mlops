@@ -124,10 +124,17 @@ def test_compiled_host_counter_changes_without_retrace_and_resumes():
     torch._dynamo.reset()
     counter = CompileCounterWithBackend("inductor")
     execute = torch.compile(optimizer.step, fullgraph=True, backend=counter)
-    for _ in range(4):
+    execute()
+    reference.step()
+    # Inductor can request TensorifyScalarRestartAnalysis while preparing the
+    # first invocation. Count the completed preparation, then ensure changing
+    # host counter values never trigger another compile during execution.
+    prepared_frames = counter.frame_count
+    assert prepared_frames >= 1
+    for _ in range(3):
         execute()
         reference.step()
-    assert counter.frame_count == 1
+    assert counter.frame_count == prepared_frames
     assert optimizer.state[parameter]["step"].device.type == "cpu"
     assert optimizer.state[parameter]["step"].item() == 5
     torch.testing.assert_close(parameter, reference_parameter, rtol=0, atol=0)
@@ -137,6 +144,7 @@ def test_compiled_host_counter_changes_without_retrace_and_resumes():
     resumed.load_state_dict(copy.deepcopy(optimizer.state_dict()))
     execute()
     resumed.step()
+    assert counter.frame_count == prepared_frames
     torch.testing.assert_close(parameter, resumed_parameter, rtol=0, atol=0)
     for name, value in optimizer.state[parameter].items():
         torch.testing.assert_close(
