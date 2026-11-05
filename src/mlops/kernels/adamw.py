@@ -139,8 +139,16 @@ if triton is not None:
         )
 
         next_step = old_step.to(tl.float32) + 1.0
-        correction1 = 1.0 - libdevice.pow(beta1, next_step)
-        correction2 = 1.0 - libdevice.pow(beta2, next_step)
+        # At t=1 the bias correction is the same coefficient used above to
+        # form the moments. A general FP32 pow can move beta by an ulp even
+        # for exponent one; subtracting that from one amplifies the error
+        # when beta is near one. Preserve the host-computed coefficients.
+        correction1 = tl.where(
+            next_step == 1.0, one_minus_beta1, 1.0 - libdevice.pow(beta1, next_step)
+        )
+        correction2 = tl.where(
+            next_step == 1.0, one_minus_beta2, 1.0 - libdevice.pow(beta2, next_step)
+        )
         step_size = lr / correction1
         correction2_sqrt = tl.sqrt(correction2)
         denominator = (
