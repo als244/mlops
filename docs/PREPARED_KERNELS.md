@@ -1,7 +1,8 @@
-# Prepared external kernels (private implementation)
+# Prepared external kernels
 
-These components are being qualified for an execution-engine adapter. They are
-not activated by importing MLOps and are not a public `build_step` option yet.
+These components support the explicit `mlops.preparation.sonic:factory` adapter
+for ShadowSpill's generic `OperatorPreparation` lifecycle. They are not activated
+by importing MLOps. See the [opt-in build example](SHADOWSPILL.md#preparing-sonic-kernels).
 They freeze the implementation already selected by dispatch and autotuning;
 they do not add a search candidate or change checkpoint retention/chunk sizes.
 
@@ -52,7 +53,7 @@ router, routing metadata, gather and activation kernel entries. Autotuning
 choices remain a separate engine responsibility. FP8/EP and unrelated attention
 providers are not covered by this registration.
 
-## Quack and remaining integration
+## Quack
 
 Private Quack preparation lives under `quack_runtime`: `_cache_scope` owns
 per-task compile/host-plan caches; `_quack_objects` validates target/source/host
@@ -60,9 +61,41 @@ ABI and restores selected objects; `_occupancy` substitutes a prepared empty
 kernel while retaining live device/stream occupancy queries. Generated and
 lazily created epilogues need their outer plan/call caches scoped too.
 
-The engine adapter must bind all these assets to each unique executable,
-including full/tail and accumulating forms, store manifests/blobs, incorporate
-their identity into profiling compatibility, share loaded objects, and perform
-cold admission before execution. A provider-kernel replay is not evidence that
+`QuackModulePool` shares content-addressed objects across task bindings. CuTe's
+TVM wrapper normally loads its private CUDA library on first invocation. The
+v2 object format adds preload/release entry points to a clone of its exported
+IR; these use the same private state and pinned runtime once semantics as the
+wrapper and destructor. Loading initializes that state without launching the
+tensor computation. Closing explicitly releases it; a later engine destructor
+does not release the library again. Ordinary eager exports are unchanged.
+The exporter source, host runtime and initialization contract are checked.
+
+`_benchmark_scope` suspends selected-kernel inventory only while the pinned
+Quack/Triton autotuners benchmark candidates. Their ordinary mutation-preserving
+hooks still run. The winner's final invocation is captured once; there is no
+additional replay of a mutating task. Entering a benchmark during prepared
+replay refuses.
+
+## Engine ownership
+
+The Sonic factory composes the Quack, Triton, native-launcher and occupancy
+owners into one builder or loader. It validates all components before binding
+a task and shares compatible modules across its bindings. Active load/close,
+wrong CUDA context and use after close refuse. Its implementation digest covers
+the adapter and all preparation/runtime source modules; underlying providers
+also validate their transitive dependencies.
+
+The engine binds these assets to each unique executable,
+including full/tail and accumulating forms, stores manifests/blobs, incorporates
+their identity into profiling compatibility, shares loaded objects, and performs
+cold admission before execution. ShadowSpill installs its allocator before
+loading the modules; loading precedes Plan layout admission and the final
+physical-budget seal. The measured external footprint includes device-library
+memory outside PyTorch's allocator. This adapter prepares its selected external
+kernels. Prebuilt PyTorch/cuBLAS libraries can still initialize lazily on their
+first native operation; their footprint belongs to the measured external
+reservation, and their first-use latency is distinct from steady execution.
+The adapter does not export these framework libraries or override their loading.
+A provider-kernel replay is not evidence that
 a complete saved Plan is compilation-free or that full-model numerical/DP
 qualification passes. Those integration checks remain separate acceptance gates.

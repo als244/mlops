@@ -27,7 +27,7 @@ from typing import Any
 from . import initialize
 from ._cache_scope import CallKey, QuackCalls
 
-_SCHEMA = "mlops.quack.objects.v1"
+_SCHEMA = "mlops.quack.objects.v2"
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -58,6 +58,8 @@ def _cpu_identity() -> dict[str, str]:
 
 
 def _environment(device: Any = None) -> dict[str, Any]:
+    from ._cuda_load import contract
+
     initialize()
     import cutlass
     import torch
@@ -95,6 +97,7 @@ def _environment(device: Any = None) -> dict[str, Any]:
         raise ValueError("Quack cached source identity predates source registration")
     return {
         "schema": _SCHEMA,
+        "cuda_preload": contract(),
         # Recompute rather than adopt an old memoized fingerprint after someone
         # registered another source directory. No file hashing runs at task entry.
         "source": fingerprint,
@@ -149,7 +152,10 @@ class QuackObjects:
 
     @contextmanager
     def capture(self) -> Iterator[dict[CallKey, Any]]:
+        from ._cuda_load import install
+
         self._validate_environment()
+        install()
         with self.calls.capture(cache_directory=self.directory) as selected:
             yield selected
 
@@ -185,6 +191,10 @@ class QuackObjects:
     def load(
         self, manifest: dict, read_blob: Callable[[str], bytes]
     ) -> LoadedQuackObjects:
+        records, blobs = self.validate(manifest, read_blob)
+        return LoadedQuackObjects(self.calls, records, blobs, device=self.device)
+
+    def validate(self, manifest: dict, read_blob: Callable[[str], bytes]):
         self._validate_environment()
         if (
             not isinstance(manifest, dict)
@@ -229,50 +239,147 @@ class QuackObjects:
                 raise ValueError("corrupt prepared Quack object")
             records[key] = sha
         # All records and bytes are checked before loading the first executable.
-        return LoadedQuackObjects(self.calls, records, blobs)
+        return records, blobs
 
 
-class LoadedQuackObjects:
-    def __init__(self, calls, records, blobs):
-        from cutlass import cute
+class _ModulePool:
+    def __init__(self, calls, device):
+        self.calls, self.device = calls, device
+        self.context = None
+        if device is not None:
+            import torch
+            from cuda.bindings import driver
 
+            self.device = torch.device(device)
+            self.context = int(driver.cuCtxGetCurrent()[1])
+            self._check_context()
         self.directory = tempfile.TemporaryDirectory(prefix="mlops-quack-objects-")
         self.modules = {}
-        self.binding = None
+        self.bindings = []
+        self.closed = False
         self.active = 0
         self.lock = RLock()
-        try:
-            for sha, data in blobs.items():
-                path = Path(self.directory.name) / (sha + ".o")
-                path.write_bytes(data)
-                self.modules[sha] = cute.runtime.load_module(
-                    str(path), enable_tvm_ffi=True
+
+    def _check_context(self):
+        if self.device is not None:
+            import torch
+            from cuda.bindings import driver
+
+            if (
+                self.device.type != "cuda"
+                or self.device.index is None
+                or torch.cuda.current_device() != self.device.index
+                or not self.context
+                or int(driver.cuCtxGetCurrent()[1]) != self.context
+            ):
+                raise ValueError(
+                    "prepared Quack execution device/context is not current"
                 )
-            self.binding = calls.bind(
-                {key: self.modules[sha]["func"] for key, sha in records.items()}
-            )
-        except BaseException:
-            self.close()
-            raise
+
+    def _bind(self, records, blobs):
+        from cutlass import cute
+
+        from ._cuda_load import initialize, unload
+
+        with self.lock:
+            if self.closed:
+                raise RuntimeError("prepared Quack objects are closed")
+            if self.active:
+                raise RuntimeError(
+                    "cannot load prepared Quack objects during execution"
+                )
+            self._check_context()
+            added = {}
+            try:
+                for sha, data in blobs.items():
+                    if sha in self.modules:
+                        continue
+                    path = Path(self.directory.name) / (sha + ".o")
+                    path.write_bytes(data)
+                    module = cute.runtime.load_module(str(path), enable_tvm_ffi=True)
+                    added[sha] = module
+                    if self.device is not None:
+                        initialize(module)
+                modules = {**self.modules, **added}
+                binding = _BoundObjects(
+                    self,
+                    self.calls.bind(
+                        {key: modules[sha]["func"] for key, sha in records.items()}
+                    ),
+                )
+            except BaseException as error:
+                for sha, loaded in added.items():
+                    try:
+                        unload(loaded)
+                    except (ValueError, RuntimeError) as cleanup_error:
+                        error.add_note(f"Quack partial-load cleanup: {cleanup_error}")
+                    (Path(self.directory.name) / (sha + ".o")).unlink(missing_ok=True)
+                raise
+            self.modules.update(added)
+            self.bindings.append(binding)
+            return binding
+
+    def close(self):
+        """Release ownership after the caller has quiesced its execution streams."""
+        from ._cuda_load import unload
+
+        with self.lock:
+            if self.active:
+                raise RuntimeError("cannot close active prepared Quack objects")
+            if self.closed:
+                return
+            self._check_context()
+            for module in self.modules.values():
+                unload(module)
+            self.closed = True
+            for binding in self.bindings:
+                binding.binding = None
+            self.bindings.clear()
+            self.modules.clear()
+            self.directory.cleanup()
+
+
+class _BoundObjects:
+    def __init__(self, pool, binding):
+        self.pool, self.binding = pool, binding
 
     @contextmanager
     def activate(self):
-        with self.lock:
-            if self.binding is None:
+        with self.pool.lock:
+            if self.pool.closed:
                 raise RuntimeError("prepared Quack objects are closed")
-            self.active += 1
+            self.pool._check_context()
+            self.pool.active += 1
         try:
             with self.binding.activate():
                 yield
         finally:
-            with self.lock:
-                self.active -= 1
+            with self.pool.lock:
+                self.pool.active -= 1
 
-    def close(self):
-        """Release ownership after the caller has quiesced its execution streams."""
-        with self.lock:
-            if self.active:
-                raise RuntimeError("cannot close active prepared Quack objects")
-            self.binding = None
-            self.modules.clear()
-            self.directory.cleanup()
+
+class QuackModulePool(_ModulePool):
+    """Share loaded objects and their CUDA libraries across an executor's tasks."""
+
+    def __init__(self, objects: QuackObjects):
+        super().__init__(objects.calls, objects.device)
+        self.objects = objects
+
+    def bind(self, manifest, read_blob):
+        records, blobs = self.objects.validate(manifest, read_blob)
+        return self._bind(records, blobs)
+
+
+class LoadedQuackObjects(_ModulePool):
+    """Single-manifest owner retained for standalone preparation clients."""
+
+    def __init__(self, calls, records, blobs, *, device=None):
+        super().__init__(calls, device)
+        try:
+            self.binding = self._bind(records, blobs)
+        except BaseException:
+            self.close()
+            raise
+
+    def activate(self):
+        return self.binding.activate()
