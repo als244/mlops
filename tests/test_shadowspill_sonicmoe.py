@@ -18,8 +18,10 @@ from shadowspill.pytorch.capture.gradients import (
 from test_sonicmoe_gradient_destinations import arguments
 
 from mlops.integrations.shadowspill import (
+    operator_preparations,
     sonicmoe_chunk_rules,
     sonicmoe_gradient_destination_rules,
+    sonicmoe_preparation,
 )
 from mlops.providers.sonicmoe import lora
 
@@ -137,6 +139,20 @@ def test_chunk_rules_keep_sorted_rows_local_and_match_mutating_outputs():
     assert metadata.output_axes == (None, ChunkLocal(0), ChunkLocal(0), ChunkLocal(0))
     assert metadata.reductions == (0,)
     assert rules["mlops.lora_sonicmoe_up_bwd.default"].output_axes[0] == AxisFrom(1)
+
+
+def test_preparation_descriptions_are_explicit_and_need_no_device(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("description queried a device")
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", forbidden)
+    explicit = sonicmoe_preparation(cache_root="/tmp/build-only")
+    assert explicit.factory == "mlops.preparation.sonic:factory"
+    assert dict(explicit.options) == {"cache_root": "/tmp/build-only"}
+    ordinary = operator_preparations()
+    assert len(ordinary) == 1
+    assert ordinary[0].factory == "mlops.preparation.available:factory"
+    assert operator_preparations(dtype=torch.float32) == ()
 
 
 def test_import_needs_no_shadowspill_and_factories_do_not_initialize_cuda():

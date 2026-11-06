@@ -1,13 +1,15 @@
 """BF16 Sonic/Quack task preparation for ShadowSpill's generic lifecycle.
 
 This adapter owns selected Quack objects, external Triton CUBINs, the native
-Triton launcher helper, and CuTe's live occupancy-query helper. Tuning choices
-remain ShadowSpill's independent captured contract. It does not cover FP8,
+Triton launcher helper, CuTe's live occupancy-query helper, and Quack's tuning
+choices. ShadowSpill only handles the opaque preparation lifecycle. The adapter
+does not cover FP8,
 expert parallelism, unrelated attention providers, or change gradient math.
 """
 
 import hashlib
 import json
+import os
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from threading import RLock
@@ -82,24 +84,28 @@ class _Builder(_Common):
 
     @contextmanager
     def capture(self):
+        from mlops.quack_runtime._choices import capture_choices
+
         if self.closed:
             raise RuntimeError("prepared Sonic builder is closed")
         with (
             self.helper.activate(),
             self.quack.capture() as quack,
             self.triton_calls.capture() as triton,
+            capture_choices() as choices,
         ):
-            yield quack, triton
+            yield quack, triton, choices
 
     def export(self, captured):
-        quack, triton = captured
-        if not quack and not triton:
-            return {"version": 1, "source": self.source, "empty": True}, {}
+        quack, triton, choices = captured
+        if not quack and not triton and not choices:
+            return {"version": 2, "source": self.source, "empty": True}, {}
         q_manifest, q_blobs = self.quack.export(quack)
         t_manifest, t_blobs = self.triton.export(triton)
         return {
-            "version": 1,
+            "version": 2,
             "source": self.source,
+            "choices": choices,
             "quack": q_manifest,
             "triton": t_manifest,
             "native": self.native_manifest,
@@ -116,21 +122,30 @@ class _Loader(_Common):
         self.lock = RLock()
 
     def bind(self, manifest, read_blob):
+        from mlops.quack_runtime._choices import BoundChoices
         from mlops.quack_runtime._quack_objects import QuackModulePool
         from mlops.triton_runtime._objects import TritonModulePool
 
         with self.lock:
             if self.closed or self.active:
                 raise RuntimeError("prepared Sonic loader is closed or executing")
-            if manifest.get("version") != 1 or manifest.get("source") != self.source:
+            if manifest.get("version") != 2 or manifest.get("source") != self.source:
                 raise ValueError("prepared Sonic implementation differs")
             if manifest.get("empty") is True:
                 if set(manifest) != {"version", "source", "empty"}:
                     raise ValueError("invalid empty Sonic preparation")
-                return _Binding(self, ())
+                return _Binding(
+                    self,
+                    (
+                        self.quack_calls.bind({}),
+                        self.triton_calls.bind({}, device=self.device.index),
+                        BoundChoices({}),
+                    ),
+                )
             if set(manifest) != {
                 "version",
                 "source",
+                "choices",
                 "quack",
                 "triton",
                 "native",
@@ -138,6 +153,7 @@ class _Loader(_Common):
             }:
                 raise ValueError("invalid Sonic preparation manifest")
             # Validate every component before loading any component of this task.
+            choices = BoundChoices(manifest["choices"])
             self.quack.validate(manifest["quack"], read_blob)
             self.triton.validate(manifest["triton"], read_blob)
             self.native.validate(manifest["native"], read_blob)
@@ -160,7 +176,7 @@ class _Loader(_Common):
                 self.shared = shared
             quack = self.quack_pool.bind(manifest["quack"], read_blob)
             triton = self.triton_pool.bind(manifest["triton"], read_blob)
-            return _Binding(self, (self.helper, quack, triton))
+            return _Binding(self, (self.helper, quack, triton, choices))
 
     def close(self):
         with self.lock:
@@ -197,7 +213,8 @@ def factory(*, phase, device, options):
     """
     if set(options) - {"cache_root"}:
         raise ValueError("unknown prepared Sonic option")
-    cache_root = Path(options.get("cache_root", Path.home() / ".cache/mlops/prepared"))
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    cache_root = Path(options.get("cache_root", cache_home / "mlops/prepared"))
     if phase not in {"build", "load"}:
         raise ValueError("unknown prepared Sonic lifecycle phase")
     with torch.cuda.device(device):

@@ -92,9 +92,9 @@ The separate preparation adapter packages the selected BF16 Sonic/Quack
 implementations with a saved Program. It is an explicit build option:
 
 ```python
-from shadowspill import OperatorPreparation
+from mlops.integrations.shadowspill import sonicmoe_preparation
 
-prepared_sonic = OperatorPreparation("mlops.preparation.sonic:factory")
+prepared_sonic = sonicmoe_preparation()
 # Add operator_preparation=(prepared_sonic,) to build_forward,
 # build_forward_backward, build_step, or shared search build_options.
 ```
@@ -105,13 +105,17 @@ each task's existing finalization call. Autotuner benchmark candidates are
 excluded; warm winners, generated epilogues, tails and accumulation forms are
 included. The task is not executed an additional time to collect binaries.
 
-The adapter packages Quack objects, external Triton CUBINs, the native launcher
-extension and the occupancy helper. Saved profiling and execution bind these
+The adapter packages Quack objects and selected autotuner configurations,
+external Triton CUBINs, the native launcher extension and the occupancy helper.
+Quack-specific source checks and host-cache isolation are owned entirely by
+MLOps; ShadowSpill treats this manifest as opaque. Saved profiling and execution bind these
 assets without compiling or tuning. Loading validates implementation sources,
 GPU target, CPU/host ABI, runtime contracts and binary digests. Missing or
 incompatible implementations refuse; eager caches cannot supply a fallback.
-The optional `cache_root` option controls build intermediates only. Restoring
-archived binaries does not require that directory to exist.
+The optional `cache_root` option controls build intermediates only. By default
+these use `$XDG_CACHE_HOME/mlops/prepared` (or `~/.cache/mlops/prepared`). Set
+`XDG_CACHE_HOME` to node-local storage in scheduled jobs. Restoring archived
+binaries does not require that directory to exist.
 
 Profiling loads before task measurements. Execution installs the engine's
 allocator first, reserves the profiled external footprint, then loads selected
@@ -166,3 +170,17 @@ Saved phases forbid provider compilation and tuning. This opt-in slow test is
 separate from ShadowSpill's complete gates and distributed/full-model
 qualification; see `tests/workloads/prepared_sonic/README.md` in that checkout
 for the exact scope and optional ordinary build-cache setting.
+
+For ordinary MLOps workload factories, use
+`operator_preparations(dtype=torch.bfloat16)` from this integration module and
+pass its returned tuple as `operator_preparation` in shared build options. The
+description is CPU-only; the provider checks optional Sonic availability and
+supported device capability when build opens it. Other devices keep ordinary
+dispatch. The helper currently covers BF16 Sonic only. FP8/EP preparations and
+other external compilers need their own qualified adapters. An explicitly
+selected Sonic workload should use `sonicmoe_preparation()` instead.
+
+Programs built with the earlier engine-owned Quack tuning records or v1 Sonic
+preparations must be rebuilt and reprofiled. Saved v2 tasks own both choices and
+binaries, including host-cache shortcuts; loader validation refuses missing or
+incompatible state before execution can select another implementation.

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
+    from shadowspill import OperatorPreparation
     from shadowspill.pytorch import (
         GradientDestination,
         GradientDestinationContext,
@@ -210,4 +211,48 @@ def sonicmoe_chunk_rules() -> tuple[OperatorRule, ...]:
     return (*original, *accumulating)
 
 
-__all__ = ["sonicmoe_chunk_rules", "sonicmoe_gradient_destination_rules"]
+def sonicmoe_preparation(*, cache_root: str | None = None) -> OperatorPreparation:
+    """Package BF16 Sonic kernels and their selected Quack configurations.
+
+    Pass this description through ``operator_preparation`` on the build API or
+    shared search build options. Construction is CPU-only. The provider owns
+    dispatch, source validation and task-local host caches; the engine treats
+    its manifests as opaque. FP8 and expert parallelism are not covered.
+    """
+    from shadowspill import OperatorPreparation
+
+    return OperatorPreparation(
+        "mlops.preparation.sonic:factory",
+        {} if cache_root is None else {"cache_root": cache_root},
+    )
+
+
+def operator_preparations(
+    *, dtype: torch.dtype = torch.bfloat16, cache_root: str | None = None
+) -> tuple[OperatorPreparation, ...]:
+    """Descriptions for the supported runtimes in ordinary MLOps dispatch.
+
+    Currently covers BF16 Sonic on its supported devices when installed. Other
+    MLOps providers retain their ordinary behavior; this is not a claim that
+    every external compiler is prepared. Device selection is deferred to build;
+    constructing descriptions neither imports optional kernels nor queries CUDA.
+    For a caller explicitly selecting Sonic, use ``sonicmoe_preparation``.
+    """
+    from shadowspill import OperatorPreparation
+
+    if dtype != torch.bfloat16:
+        return ()
+    return (
+        OperatorPreparation(
+            "mlops.preparation.available:factory",
+            {} if cache_root is None else {"cache_root": cache_root},
+        ),
+    )
+
+
+__all__ = [
+    "operator_preparations",
+    "sonicmoe_chunk_rules",
+    "sonicmoe_gradient_destination_rules",
+    "sonicmoe_preparation",
+]

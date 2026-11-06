@@ -49,14 +49,16 @@ The initial CUDA contract uses Triton 3.7.1 and pinned loader/cache source.
 Compiler/IR overrides, instrumentation, custom linked libraries, tensor
 descriptors and arbitrary object/JIT-function constexprs are not admitted.
 `_sonic.sonic_triton_calls()` explicitly covers the BF16 Sonic provider's
-router, routing metadata, gather and activation kernel entries. Autotuning
-choices remain a separate engine responsibility. FP8/EP and unrelated attention
+router, routing metadata, gather and activation kernel entries. Triton autotuning
+choices remain in the PyTorch compiler frontend; Quack choices belong to this
+provider's preparation manifest. FP8/EP and unrelated attention
 providers are not covered by this registration.
 
 ## Quack
 
 Private Quack preparation lives under `quack_runtime`: `_cache_scope` owns
-per-task compile/host-plan caches; `_quack_objects` validates target/source/host
+per-task compile/host-plan caches; `_choices` owns selected autotuner
+configurations and specialization identities; `_quack_objects` validates target/source/host
 ABI and restores selected objects; `_occupancy` substitutes a prepared empty
 kernel while retaining live device/stream occupancy queries. Generated and
 lazily created epilogues need their outer plan/call caches scoped too.
@@ -99,3 +101,22 @@ The adapter does not export these framework libraries or override their loading.
 A provider-kernel replay is not evidence that
 a complete saved Plan is compilation-free or that full-model numerical/DP
 qualification passes. Those integration checks remain separate acceptance gates.
+
+## Selection ownership and migration
+
+The v2 Sonic task manifest includes Quack's selected configurations. Capture
+uses the same task-local host-cache scope as binary capture, so a warm generated
+epilogue cannot hide its choice. Loading validates the provider fingerprint;
+activation dispatches the saved winner without tuning. Each task retains its
+own warm host recipes. No Quack imports, private cache layouts or source hashes
+are required in ShadowSpill. Older mixed engine-choice artifacts and v1 Sonic
+preparations require rebuild and reprofile.
+
+`mlops.integrations.shadowspill.operator_preparations(dtype=...)` constructs
+CPU-only descriptions for ordinary MLOps workloads. The provider's
+`preparation.available` factory checks supported BF16 Sonic availability and
+device capability when build opens it. On other devices it records an empty
+preparation and preserves ordinary operator dispatch. Saved loading follows
+the recorded provider and never substitutes today's default. This currently
+covers BF16 Sonic, not FP8, expert parallelism or arbitrary external compilers.
+An explicit Sonic caller can use `sonicmoe_preparation()` directly.
