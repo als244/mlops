@@ -141,6 +141,46 @@ def _per_expert_product(left, right, out, offsets, gather=None, concat=None):
     return out
 
 
+def _parameter_product(
+    destinations,
+    index,
+    shape,
+    dtype,
+    device,
+    left,
+    right,
+    offsets,
+    *,
+    gather=None,
+    concat=None,
+    transpose=False,
+):
+    """Write one parameter product, optionally into a certified destination."""
+    if destinations is not None:
+        return destinations.product(
+            index,
+            shape,
+            dtype,
+            device,
+            left,
+            right,
+            offsets,
+            gather=gather,
+            concat=concat,
+            transpose=transpose,
+        )
+    result = _empty(shape, dtype, device)
+    _per_expert_product(
+        left,
+        right,
+        result.transpose(1, 2) if transpose else result,
+        offsets,
+        gather,
+        concat,
+    )
+    return result
+
+
 def _empty(shape, dtype, device):
     return torch.empty(tuple(shape), dtype=dtype, device=device)
 
@@ -275,6 +315,44 @@ def _up_backward(
     branch accumulated in place, summed onto the tokens (``gate_up``
     present); the base weight's gradient (``weight_shape`` nonempty); the
     factors' gradients (``z`` present)."""
+    return _up_backward_impl(
+        grad_h,
+        x,
+        gather,
+        reverse,
+        gate_up,
+        a13,
+        b13,
+        z,
+        offsets,
+        weight_shape,
+        a_shape,
+        b_shape,
+        top_k,
+        grad_dtype,
+        weight_components,
+    )
+
+
+def _up_backward_impl(
+    grad_h,
+    x,
+    gather,
+    reverse,
+    gate_up,
+    a13,
+    b13,
+    z,
+    offsets,
+    weight_shape,
+    a_shape,
+    b_shape,
+    top_k,
+    grad_dtype,
+    weight_components,
+    *,
+    gradient_outputs=None,
+):
     functional = kernels()
     dh = grad_h.contiguous()
     rows, width = dh.shape[0], x.shape[1]
@@ -311,14 +389,43 @@ def _up_backward(
     dtype = x.dtype if grad_dtype is None else grad_dtype
     dw = None
     if weight_shape[0] > 0:
-        dw = _empty(weight_shape, dtype, x.device)
-        _per_expert_product(x, dh, dw.transpose(1, 2), offsets, gather, ("out",))
+        dw = _parameter_product(
+            gradient_outputs,
+            1,
+            weight_shape,
+            dtype,
+            x.device,
+            x,
+            dh,
+            offsets,
+            gather=gather,
+            concat=("out",),
+            transpose=True,
+        )
     da13 = db13 = None
     if z is not None:
-        da13 = _empty(a_shape, dtype, x.device)
-        _per_expert_product(x, dz, da13.transpose(1, 2), offsets, gather)
-        db13 = _empty(b_shape, dtype, x.device)
-        _per_expert_product(dh, z, db13, offsets)
+        da13 = _parameter_product(
+            gradient_outputs,
+            2,
+            a_shape,
+            dtype,
+            x.device,
+            x,
+            dz,
+            offsets,
+            gather=gather,
+            transpose=True,
+        )
+        db13 = _parameter_product(
+            gradient_outputs,
+            3,
+            b_shape,
+            dtype,
+            x.device,
+            dh,
+            z,
+            offsets,
+        )
     return dx, dw, da13, db13
 
 
@@ -547,6 +654,46 @@ def _down_backward(
     trainable) the scaled activation ``a'``, the operand of ``d down =
     dyᵀ a'`` and ``da2 = dzᵀ a'``. The row gradient is always formed: the
     score gradient needs it."""
+    return _down_backward_impl(
+        grad_output,
+        h,
+        down,
+        a2,
+        b2,
+        z,
+        offsets,
+        gather,
+        scatter,
+        scores,
+        weight_shape,
+        a_shape,
+        b_shape,
+        grad_dtype,
+        swiglu_limit,
+        weight_components,
+    )
+
+
+def _down_backward_impl(
+    grad_output,
+    h,
+    down,
+    a2,
+    b2,
+    z,
+    offsets,
+    gather,
+    scatter,
+    scores,
+    weight_shape,
+    a_shape,
+    b_shape,
+    grad_dtype,
+    swiglu_limit,
+    weight_components,
+    *,
+    gradient_outputs=None,
+):
     from quack.gemm_interface import gemm
 
     kernels()
@@ -574,15 +721,39 @@ def _down_backward(
     dtype = h.dtype if grad_dtype is None else grad_dtype
     dw = None
     if weight_shape[0] > 0:
-        dw = _empty(weight_shape, dtype, h.device)
-        _per_expert_product(grad_flat, a_prime, dw, offsets, gather)
+        dw = _parameter_product(
+            gradient_outputs,
+            1,
+            weight_shape,
+            dtype,
+            h.device,
+            grad_flat,
+            a_prime,
+            offsets,
+            gather=gather,
+        )
     da2 = db2 = None
     if z is not None:
-        da2 = _empty(a_shape, dtype, h.device)
-        _per_expert_product(dz, a_prime, da2, offsets)
-        db2 = _empty(b_shape, dtype, h.device)
-        _per_expert_product(
-            grad_flat, z * score_rows.to(z.dtype)[:, None], db2, offsets, gather
+        da2 = _parameter_product(
+            gradient_outputs,
+            2,
+            a_shape,
+            dtype,
+            h.device,
+            dz,
+            a_prime,
+            offsets,
+        )
+        db2 = _parameter_product(
+            gradient_outputs,
+            3,
+            b_shape,
+            dtype,
+            h.device,
+            grad_flat,
+            z * score_rows.to(z.dtype)[:, None],
+            offsets,
+            gather=gather,
         )
     return dh, dw, da2, db2, dscores
 
