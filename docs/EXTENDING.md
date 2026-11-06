@@ -304,7 +304,9 @@ above.
    that replaces PyTorch's own (`sweeps.native_allocator()` is false), the
    candidates run eagerly on the call's own tensors rather than under a CUDA
    graph, and the winner stays in the process instead of the disk cache
-   ([timing and caching](sonicmoe-autotuning.md#timing-and-caching)).
+   ([timing and caching](sonicmoe-autotuning.md#timing-and-caching)). The
+   `sink_storage` patch also preserves reduction scratch backing and view
+   layout across cold and cached calls, so their allocation contracts agree.
 5. **Weights are used as they are.** The canonical `w13 [E,2I,H]` (gate rows,
    then up rows) and `w2 [E,H,I]` are SonicMoE's native `[E, out, in]`
    storage with its concatenated gate/up layout; the adapter only takes

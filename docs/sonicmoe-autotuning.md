@@ -76,3 +76,13 @@ disk-cache entries, which only graph-timed sweeps write, when their exact keys
 match. Read-only operands and fully overwritten outputs are not backed up or
 restored between candidates; genuine read/write outputs and aliases are
 preserved.
+
+The pinned epilogue frontend allocates reduction scratch for its candidate
+sweep and passes a smaller view to the selected kernel. The `sink_storage`
+compatibility patch preserves that backing extent, strides and storage offset
+in the warm-call recipe. A fresh process and a warmed call therefore request
+the same workspace; an allocator profile must include the backing allocation,
+not just the visible slice. The normal warm launch cache and selected kernels
+are retained. Each call owns its scratch, and caller-provided buffers keep their
+existing behavior. This patch is source-checked and included in provider cache
+identity; rebuild saved provider artifacts after changing the runtime version.
