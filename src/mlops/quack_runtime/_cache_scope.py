@@ -15,12 +15,15 @@ from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequenc
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import wraps
+from pathlib import Path
 from threading import RLock
 from types import CodeType, FunctionType
 from typing import Any
 
 _SOURCE = "4ff940b933d9ef8b6b3217741a7f9184a7ce50631801fa392ea61f216af7e160"
 _lock = RLock()
+_path_installed = False
 
 
 @dataclass(frozen=True)
@@ -34,20 +37,28 @@ class _Scope:
     functions: frozenset[int]
     recorded: dict[CallKey, Any] | None = None
     prepared: Mapping[CallKey, Any] | None = None
-    hosts: Mapping[int, dict] = field(default_factory=dict)
+    hosts: dict[object, dict] = field(default_factory=dict)
+    host_groups: frozenset[object] = frozenset()
+    directory: Path | None = None
+    objects: dict[tuple[int, tuple], Any] = field(default_factory=dict)
 
 
 _active: ContextVar[_Scope | None] = ContextVar("mlops_quack_binaries", default=None)
 
 
 class _HostCache(MutableMapping):
-    def __init__(self, original):
+    def __init__(self, original, group=None):
         self.eager = original
+        self.group = group
+        self.key = object()
 
     def _data(self):
         scope = _active.get()
-        if scope is not None and id(self) in scope.hosts:
-            return scope.hosts[id(self)]
+        if scope is not None:
+            if self.key in scope.hosts:
+                return scope.hosts[self.key]
+            if self.group in scope.host_groups:
+                return scope.hosts.setdefault(self.key, {})
         return self.eager
 
     def __getitem__(self, key):
@@ -64,6 +75,37 @@ class _HostCache(MutableMapping):
 
     def __len__(self):
         return len(self._data())
+
+    def __reduce__(self):
+        # Workers reconstruct their own dispatch state. Never pickle a task's
+        # bound functions or ContextVar state through a provider object.
+        return dict, (self.eager,)
+
+
+class _HostSlot:
+    """A declared instance dictionary, including instances created lazily."""
+
+    def __init__(self, name):
+        self.name = name
+        self.group = object()
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        value = instance.__dict__[self.name]
+        if not isinstance(value, _HostCache):
+            with _lock:
+                value = instance.__dict__[self.name]
+                if not isinstance(value, _HostCache):
+                    self.__set__(instance, value)
+        elif value.group is not self.group:
+            raise ValueError("Quack host cache belongs to a different registration")
+        return instance.__dict__[self.name]
+
+    def __set__(self, instance, value):
+        if not isinstance(value, dict):
+            raise TypeError("Quack instance host-cache slot must contain a dictionary")
+        instance.__dict__[self.name] = _HostCache(value, self.group)
 
 
 class _Cache(dict):
@@ -99,13 +141,19 @@ class _Cache(dict):
         if (scope := self._scope()) is not None and scope.prepared is not None:
             self._prepared(scope, key)
             return True
+        if scope is not None and scope.directory is not None:
+            return (id(self), key) in scope.objects
         return super().__contains__(key)
 
     def __getitem__(self, key):
         scope = self._scope()
         if scope is not None and scope.prepared is not None:
             return self._prepared(scope, key)
-        value = super().__getitem__(key)
+        value = (
+            scope.objects[id(self), key]
+            if scope is not None and scope.directory is not None
+            else super().__getitem__(key)
+        )
         if scope is not None:
             scope.recorded[self._key(key)] = value
         return value
@@ -116,9 +164,40 @@ class _Cache(dict):
             raise RuntimeError(
                 "prepared Quack replay tried to publish a compiled kernel"
             )
-        super().__setitem__(key, value)
+        if scope is not None and scope.directory is not None:
+            scope.objects[id(self), key] = value
+        else:
+            super().__setitem__(key, value)
         if scope is not None:
             scope.recorded[self._key(key)] = value
+
+
+def _install_cache_path():
+    global _path_installed
+    with _lock:
+        if _path_installed:
+            return
+        module = importlib.import_module("quack.cache.jit")
+        expected = "09a1d8f626d31500e175556b3cd8f68dfc60599cf102f1df9c22aac781ac7193"
+        if hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest() != expected:
+            raise ValueError("unsupported Quack binary directory contract")
+        original = module.get_cache_path
+
+        @wraps(original)
+        def cache_path():
+            scope = _active.get()
+            if scope is None or scope.directory is None:
+                return original()
+            pool = importlib.import_module("quack.cache.async_compile")
+            if pool.get_active_pool() is not None:
+                raise RuntimeError(
+                    "prepared Quack capture requires selected calls outside autotuning"
+                )
+            scope.directory.mkdir(parents=True, exist_ok=True)
+            return scope.directory
+
+        module.get_cache_path = cache_path
+        _path_installed = True
 
 
 def _install(functions: Sequence[Callable[..., Any]]) -> frozenset[int]:
@@ -177,10 +256,12 @@ class QuackCalls:
         functions: Sequence[Callable[..., Any]],
         *,
         host_caches: Sequence[tuple[Any, str]] = (),
+        host_cache_types: Sequence[tuple[type, str]] = (),
     ):
         self.functions = tuple(functions)
         self.identities = _install(self.functions)
         self.hosts = []
+        self.host_groups = set()
         with _lock:
             for owner, name in host_caches:
                 cache = getattr(owner, name)
@@ -192,16 +273,48 @@ class QuackCalls:
                     cache = _HostCache(cache)
                     setattr(owner, name, cache)
                 self.hosts.append(cache)
+            for owner, name in host_cache_types:
+                slot = inspect.getattr_static(owner, name, None)
+                if slot is None:
+                    slot = _HostSlot(name)
+                    setattr(owner, name, slot)
+                elif not isinstance(slot, _HostSlot):
+                    raise TypeError(
+                        "Quack instance host-cache slot has an unsupported descriptor"
+                    )
+                self.host_groups.add(slot.group)
 
     def _host_state(self):
-        return {id(cache): {} for cache in self.hosts}
+        return {cache.key: {} for cache in self.hosts}
 
     @contextmanager
-    def capture(self) -> Iterator[dict[CallKey, Any]]:
-        """Record selected calls, including already-warm memory hits."""
+    def capture(
+        self, *, cache_directory: Path | None = None
+    ) -> Iterator[dict[CallKey, Any]]:
+        """Record selected calls, including already-warm memory hits.
+
+        An artifact owner can supply a source/target-qualified directory. That
+        mode isolates binary memory caches too: ordinary eager entries carry no
+        target provenance and cannot establish a prepared artifact's identity.
+        Selected calls must run outside an asynchronous compilation pool.
+        """
+        if cache_directory is not None:
+            _install_cache_path()
+            state = importlib.import_module("quack.cache")
+            if not state.CACHE_ENABLED:
+                raise ValueError(
+                    "prepared Quack capture requires its binary disk cache"
+                )
+            cache_directory = Path(cache_directory)
         recorded = {}
         token = _active.set(
-            _Scope(self.identities, recorded=recorded, hosts=self._host_state())
+            _Scope(
+                self.identities,
+                recorded=recorded,
+                hosts=self._host_state(),
+                host_groups=frozenset(self.host_groups),
+                directory=cache_directory,
+            )
         )
         try:
             yield recorded
@@ -217,7 +330,12 @@ class QuackCalls:
     def bind(self, prepared: Mapping[CallKey, Any]) -> BoundQuackCalls:
         """Create persistent host dispatch state owned by this prepared task."""
         return BoundQuackCalls(
-            _Scope(self.identities, prepared=dict(prepared), hosts=self._host_state())
+            _Scope(
+                self.identities,
+                prepared=dict(prepared),
+                hosts=self._host_state(),
+                host_groups=frozenset(self.host_groups),
+            )
         )
 
 

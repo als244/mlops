@@ -1,6 +1,7 @@
 """Task isolation and fail-closed dispatch through real Quack cache wrappers."""
 
 import importlib
+import pickle
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -149,3 +150,75 @@ def test_outer_dispatch_caches_cannot_bypass_task_bindings(compiler):
         launch((7, 4))
     assert launch((7, 4)) is original
     assert eager_cache[(7, 4)] is original and len(compiled) == 1
+
+
+def test_lazy_instance_caches_are_task_owned_and_do_not_pickle_bindings(compiler):
+    function, compiled = compiler
+
+    class Dispatch:
+        def __init__(self):
+            self.plans = {}
+
+        def launch(self, shape):
+            if shape not in self.plans:
+                self.plans[shape] = function(shape)
+            return self.plans[shape]
+
+    before = Dispatch()
+    original = before.launch((7, 4))
+    bindings = QuackCalls((function,), host_cache_types=((Dispatch, "plans"),))
+    with bindings.capture() as calls:
+        after = Dispatch()
+        assert after.launch((7, 4)) is original
+        assert before.launch((7, 4)) is original
+        assert after.plans.eager == {}
+        assert pickle.loads(pickle.dumps(after.plans)) == {}
+    replacement = object()
+    prepared = bindings.bind({key: replacement for key in calls})
+    for _ in range(2):
+        with prepared.activate():
+            assert before.launch((7, 4)) is replacement
+            assert after.launch((7, 4)) is replacement
+    with bindings.use({}), pytest.raises(ValueError, match="missing prepared"):
+        after.launch((7, 4))
+    assert before.launch((7, 4)) is original
+    assert len(compiled) == 1
+
+
+def test_actual_sonic_registration_includes_late_epilogue_launch_recipes():
+    pytest.importorskip("quack")
+    from quack.epilogue.frontend import gemm_epilogue
+
+    from mlops.quack_runtime._sonic_bindings import sonic_quack_calls
+
+    @gemm_epilogue()
+    def before(acc):
+        return {"D": acc}
+
+    before._call_cache["shape"] = "eager recipe"
+    before._plan_cache["shape"] = "eager plan"
+    bindings = sonic_quack_calls()
+    assert len(bindings.functions) == 2 and len(bindings.hosts) == 2
+    first, second = bindings.bind({}), bindings.bind({})
+    with first.activate():
+        assert not before._call_cache and not before._plan_cache
+        before._call_cache["shape"] = "first recipe"
+        before._plan_cache["shape"] = "first plan"
+
+        @gemm_epilogue()
+        def after(acc):
+            return {"D": acc * 2}
+
+        after._call_cache["shape"] = "late recipe"
+        after._plan_cache["shape"] = "late plan"
+    with second.activate():
+        assert not before._call_cache and not after._call_cache
+        assert not before._plan_cache and not after._plan_cache
+    with first.activate():
+        assert before._call_cache["shape"] == "first recipe"
+        assert before._plan_cache["shape"] == "first plan"
+        assert after._call_cache["shape"] == "late recipe"
+        assert after._plan_cache["shape"] == "late plan"
+    assert before._call_cache["shape"] == "eager recipe"
+    assert before._plan_cache["shape"] == "eager plan"
+    assert not after._call_cache and not after._plan_cache
