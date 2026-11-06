@@ -81,8 +81,9 @@ Mapper callbacks run during graph construction. Saved Programs carry the actual
 replacement overload, its arguments/version and implementation dependency;
 executors need the provider implementation but do not call these factories or
 mappers. Normal graph compatibility, task profiling and PressureFit admission
-still apply. Full/tail sizes are distinct measured tasks where their contracts
-differ. This adapter does not bundle external Triton/CuTe binaries or guarantee
+still apply. Full/tail sizes can require distinct kernel specializations;
+profiling measures the complete composed task that invokes them. This adapter
+does not bundle external Triton/CuTe binaries or guarantee
 that first invocation performs no external JIT compilation.
 
 ## Preparing Sonic kernels
@@ -139,12 +140,19 @@ grouped outputs, dtype permissions, canonical layouts and conservative fallbacks
 `test_sonicmoe_gradient_destinations.py` covers schemas, functionalization and
 ownership. `test_sonicmoe_gradient_destinations_gpu.py` checks real GEMM products,
 same-buffer epilogues and empty experts against independent CPU FP64 products.
+Its 12 product cases cover four layouts in FP32/BF16/FP16. Eight backward cases
+cover full destinations in both directions and FP32/BF16, plus pairwise partial
+LoRA destinations; they check each product runs once and unconsumed outputs
+remain valid. These GPU checks follow the provider's supported compute
+capabilities (9.x/10.x); they skip RTX 5090/SM120, where normal dispatch selects
+another provider. CPU capture and contract checks remain applicable there.
 The optional engine tests require a ShadowSpill version exporting the destination
 and arbitrary-axis chunking APIs.
 
 For changes to prepared kernels or these build contracts, also run the
 maintained real-provider regression from the ShadowSpill checkout, with this
-MLOps checkout and the pinned SonicMoE/Quack extras on its import path:
+MLOps checkout and the pinned SonicMoE/Quack extras on its import path, on a
+GPU supported by the SonicMoE provider:
 
 ```bash
 python -m pytest -m slow tests/workloads/test_prepared_sonic.py

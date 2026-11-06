@@ -24,9 +24,9 @@ pytestmark = pytest.mark.gpu
 @pytest.fixture(autouse=True)
 def device():
     if not torch.cuda.is_available():
-        pytest.skip("requires a Hopper or Blackwell GPU")
-    if torch.cuda.get_device_capability()[0] not in (9, 10, 12):
-        pytest.skip("requires a Hopper or Blackwell GPU")
+        pytest.skip("requires a CUDA device supported by the SonicMoE provider")
+    if torch.cuda.get_device_capability()[0] not in lora.CAPABILITIES:
+        pytest.skip("SonicMoE dispatch supports compute capability 9.x and 10.x")
     # Providers install their shared pipeline before the first Quack launch.
     # Direct product checks must obey the same startup order as training.
     from mlops.quack_runtime import initialize
@@ -197,9 +197,22 @@ def backward_arguments(direction, dtype, train_base):
     return args, generator
 
 
-@pytest.mark.parametrize("direction", ["up", "down"])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("selected", [(2,), (3,), (1, 2, 3)])
+@pytest.mark.parametrize(
+    "direction,dtype,selected",
+    [
+        # Partial destinations cover both directions, dtypes and LoRA factors
+        # pairwise. Full destinations retain every direction/dtype combination
+        # because the base-weight product has its own kernel layout.
+        ("up", torch.float32, (2,)),
+        ("down", torch.bfloat16, (2,)),
+        ("up", torch.bfloat16, (3,)),
+        ("down", torch.float32, (3,)),
+        ("up", torch.float32, (1, 2, 3)),
+        ("up", torch.bfloat16, (1, 2, 3)),
+        ("down", torch.float32, (1, 2, 3)),
+        ("down", torch.bfloat16, (1, 2, 3)),
+    ],
+)
 def test_actual_backward_calls_each_product_once_and_preserves_unconsumed_outputs(
     direction,
     dtype,
