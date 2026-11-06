@@ -141,3 +141,20 @@ ownership. `test_sonicmoe_gradient_destinations_gpu.py` checks real GEMM product
 same-buffer epilogues and empty experts against independent CPU FP64 products.
 The optional engine tests require a ShadowSpill version exporting the destination
 and arbitrary-axis chunking APIs.
+
+For changes to prepared kernels or these build contracts, also run the
+maintained real-provider regression from the ShadowSpill checkout, with this
+MLOps checkout and the pinned SonicMoE/Quack extras on its import path:
+
+```bash
+python -m pytest -m slow tests/workloads/test_prepared_sonic.py
+```
+
+The two BF16 LoRA cases cover saved/recomputed training, nested chunks, shared
+factor destinations, empty experts, cold saved profiling/execution and
+checkpoint resume in another process. They compare independent CPU references,
+check actual GEMM destination pointers and enforce physical memory admission.
+Saved phases forbid provider compilation and tuning. This opt-in slow test is
+separate from ShadowSpill's complete gates and distributed/full-model
+qualification; see `tests/workloads/prepared_sonic/README.md` in that checkout
+for the exact scope and optional ordinary build-cache setting.
