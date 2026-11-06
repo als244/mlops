@@ -15,6 +15,7 @@ _OPERATOR_MODULES = (
     "mlops.lora.grouped",
     "mlops.lora.routing",
     "mlops.providers.sonicmoe.lora",
+    "mlops.providers.sonicmoe.lora_destinations",
     "mlops.sequential_moe.experts.autograd",
     "mlops.sequential_moe.experts.operators",
     "mlops.sequential_moe.experts.reuse",
