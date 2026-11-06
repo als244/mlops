@@ -85,6 +85,7 @@ only their implementations unavailable.
 - [LoRA modules](docs/LORA.md)
 - [Sequential experts and compressed checkpoint storage](docs/SEQUENTIAL_MOE.md)
 - [Attention, routing and residual mixing](docs/ATTENTION.md)
+- [Optional ShadowSpill provider contracts](docs/SHADOWSPILL.md)
 
 ## Repository layout
 
