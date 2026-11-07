@@ -184,3 +184,10 @@ Programs built with the earlier engine-owned Quack tuning records or v1 Sonic
 preparations must be rebuilt and reprofiled. Saved v2 tasks own both choices and
 binaries, including host-cache shortcuts; loader validation refuses missing or
 incompatible state before execution can select another implementation.
+
+The decomposed router also declares its own checkpoint default on the public
+`torch.ops.mlops.lora_route.default` overload through the static boolean
+`shadowspill_retain_for_backward` annotation. This imports no ShadowSpill code.
+Both variants preserve backward-required expert IDs and weights by default;
+explicit user retention rules can override it. Core has no MLOps router-name
+check. The declaration changes neither routing arithmetic nor saved-Plan replay.
