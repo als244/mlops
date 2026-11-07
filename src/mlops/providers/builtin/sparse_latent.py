@@ -18,9 +18,14 @@ BWD_HEAD_TILE = 64
 BWD_BLOCK = 32
 
 
-def _tiles(device):
-    """Kernel tiles by architecture: upstream's Hopper tiles on sm90, the SM120 tiles elsewhere."""
-    if torch.cuda.get_device_capability(device) == (9, 0):
+def _tiles(device, heads):
+    """Use Hopper's wide tiles only for a complete 64-head group.
+
+    The 256-thread pipelined kernel produces nonfinite results with fewer
+    heads across multiple index blocks. Smaller head groups use the portable
+    128-thread tiles on every architecture, including Hopper.
+    """
+    if torch.cuda.get_device_capability(device) == (9, 0) and heads >= FWD_HEAD_TILE:
         return {
             "block_I": FWD_BLOCK,
             "threads": FWD_THREADS,
@@ -61,8 +66,10 @@ def _forward(
 def _run_forward(q, kv, indices, scale, q_rope=None, k_rope=None):
     from ...kernels.sparse_mla.forward import sparse_mla_fwd
 
-    tiles = _tiles(q.device)
-    query, values, ids = _physical(q, kv, indices, q_rope, k_rope, block=tiles["block_I"])
+    tiles = _tiles(q.device, q.shape[1])
+    query, values, ids = _physical(
+        q, kv, indices, q_rope, k_rope, block=tiles["block_I"]
+    )
     output, lse = sparse_mla_fwd(
         query,
         values,
@@ -101,8 +108,10 @@ def _backward(
 def _run_backward(dy, q, kv, indices, output, lse, scale, q_rope=None, k_rope=None):
     from ...kernels.sparse_mla.backward import bwd, postprocess, preprocess
 
-    tiles = _tiles(q.device)
-    query, values, ids = _physical(q, kv, indices, q_rope, k_rope, block=tiles["bwd_block"])
+    tiles = _tiles(q.device, q.shape[1])
+    query, values, ids = _physical(
+        q, kv, indices, q_rope, k_rope, block=tiles["bwd_block"]
+    )
     delta = preprocess(output.unsqueeze(0), dy.contiguous().unsqueeze(0))
     # Contributions from different queries/heads share KV; accumulate in FP32.
     dkv = torch.zeros_like(values, dtype=torch.float32)

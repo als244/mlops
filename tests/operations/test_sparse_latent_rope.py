@@ -37,7 +37,7 @@ def test_positional_tail_attention_and_all_gradients(heads, width, compiled):
     values = (values[0].transpose(0, 1).contiguous().transpose(0, 1), *values[1:])
     expected_inputs = tuple(v.detach().clone().requires_grad_() for v in values)
     q, kv, qp, kp = values
-    ids = torch.full((tokens, 33), -1, device="cuda", dtype=torch.int32)
+    ids = torch.full((tokens, 131), -1, device="cuda", dtype=torch.int32)
     for row in range(tokens):
         start = 0 if row < 19 else 19
         selected = torch.arange(start, row + 1, 2, device="cuda")

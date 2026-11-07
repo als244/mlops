@@ -26,7 +26,9 @@ def test_attention_forward_backward(heads, width, compiled):
     qr = q.detach().clone().requires_grad_()
     kr = kv.detach().clone().requires_grad_()
     # Two packed sequences; only every other past key plus the current key.
-    ids = torch.full((tokens, 33), -1, device="cuda", dtype=torch.int32)
+    # Span several index blocks, including entirely masked blocks. A single
+    # block hid nonfinite output from the small-head Hopper pipeline.
+    ids = torch.full((tokens, 131), -1, device="cuda", dtype=torch.int32)
     for t in range(tokens):
         start = 0 if t < 19 else 19
         selected = torch.arange(start, t, 2, device="cuda")
