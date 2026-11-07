@@ -112,6 +112,14 @@ own warm host recipes. No Quack imports, private cache layouts or source hashes
 are required in ShadowSpill. Older mixed engine-choice artifacts and v1 Sonic
 preparations require rebuild and reprofile.
 
+Numerical qualification can pin a recorded selection with the provider's
+`BoundChoices.pin()` scope. The pin survives nested task captures, which still
+record only their actual calls. A missing specialization or conflicting saved
+choice refuses before tuning; mutable winner caches are neither consulted nor
+changed. Leaving the scope restores ordinary selection. This provider control
+covers Quack GEMMs; the caller must also pin Triton autotuners when comparing
+complete SonicMoE computations. Production dispatch remains unchanged.
+
 `mlops.integrations.shadowspill.operator_preparations(dtype=...)` constructs
 CPU-only descriptions for ordinary MLOps workloads. The provider's
 `preparation.available` factory checks supported BF16 Sonic availability and

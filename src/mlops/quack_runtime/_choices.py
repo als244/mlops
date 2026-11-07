@@ -25,6 +25,9 @@ import torch
 active: ContextVar[tuple[str, dict[str, Any]] | None] = ContextVar(
     "mlops_quack_choices", default=None
 )
+pinned: ContextVar[dict[str, Any] | None] = ContextVar(
+    "mlops_pinned_quack_choices", default=None
+)
 
 
 def digest(value: Any) -> str:
@@ -76,6 +79,19 @@ class BoundChoices:
             yield
         finally:
             active.reset(token)
+
+    @contextmanager
+    def pin(self) -> Iterator[None]:
+        """Freeze selection across nested captures, without changing caches.
+
+        Each capture records only its actual calls. Missing specializations
+        refuse before tuning, and conflicting saved replay is never overridden.
+        """
+        token = pinned.set(self.choices)
+        try:
+            yield
+        finally:
+            pinned.reset(token)
 
 
 _CALL_SOURCE = "f35d8c4030c2d27ddd57f74e0026368229400f0ddf936ce3fe8d670bf313dbc8"
@@ -219,6 +235,9 @@ def _run(
     kwargs: Mapping[str, Any],
 ) -> Any:
     scope = active.get()
+    fixed = pinned.get()
+    if scope is None and fixed is not None:
+        scope = ("replay", fixed)
     if scope is None:
         return original(tuner, *args, **kwargs)
     if not supported:
@@ -230,7 +249,14 @@ def _run(
     name = f"{tuner.fn.__module__}.{tuner.fn.__name__}"
     source = _provider_source()
     if mode == "capture":
-        result = original(tuner, *args, **kwargs)
+        if fixed is None:
+            result = original(tuner, *args, **kwargs)
+        else:
+            token = active.set(("replay", fixed))
+            try:
+                result = _run(original, supported, tuner, args, kwargs)
+            finally:
+                active.reset(token)
         selected = _value(tuner.best_config.all_kwargs())
         indices = [
             index
@@ -261,6 +287,8 @@ def _run(
             "rebuild the Program"
         )
     choice = choices[identity]
+    if fixed is not None and fixed.get(identity) != choice:
+        raise ValueError(f"{name}: saved choice differs from pinned configuration")
     if choice.get("backend") != "quack" or choice.get("version") != 1:
         raise ValueError(f"{name}: unsupported saved Quack choice version")
     if choice["source"] != source:

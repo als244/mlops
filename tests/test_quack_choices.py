@@ -96,6 +96,29 @@ def test_replay_ignores_empty_changed_and_disk_caches(monkeypatch):
     assert tuner(tensor, length=4) == 32
 
 
+def test_pinned_choices_survive_nested_capture_without_tuning(monkeypatch):
+    tuner, tensor, key = fixture()
+    choices, _ = captured(tuner, tensor)
+    tuner.cache[key] = tuner.configs[1]
+    for name in ("_bench", "prune_configs", "check_disk_cache"):
+        monkeypatch.setattr(tuner, name, forbidden)
+    binding = adapter.BoundChoices(choices)
+    with pytest.raises(RuntimeError, match="leave pin"), binding.pin():
+        with capture_choices() as recorded:
+            assert tuner(tensor, length=4) == 16
+        assert recorded == choices
+        assert tuner.cache[key] is tuner.configs[1]
+        with pytest.raises(ValueError, match="no finalized configuration"):
+            tuner(tensor, length=8)
+        conflicting = copy.deepcopy(choices)
+        next(iter(conflicting.values()))["candidate"] = 1
+        with pytest.raises(ValueError, match="differs from pinned"):
+            use_choices(tuner, conflicting)(tensor, length=4)
+        raise RuntimeError("leave pin")
+    assert adapter.pinned.get() is None
+    assert tuner(tensor, length=4) == 32
+
+
 @pytest.mark.parametrize("change", ["shape", "stride", "dtype", "scalar", "function"])
 def test_unseen_specializations_refuse_before_kernel_or_tuning(change, monkeypatch):
     tuner, tensor, _ = fixture()
