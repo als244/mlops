@@ -150,8 +150,12 @@ def test_preparation_descriptions_are_explicit_and_need_no_device(monkeypatch):
     assert explicit.factory == "mlops.preparation.sonic:factory"
     assert dict(explicit.options) == {"cache_root": "/tmp/build-only"}
     ordinary = operator_preparations()
-    assert len(ordinary) == 1
+    assert len(ordinary) == 2
     assert ordinary[0].factory == "mlops.preparation.available:factory"
+    assert (
+        ordinary[1].factory
+        == "mlops.providers.builtin.sparse_latent_preparation:factory"
+    )
     assert operator_preparations(dtype=torch.float32) == ()
 
 

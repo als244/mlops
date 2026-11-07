@@ -232,9 +232,9 @@ def operator_preparations(
 ) -> tuple[OperatorPreparation, ...]:
     """Descriptions for the supported runtimes in ordinary MLOps dispatch.
 
-    Currently covers BF16 Sonic on its supported devices when installed. Other
-    MLOps providers retain their ordinary behavior; this is not a claim that
-    every external compiler is prepared. Device selection is deferred to build;
+    Covers BF16 Sonic and the Hopper sparse-forward backend/LSE selection.
+    Other MLOps providers retain their ordinary behavior; this is not a claim
+    that every external compiler is prepared. Device selection is deferred to build;
     constructing descriptions neither imports optional kernels nor queries CUDA.
     For a caller explicitly selecting Sonic, use ``sonicmoe_preparation``.
     """
@@ -246,6 +246,9 @@ def operator_preparations(
         OperatorPreparation(
             "mlops.preparation.available:factory",
             {} if cache_root is None else {"cache_root": cache_root},
+        ),
+        OperatorPreparation(
+            "mlops.providers.builtin.sparse_latent_preparation:factory", {}
         ),
     )
 

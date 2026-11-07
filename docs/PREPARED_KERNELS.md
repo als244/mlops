@@ -128,3 +128,13 @@ preparation and preserves ordinary operator dispatch. Saved loading follows
 the recorded provider and never substitutes today's default. This currently
 covers BF16 Sonic, not FP8, expert parallelism or arbitrary external compilers.
 An explicit Sonic caller can use `sonicmoe_preparation()` directly.
+
+The same helper includes a separate Hopper sparse-forward preparation. Build
+records whether actual task calls select FlashMLA or TileLang and, for FlashMLA,
+the measured LSE conversion factor. Loading validates the provider source and
+installed FlashMLA Python/extension bytes, then binds that choice per task.
+The first-call GPU detection problem is never rerun inside a saved task, and a
+saved TileLang choice remains TileLang if FlashMLA is later installed. Tasks
+without sparse-forward calls need no optional backend. Eager calls outside the
+binding keep ordinary detection. This prepares selection and LSE semantics;
+it does not archive attention binaries or the cuDNN backward compiler.

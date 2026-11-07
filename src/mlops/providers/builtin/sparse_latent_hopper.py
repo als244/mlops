@@ -20,6 +20,7 @@ provider remains the fallback everywhere else.
 """
 
 import math
+from contextvars import ContextVar
 from importlib.util import find_spec
 
 import torch
@@ -67,9 +68,15 @@ def _flat(q, kv, indices, block, q_rope=None, k_rope=None):
 
 
 _flashmla_state: dict = {}
+_flashmla_preparation: ContextVar = ContextVar("flashmla_preparation", default=None)
 
 
 def _flashmla():
+    selected = _flashmla_preparation.get()
+    return _detect_flashmla() if selected is None else selected()
+
+
+def _detect_flashmla():
     """FlashMLA's sparse forward and the factor taking its LSE into the log2 domain, or None.
 
     FlashMLA builds differ in the base of the LSE they return: the main-line

@@ -176,8 +176,11 @@ For ordinary MLOps workload factories, use
 pass its returned tuple as `operator_preparation` in shared build options. The
 description is CPU-only; the provider checks optional Sonic availability and
 supported device capability when build opens it. Other devices keep ordinary
-dispatch. The helper currently covers BF16 Sonic only. FP8/EP preparations and
-other external compilers need their own qualified adapters. An explicitly
+dispatch. The helper covers BF16 Sonic and separately records Hopper sparse
+forward's backend and FlashMLA LSE convention, avoiding a first-call GPU probe
+inside a measured task. It does not package the attention binaries or cuDNN
+backward compiler. FP8/EP preparations and other external compilers need their
+own qualified adapters. An explicitly
 selected Sonic workload should use `sonicmoe_preparation()` instead.
 
 Programs built with the earlier engine-owned Quack tuning records or v1 Sonic
