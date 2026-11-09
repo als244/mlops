@@ -48,6 +48,14 @@ replaces the fused WY backward stage while retaining call-local state metadata.
 Its native-forward variant rebuilds intra-chunk matrices inside backward and
 saves only the required prefix gates alongside caller inputs and metadata.
 
+The shared backward composition releases its private WY factors, state and
+intra-chunk matrices immediately after their final kernel consumer. This changes
+allocation lifetimes without changing kernels or arithmetic; caller-owned inputs
+remain valid. This is internal operator workspace management, separate from
+ShadowSpill's execution-region chunking. The affected FLA and cuLA registration
+sources have changed, so previously saved allocation profiles and executables
+must be rebuilt and reprofiled before use with this implementation.
+
 The final KDA intra-chunk gradient kernel accumulates in FP32 and stores `dQ`
 and `dK` in their input dtypes: the cast happens in the store, avoiding full
 FP32 output buffers and separate conversion launches.

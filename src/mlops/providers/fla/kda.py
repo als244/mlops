@@ -1,4 +1,8 @@
-"""FLA KDA registration with call-local metadata and explicit VJPs."""
+"""FLA KDA registration with call-local metadata and explicit VJPs.
+
+Backward releases private WY and intra-chunk scratch after its last consumer.
+Saved allocation profiles from the earlier lifetime schedule require rebuilding.
+"""
 
 from importlib.util import find_spec
 

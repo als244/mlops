@@ -132,10 +132,15 @@ def backward(
             q=q, k=k, v=v, beta=beta, A=akk, gk=gates, **metadata
         )
     h, v_new = state_forward(kg, w, u, gates, cumulative, chunks)
+    # These tensors span the complete sequence. Drop each private reference
+    # after its final consumer so later kernels can reuse its allocation.
+    del u
     daqk, dv = chunk_kda_bwd_dAv(
         q=q, k=k, v=v_new, do=dy, A=aqk, scale=scale, chunk_size=64, **metadata
     )
+    del aqk
     dh, dv = state_backward(qg, kg, w, gates, dy, dv, cumulative, chunks, scale)
+    del qg, kg, w
     wy_layout = {}
     if wy_kernel is None:
         wy_kernel = chunk_kda_bwd_wy_dqkg_fused
@@ -157,9 +162,11 @@ def backward(
         **wy_layout,
         **metadata,
     )
+    del h, dh, v_new, akk
     dq, dk, dbeta, dg = _intra(
         q, k, gates, beta, daqk, dakk, dq, dk, dbeta, dg, cumulative, chunks, ieee
     )
+    del daqk, dakk
     dg = chunk_local_cumsum(dg, chunk_size=64, reverse=True, **metadata)
     return dq, dk, dv, dg, dbeta
 

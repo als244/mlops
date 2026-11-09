@@ -3,6 +3,9 @@
 The C++ forward does not return Aqk/Akk. Rebuild those matrices during backward
 and reuse the resulting WY factors for the gradient computation. Gates are
 saved; all metadata and native workspace remain call-local.
+
+Backward releases private WY and intra-chunk scratch after its last consumer.
+Saved allocation profiles from the earlier lifetime schedule require rebuilding.
 """
 
 from importlib.util import find_spec
