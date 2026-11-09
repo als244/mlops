@@ -15,6 +15,25 @@ from ...dispatch.registry import Implementation, SupportResult, register_impleme
 from ..native_torch.hyper_connection import supports_pre
 
 
+def _validate_geometry(streams, projection, splits):
+    if (
+        streams.dtype != torch.bfloat16
+        or streams.shape[-2] != 4
+        or not streams.is_contiguous()
+    ):
+        raise ValueError(
+            "DeepGEMM mHC pre needs contiguous BF16 four-stream activations"
+        )
+    hidden = streams.shape[-1]
+    tokens = streams.numel() // (4 * hidden)
+    if tokens % 32 or hidden % 128 or projection.shape != (24, 4 * hidden):
+        raise ValueError(
+            "DeepGEMM mHC pre requires tokens divisible by 32, hidden divisible by 128, projection [24,4H]"
+        )
+    if splits < 1 or (4 * hidden) % (64 * splits):
+        raise ValueError("Each projection split must contain whole 64-element blocks")
+
+
 @torch.library.custom_op("mlops::mhc_pre_deepgemm", mutates_args=())
 @torch.autocast(device_type="cuda", enabled=False)
 def _forward(
@@ -32,22 +51,9 @@ def _forward(
 
     if torch.cuda.get_device_capability(streams.device) not in ((9, 0), (10, 0)):
         raise ValueError("DeepGEMM mHC pre supports only SM90/SM100")
-    if (
-        streams.dtype != torch.bfloat16
-        or streams.shape[-2] != 4
-        or not streams.is_contiguous()
-    ):
-        raise ValueError(
-            "DeepGEMM mHC pre needs contiguous BF16 four-stream activations"
-        )
+    _validate_geometry(streams, projection, splits)
     x = streams.reshape(-1, 4, streams.shape[-1])
     tokens, _, hidden = x.shape
-    if tokens % 32 or hidden % 128 or projection.shape != (24, 4 * hidden):
-        raise ValueError(
-            "DeepGEMM mHC pre requires tokens divisible by 32, hidden divisible by 128, projection [24,4H]"
-        )
-    if splits < 1 or (4 * hidden) % (64 * splits):
-        raise ValueError("Each projection split must contain whole 64-element blocks")
     w = projection.float().contiguous()
     b = bias.float().contiguous()
     s = scale.float().contiguous()
@@ -188,6 +194,7 @@ def _backward_op(
 def _forward_fake(
     streams, projection, bias, scale, eps, sinkhorn_eps, iterations, splits
 ):
+    _validate_geometry(streams, projection, splits)
     prefix, hidden = streams.shape[:-2], streams.shape[-1]
     tokens = streams.numel() // (4 * hidden)
     opts = {"device": streams.device, "dtype": torch.float32}

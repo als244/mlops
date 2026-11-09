@@ -18,6 +18,7 @@ from shadowspill.pytorch.capture.gradients import (
 from test_sonicmoe_gradient_destinations import arguments
 
 from mlops.integrations.shadowspill import (
+    mhc_chunk_rules,
     operator_preparations,
     sonicmoe_chunk_rules,
     sonicmoe_gradient_destination_rules,
@@ -139,6 +140,15 @@ def test_chunk_rules_keep_sorted_rows_local_and_match_mutating_outputs():
     assert metadata.output_axes == (None, ChunkLocal(0), ChunkLocal(0), ChunkLocal(0))
     assert metadata.reductions == (0,)
     assert rules["mlops.lora_sonicmoe_up_bwd.default"].output_axes[0] == AxisFrom(1)
+    fp8 = sonicmoe_chunk_rules(compute_precision="fp8_block")
+    assert len(fp8) == 5
+    for rule in fp8:
+        assert rule.output_axes == rules[rule.target].output_axes
+        assert rule.reductions == rules[rule.target].reductions
+        assert rule.version != rules[rule.target].version
+        assert "accumulate" not in rule.target
+    with pytest.raises(ValueError, match="frozen fp8_block"):
+        sonicmoe_chunk_rules(compute_precision="fp8_current")
 
 
 def test_preparation_descriptions_are_explicit_and_need_no_device(monkeypatch):
@@ -157,6 +167,8 @@ def test_preparation_descriptions_are_explicit_and_need_no_device(monkeypatch):
         == "mlops.providers.builtin.sparse_latent_preparation:factory"
     )
     assert operator_preparations(dtype=torch.float32) == ()
+    assert len(mhc_chunk_rules()) == 4
+    assert len(sonicmoe_chunk_rules(compute_precision="fp8_block")) == 5
 
 
 def test_import_needs_no_shadowspill_and_factories_do_not_initialize_cuda():
@@ -173,7 +185,8 @@ import mlops.integrations.shadowspill as integration
 import torch
 assert not torch.cuda.is_initialized()
 assert not any(x.startswith('shadowspill') for x in sys.modules)
-for factory in (integration.sonicmoe_chunk_rules, integration.sonicmoe_gradient_destination_rules):
+for factory in (integration.sonicmoe_chunk_rules, integration.mhc_chunk_rules,
+                integration.sonicmoe_gradient_destination_rules):
     try:
         factory()
     except ModuleNotFoundError as error:

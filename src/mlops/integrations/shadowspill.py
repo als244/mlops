@@ -176,16 +176,28 @@ def sonicmoe_gradient_destination_rules() -> tuple[GradientDestinationRule, ...]
     )
 
 
-def sonicmoe_chunk_rules() -> tuple[OperatorRule, ...]:
+def sonicmoe_chunk_rules(
+    *, compute_precision: str = "bf16"
+) -> tuple[OperatorRule, ...]:
     """Describe chunk-local Sonic rows and additive parameter reductions.
 
     Combine with rules for the other operators in a selected region. The
     caller chooses the logical input axis and chunk size. Sorted rows and
-    routing maps cannot escape a chunk; expert counts reduce across chunks.
-    These rules do not certify replay, RNG, FP8, or distributed expert routing.
+    routing maps are chunk-local under these rules; expert counts reduce across
+    chunks. Retaining local state across the enclosing boundary would require a
+    segmented representation with each chunk's metadata, which is not supplied
+    by this contract.
+    ``compute_precision="fp8_block"`` describes frozen block-FP8 experts with
+    BF16 activations/LoRA factors. Quantization reduces features within each
+    row, so token slicing preserves that domain. FP8 weight components remain
+    shared. FP8 destination fusion is deliberately excluded; ordinary additive
+    gradient accumulation remains available. These rules do not certify replay,
+    RNG, trainable FP8 weights, current-scaled FP8 or distributed expert routing.
     """
     from shadowspill.pytorch import AxisFrom, ChunkLocal, OperatorRule
 
+    if compute_precision not in {"bf16", "fp8_block"}:
+        raise ValueError("Sonic chunk contracts support bf16 or frozen fp8_block")
     local = ChunkLocal(0)
     specifications = {
         "sonicmoe_routing_metadata": ((None, local, local, local), (0,)),
@@ -198,9 +210,18 @@ def sonicmoe_chunk_rules() -> tuple[OperatorRule, ...]:
         ),
     }
     original = tuple(
-        OperatorRule(f"mlops.{name}.default", "bf16-lora-candidate-1", axes, reductions)
+        OperatorRule(
+            f"mlops.{name}.default",
+            "bf16-lora-candidate-1"
+            if compute_precision == "bf16"
+            else "fp8-block-lora-1",
+            axes,
+            reductions,
+        )
         for name, (axes, reductions) in specifications.items()
     )
+    if compute_precision == "fp8_block":
+        return original
     accumulating = tuple(
         OperatorRule(
             f"mlops.{name}_accumulate.default", "bf16-destinations-v1", axes, reductions
@@ -209,6 +230,35 @@ def sonicmoe_chunk_rules() -> tuple[OperatorRule, ...]:
         if name.endswith("_bwd")
     )
     return (*original, *accumulating)
+
+
+def mhc_chunk_rules(*, batch_size: int = 1) -> tuple[OperatorRule, ...]:
+    """Token-axis contracts for fused DeepGEMM pre and TileKernels post.
+
+    Pre takes packed ``[batch * sequence, 4, hidden]`` streams. Its invocation
+    (including each tail) must satisfy the provider's 32-token/128-hidden
+    alignment. Post preserves its ordinary ``[1, tokens, ...]`` coordinates.
+    Pre parameter gradients sum across chunks; no coefficient normalization
+    crosses tokens. This does not certify arbitrary stream-axis splitting.
+    """
+    from shadowspill.pytorch import AxisFrom, ChunkAxis, OperatorRule
+
+    flat = ChunkAxis(0, before=batch_size)
+    return (
+        OperatorRule("mlops.mhc_pre_deepgemm.default", "tokens-1", (flat,) * 5),
+        OperatorRule(
+            "mlops.mhc_pre_deepgemm_backward.default",
+            "tokens-1",
+            (AxisFrom(0), None, None, None),
+            (1, 2, 3),
+        ),
+        OperatorRule("mlops.mhc_post_tilekernels.default", "tokens-1", (AxisFrom(1),)),
+        OperatorRule(
+            "mlops.mhc_post_tilekernels_backward.default",
+            "tokens-1",
+            tuple(AxisFrom(i) for i in range(1, 5)),
+        ),
+    )
 
 
 def sonicmoe_preparation(*, cache_root: str | None = None) -> OperatorPreparation:
@@ -254,6 +304,7 @@ def operator_preparations(
 
 
 __all__ = [
+    "mhc_chunk_rules",
     "operator_preparations",
     "sonicmoe_chunk_rules",
     "sonicmoe_gradient_destination_rules",

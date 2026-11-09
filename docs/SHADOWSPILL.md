@@ -71,9 +71,31 @@ The input domain and axis come from the caller's chunk policy. Sonic's sorted
 rows and routing maps are chunk-local and must not escape a chunk; expert counts
 and parameter gradients are additive reductions. An invalid saved-state cut
 that exposes those local values must be changed or refused by the builder.
+This is a representation constraint: saving the local values would require
+separate per-chunk buffers and routing metadata. A selective SAVE policy may
+instead regenerate these intermediates while retaining other state, including
+the selected expert IDs.
 These rules do not select checkpoint boundaries, retention, replay, chunk sizes
-or spill residency. They do not certify expert-parallel collectives, FP8 layouts
-or arbitrary provider effects as independent across an axis.
+or spill residency. They do not certify expert-parallel collectives or arbitrary
+provider effects as independent across an axis.
+
+`sonicmoe_chunk_rules(compute_precision="fp8_block")` explicitly selects the
+frozen block-FP8 expert contract, with BF16 activations/LoRA factors. It returns
+five rules for the original operators, leaving the FP8 data/scales shared.
+Activation quantization reduces features within each row, so token splitting
+preserves its scaling domain. The FP8 contract has a distinct executable
+identity and excludes destination fusion, trainable base weights and
+`fp8_current`; ordinary in-place addition of gradient contributions remains.
+Full/tail chunks, arbitrary VJPs, rank32 factors and empty experts have direct
+H100 comparisons. Full-model saved execution remains a separate qualification.
+
+`mhc_chunk_rules(batch_size=1)` supplies token contracts for fused DeepGEMM
+preprocessing and TileKernels postprocessing. Pre expects packed
+`[batch * sequence, 4, hidden]` streams; every invocation including tails needs
+32-token/128-hidden alignment. Fake capture checks this geometry too. Shared
+projection/bias/scale gradients sum across chunks. Post preserves its reshaped
+`[1, tokens, ...]` inputs. These rules do not permit splitting the stream or
+feature dimensions.
 
 ## Saved execution and validation
 
