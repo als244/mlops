@@ -97,6 +97,40 @@ projection/bias/scale gradients sum across chunks. Post preserves its reshaped
 `[1, tokens, ...]` inputs. These rules do not permit splitting the stream or
 feature dimensions.
 
+## FLA value lifetimes
+
+`fla_execution_lifetimes(rules=(), select=None)` supplies readonly and input-layout
+contracts for the explicit FLA convolution, L2/gated normalization and Gated
+DeltaNet operations. The factory makes no scheduling choices on its own:
+
+```python
+from mlops.integrations.shadowspill import fla_execution_lifetimes
+from shadowspill.pytorch import LifetimeRule
+
+lifetimes = fla_execution_lifetimes(rules=(
+    LifetimeRule("aten.slice.Tensor", compact=True),
+    LifetimeRule("mlops.linear_attention_fla_gated_delta_rule_bwd.default",
+                 barrier=True),
+))
+# Supply lifetimes on the outer ChunkRegions policy.
+# Add movement rules or a selector for the rest of the desired schedule.
+```
+
+The engine still proves that copied internal views preserve aliases and logical
+values, shrink a protected backing set and do not increase any other protected
+set. Certified effects also let independently selected readonly work, such as
+gradient padding, move past these operators toward its consumer. No projection,
+expert or attention replay is selected. This does not make recurrent token
+windows independent or change checkpoint retention/spill placement.
+
+Only the listed value operands have layout permission. In particular, L2
+backward accepts relayout of its incoming gradient, but its saved normalized
+output and statistics retain their original layouts. Weights, sequence metadata,
+other providers and ordered mutations are not given new permissions. The
+factory is CPU-only and does not import FLA kernels. Resolved contracts and
+choices enter executable identities; rebuild/profile changed policies before
+planning and saved execution.
+
 ## Saved execution and validation
 
 Mapper callbacks run during graph construction. Saved Programs carry the actual

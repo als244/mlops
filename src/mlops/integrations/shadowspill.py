@@ -1,4 +1,4 @@
-"""Caller-owned SonicMoE contracts for ShadowSpill's generic build APIs.
+"""Caller-owned MLOps contracts for ShadowSpill's generic build APIs.
 
 ShadowSpill is optional and imported only when a factory or mapper is called.
 These contracts do not select a model, checkpoint cut, execution region, chunk
@@ -12,6 +12,8 @@ import math
 from typing import TYPE_CHECKING
 
 import torch
+
+from .fla_lifetimes import fla_execution_lifetimes
 
 if TYPE_CHECKING:
     from shadowspill import OperatorPreparation
@@ -304,6 +306,7 @@ def operator_preparations(
 
 
 __all__ = [
+    "fla_execution_lifetimes",
     "mhc_chunk_rules",
     "operator_preparations",
     "sonicmoe_chunk_rules",
