@@ -75,6 +75,25 @@ def forbidden(*args, **kwargs):
     raise AssertionError("saved invocation tried to tune or consult a cache")
 
 
+def test_public_capture_and_pin_preserve_selected_choices(monkeypatch):
+    from mlops import quack_runtime
+
+    # Initialization is independently qualified; this exercises the public
+    # boundary against actual CPU autotuner selection/capture/pinning.
+    monkeypatch.setattr(quack_runtime, "initialize", lambda: None)
+    tuner, tensor, key = fixture()
+    with quack_runtime.capture_choices() as choices:
+        expected = tuner(tensor, length=tensor.numel())
+    tuner.cache[key] = tuner.configs[1]
+    with (
+        quack_runtime.pin_choices(json.loads(json.dumps(choices))),
+        quack_runtime.capture_choices() as nested,
+    ):
+        assert tuner(tensor, length=tensor.numel()) == expected
+    assert nested == choices
+    assert tuner(tensor, length=tensor.numel()) != expected
+
+
 def test_replay_ignores_empty_changed_and_disk_caches(monkeypatch):
     tuner, tensor, key = fixture()
     choices, result = captured(tuner, tensor)

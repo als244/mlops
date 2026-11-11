@@ -26,6 +26,59 @@ if TYPE_CHECKING:
     )
 
 
+def operator_chunk_rules(batch_size: int = 1) -> tuple[OperatorRule, ...]:
+    """Axis/reduction facts for normalization, rotary, mHC and LoRA dispatch ops.
+
+    ``batch_size`` is the leading factor when an operator flattens batch and
+    logical positions. Combine this tuple with explicit SonicMoE/fused-mHC
+    contracts when those operators occur. Select input axes and chunk sizes in
+    the caller; these declarations neither select nor implement chunk loops.
+    """
+    from shadowspill.pytorch import AxisFrom, ChunkAxis, ChunkLocal, OperatorRule
+
+    same = AxisFrom(0)
+    flat = ChunkAxis(0, before=batch_size)
+    local = ChunkLocal(0)
+    specs = {
+        "rms_norm_builtin_triton_fwd": ((same, AxisFrom(0, 1)), ()),
+        "rms_norm_builtin_triton_bwd": ((same, None), (1,)),
+        "swiglu_builtin_triton_fwd": ((same,), ()),
+        "swiglu_builtin_triton_bwd": ((same, same), ()),
+        "packed_swiglu_builtin_triton_fwd": ((flat,), ()),
+        "packed_swiglu_builtin_triton_bwd": ((flat,), ()),
+        "partial_rope_builtin_triton_fwd": ((same,), ()),
+        "partial_rope_builtin_triton_bwd": ((same,), ()),
+        "rope_builtin_triton_table_fwd": ((same,), ()),
+        "rope_builtin_triton_table_bwd": ((same,), ()),
+        "rope_builtin_triton_analytic_fwd": ((same,), ()),
+        "rope_builtin_triton_analytic_bwd": ((same,), ()),
+        "l2_norm_fla_fwd": ((same, AxisFrom(0, 1)), ()),
+        "l2_norm_fla_bwd": ((same,), ()),
+        "gated_rms_norm_fla_fwd": ((same, AxisFrom(0, 1)), ()),
+        "gated_rms_norm_fla_bwd": ((same, same, None), (2,)),
+        "mhc_mix_four": ((flat,), ()),
+        "mhc_post_four": ((flat,), ()),
+        "mhc_post_four_input_grads": ((flat, flat), ()),
+        "mhc_post_four_coefficient_grads": ((flat, flat), ()),
+        "lora_router_logits": ((flat,), ()),
+        "lora_router_logits_bwd": ((flat, None), (1,)),
+        "lora_route": ((flat, flat), ()),
+        "lora_route_bwd": ((flat,), ()),
+        # Prefix counts add across chunks; sort/slot indices stay chunk-local.
+        "lora_assignment_layout": ((local, None, local), (1,)),
+        "lora_dispatch": ((local,), ()),
+        "lora_dispatch_bwd": ((flat,), ()),
+        "lora_grouped_linear_fwd": ((local,), ()),
+        "lora_grouped_linear_bwd": ((local, None), (1,)),
+        "lora_combine": ((flat,), ()),
+        "lora_combine_bwd": ((local, flat), ()),
+    }
+    return tuple(
+        OperatorRule(f"mlops.{name}.default", "1", axes, reductions)
+        for name, (axes, reductions) in specs.items()
+    )
+
+
 def _path(
     item: GradientDestination, raw: torch.Tensor, *, up: bool
 ) -> tuple[float, bool] | None:
@@ -308,6 +361,7 @@ def operator_preparations(
 __all__ = [
     "fla_execution_lifetimes",
     "mhc_chunk_rules",
+    "operator_chunk_rules",
     "operator_preparations",
     "sonicmoe_chunk_rules",
     "sonicmoe_gradient_destination_rules",

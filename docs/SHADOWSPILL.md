@@ -58,6 +58,19 @@ FP16 epilogue coverage alone is not FP16 model qualification.
 
 ## Chunk axes and state
 
+`operator_chunk_rules(batch_size=1)` supplies the common normalization, SwiGLU,
+rotary, gated-norm, basic mHC and builtin LoRA routing/dispatch/grouped-linear
+axis/reduction contracts. These declarations live beside the provider, rather
+than in model code. The batch factor describes flattened batch/position layouts;
+it does not choose an independent axis or certify arbitrary feature splitting.
+Pass the same batch geometry as the enclosing region. The factory's operator
+names, semantic versions and rules are unchanged by the ownership move.
+
+Combine those rules with the explicit SonicMoE and fused-mHC bundles when used.
+Models still express full tensors; ShadowSpill generates execution chunk loops.
+The workload chooses boundaries, domains, chunk sizes and retention policies.
+
+
 `sonicmoe_chunk_rules()` returns seven `OperatorRule` objects for routing
 metadata and the fresh/accumulating up/down operations. Add these to the rules
 for other operators in each selected `AxisChunks` region:

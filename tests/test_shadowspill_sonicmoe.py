@@ -185,7 +185,7 @@ import mlops.integrations.shadowspill as integration
 import torch
 assert not torch.cuda.is_initialized()
 assert not any(x.startswith('shadowspill') for x in sys.modules)
-for factory in (integration.sonicmoe_chunk_rules, integration.mhc_chunk_rules,
+for factory in (integration.operator_chunk_rules, integration.sonicmoe_chunk_rules, integration.mhc_chunk_rules,
                 integration.sonicmoe_gradient_destination_rules):
     try:
         factory()

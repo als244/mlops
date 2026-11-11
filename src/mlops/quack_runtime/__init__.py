@@ -13,6 +13,7 @@ its global tuning policy.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 SOURCE_DIRS_VARIABLE = "MLOPS_QUACK_SOURCE_DIRS"
@@ -65,4 +66,38 @@ def initialize() -> None:
     _initialized = True
 
 
-__all__ = ["SOURCE_DIRS_VARIABLE", "initialize", "register_source_dir"]
+@contextmanager
+def capture_choices():
+    """Record selected Quack GEMM choices, including ordinary cache hits.
+
+    This supplies serializable selection metadata for matched reference runs.
+    It does not package binaries; use the prepared-kernel provider for that.
+    """
+    from . import _choices
+
+    initialize()
+    with _choices.capture_choices() as choices:
+        yield choices
+
+
+@contextmanager
+def pin_choices(selection):
+    """Replay a captured selection and refuse unrecorded specializations.
+
+    The scope preserves the provider's source/target validation and nested
+    capture behavior. It does not disable tuning outside the scope.
+    """
+    from . import _choices
+
+    initialize()
+    with _choices.BoundChoices(selection).pin():
+        yield
+
+
+__all__ = [
+    "SOURCE_DIRS_VARIABLE",
+    "capture_choices",
+    "initialize",
+    "pin_choices",
+    "register_source_dir",
+]
