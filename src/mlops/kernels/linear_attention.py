@@ -55,25 +55,22 @@ def fla_linear_attention_backward(
     chunk_indices,
     scale,
 ):
-    """Run FLA's paired backward with its forward intermediates."""
-    from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_bwd
+    """Run the paired FLA kernels, releasing private scratch at last use."""
+    from .gated_delta_rule import backward
 
-    dq, dk, dv, dbeta, da, _initial, da_log, ddt_bias = chunk_gated_delta_rule_bwd(
+    dq, dk, dv, dbeta, da, da_log, ddt_bias = backward(
         q=q.contiguous().unsqueeze(0),
         k=k.contiguous().unsqueeze(0),
         v=v.contiguous().unsqueeze(0),
         g=gate,
         beta=beta.contiguous().unsqueeze(0),
-        A=matrix,
+        matrix=matrix,
         scale=float(scale),
-        initial_state=None,
-        do=grad_output.contiguous().unsqueeze(0),
-        dht=None,
-        cu_seqlens=cumulative,
-        chunk_indices=chunk_indices,
-        use_gate_in_kernel=True,
-        g_input=a.contiguous().unsqueeze(0),
-        A_log=a_log.float(),
+        grad=grad_output.contiguous().unsqueeze(0),
+        cumulative=cumulative,
+        chunks=chunk_indices,
+        a=a.contiguous().unsqueeze(0),
+        a_log=a_log.float(),
         dt_bias=dt_bias.float(),
     )
     return (

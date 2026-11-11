@@ -28,6 +28,23 @@ return fresh outputs, expose any VJP residual explicitly, and validate it first
 through its owning implementation adapter with opcheck, VJP parity, repeated
 backward, immutability, and capture tests.
 
+## Gated DeltaNet scratch lifetimes
+
+`kernels/gated_delta_rule.py` composes the existing FLA 0.5.2 backward helpers
+for `linear_attention`. It releases the private WY value factor `u` after state
+reconstruction, then releases `w`, `h`, `v_new` and `dh` after their last gradient
+consumer, before WY backward allocates its temporaries. The same kernels run in
+the same order with the same arithmetic and FLA backend selection. It changes
+neither saved forward residuals nor caller-owned inputs. The adapted composition
+includes its source attribution and MIT license.
+
+The existing contract remains packed sequences with 64-token recurrence tiles,
+zero initial state and no final-state gradient. This is internal workspace
+management, independent of checkpoint retention and execution-region chunking;
+it introduces no public policy or model-specific path. The provider registration
+source changes with the composition, so affected saved Programs and allocation
+profiles must be rebuilt and reprofiled.
+
 ## KDA and tied-latent sparse attention
 
 `src/mlops/kernels/kda/` contains the adapted FLA chunked algorithm, per-call

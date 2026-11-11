@@ -463,6 +463,7 @@ def linear_backward(
     *,
     scale,
 ):
+    """Paired backward with last-use release of private FLA replay scratch."""
     with torch.no_grad():
         sequence_metadata = None if cumulative.numel() == 0 else cumulative
         chunk_metadata = None if chunk_indices.numel() == 0 else chunk_indices

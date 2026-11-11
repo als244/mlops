@@ -24,7 +24,7 @@ fa3 = [
 # indexer is the preferred pooled-top-k scorer/selector. The pin matches the
 # Transformer Engine step's; the DSL it needs comes with Quack.
 cudnn = ["nvidia-cudnn-frontend==1.30.0"]
-# KDA calls tested private FLA kernel interfaces.
+# KDA and gated-delta composition call tested private FLA kernel interfaces.
 fla = ["flash-linear-attention==0.5.2", "fla-core==0.5.2"]
 # TileLang backs fla's gated-delta-rule backward on Hopper (fla enables it by
 # default on sm90 with Triton >= 3.4.0).
