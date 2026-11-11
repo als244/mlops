@@ -7,10 +7,13 @@ consume each tensor before requesting the next if bounded scratch is required.
 import json
 import math
 import mmap
+import os
 import struct
 from pathlib import Path
 
 import torch
+
+from ._read_ranges import ReadRanges
 
 DTYPES = {
     "BF16": torch.bfloat16,
@@ -34,7 +37,7 @@ SIZES = {
 class SafeTensors:
     """Read shape/dtype declarations without touching checkpoint payloads."""
 
-    def __init__(self, directory):
+    def __init__(self, directory, *, read_workers=4, read_chunk_bytes=8 << 20):
         self.directory = Path(directory).resolve()
         index = self.directory / "model.safetensors.index.json"
         self.files = (
@@ -44,6 +47,7 @@ class SafeTensors:
         self.info = {}
         self._data_offsets = {}
         self._handles = {}
+        self._ranges = ReadRanges(read_workers, read_chunk_bytes)
         self._closed = False
         for name in sorted(shards):
             path = self.path(name)
@@ -128,6 +132,52 @@ class SafeTensors:
             self._handles[shard], dtype=dtype, count=count, offset=offset
         ).reshape(info["shape"])
 
+    def copy_into(self, name, offset, destination):
+        """Read a flat element range into borrowed CPU storage, synchronously.
+
+        Matching dtypes use bounded positional reads directly into destination;
+        large requests use at most ``read_workers`` simultaneous reads. No
+        full-tensor staging buffer, mapping or extra pinned allocation is needed.
+        Dtype conversion retains the mapped-copy path. Every read finishes before
+        return, including on failure, so callers can immediately reuse storage.
+        """
+        if self._closed:
+            raise RuntimeError("Checkpoint reader is closed")
+        if name not in self.info:
+            raise ValueError(f"Checkpoint is missing {name}")
+        if (
+            destination.device.type != "cpu"
+            or destination.ndim != 1
+            or not destination.is_contiguous()
+        ):
+            raise ValueError(
+                "Checkpoint destination must be a flat contiguous CPU buffer"
+            )
+        info = self.info[name]
+        count = destination.numel()
+        if (
+            type(offset) is not int
+            or offset < 0
+            or offset + count > math.prod(info["shape"])
+        ):
+            raise ValueError("Checkpoint slice leaves tensor bounds")
+        if not count:
+            return
+        if destination.dtype != DTYPES[info["dtype"]] or not hasattr(os, "preadv"):
+            try:
+                destination.copy_(self.tensor(name).view(-1)[offset : offset + count])
+            finally:
+                self.release_pages(name)
+            return
+        shard = self.files[name]
+        position = (
+            self._data_offsets[shard]
+            + info["data_offsets"][0]
+            + offset * SIZES[info["dtype"]]
+        )
+        view = memoryview(destination.detach().view(torch.uint8).numpy())
+        self._ranges.read_into(self.path(shard), position, view)
+
     def release_pages(self, name):
         """Drop consumed file pages from this reader's RSS, retaining the mapping.
 
@@ -148,6 +198,7 @@ class SafeTensors:
     def close(self):
         # frombuffer retains its mapping owner: outstanding tensor views remain
         # valid after this reader is closed. Unreferenced mappings close here.
+        self._ranges.close()
         self._handles.clear()
         self._closed = True
 

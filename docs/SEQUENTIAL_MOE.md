@@ -22,6 +22,18 @@ Meta construction declares physical weight components without allocating or quan
 
 `mlops.sequential_moe.precision.checkpoint.HFWeights` reads local safetensors incrementally, including explicit per-projection mixed NVFP4/FP8 recipes. `projection(..., meta=True)` validates component geometry without reading weight payloads. Gate/up packing preserves independently stored scales. NVFP4's inverse global weight scale is converted to a dequantization multiplier.
 
+Its underlying `SafeTensors` reader is independent of model architecture.
+`copy_into(name, offset, destination)` reads a flat element range into a contiguous
+CPU destination. Matching dtypes use positional reads directly into the supplied
+storage, with no full-tensor staging copy. Defaults are four read workers and
+8 MiB per read (`read_workers` and `read_chunk_bytes` constructor options).
+Small requests use one synchronous read; metadata queries do not create workers
+or read tensor payloads. All workers finish before `copy_into` returns, including
+on failure, and `close()` releases their descriptors and threads. Dtype conversion
+uses the mapped-copy path. Existing `tensor()` views and `release_pages()` retain
+their original lifetime behavior. This API works with ordinary or pinned host
+destinations and does not allocate a CUDA or pinned-memory pool itself.
+
 BF16/FP16 GEMMs can decode the supported dense, FP8, NVFP4, MXFP4 and symmetric INT4 layouts. FP8 GEMMs use the existing block-quantized recipe. NVFP4 GEMMs require 16x16 weight scales; the external 1x16 checkpoint layout uses BF16/FP16 GEMMs. AWQ/GPTQ/NF4 encodings are not inferred from a four-bit dtype.
 
 `FrozenLinear` uses the same physical formats for frozen dense projections. It permits input gradients and uses BF16/FP16 GEMMs.
