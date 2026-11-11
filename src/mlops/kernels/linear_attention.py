@@ -17,24 +17,21 @@ def fla_linear_attention_forward(
     chunk_indices,
     scale,
 ):
-    """Run the same low-level FLA chunk kernel as the production path."""
-    from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_fwd
+    """Run the FLA helpers, releasing private factors before output assembly."""
+    from .gated_delta_rule import forward
 
     sequence_metadata = None if cumulative.numel() == 0 else cumulative
     chunk_metadata = None if chunk_indices.numel() == 0 else chunk_indices
-    gate, output, matrix, _final, _initial, _input_gate = chunk_gated_delta_rule_fwd(
-        q.contiguous().unsqueeze(0),
-        k.contiguous().unsqueeze(0),
-        v.contiguous().unsqueeze(0),
-        a.contiguous().unsqueeze(0),
-        beta.contiguous().unsqueeze(0),
+    output, gate, matrix = forward(
+        q=q.contiguous().unsqueeze(0),
+        k=k.contiguous().unsqueeze(0),
+        v=v.contiguous().unsqueeze(0),
+        a=a.contiguous().unsqueeze(0),
+        beta=beta.contiguous().unsqueeze(0),
         scale=float(scale),
-        initial_state=None,
-        output_final_state=False,
-        cu_seqlens=sequence_metadata,
-        chunk_indices=chunk_metadata,
-        use_gate_in_kernel=True,
-        A_log=a_log.float(),
+        cumulative=sequence_metadata,
+        chunks=chunk_metadata,
+        a_log=a_log.float(),
         dt_bias=dt_bias.float(),
     )
     return output.squeeze(0).to(v.dtype), gate, matrix

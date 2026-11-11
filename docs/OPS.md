@@ -1473,9 +1473,10 @@ operation nor provider constructs or retains sequence metadata. The metadata
 is data: a captured graph takes it as an input, so one graph serves every
 packing of the same tokens.
 
-The FLA backward releases its private replay factors and recurrent histories
-after their final consumers. This reduces simultaneous scratch storage without
-changing the saved gate/matrix, kernels or numerical defaults. See
+FLA forward releases its private WY factors after state reconstruction;
+backward releases its private replay factors and recurrent histories after their
+final consumers. This reduces simultaneous scratch storage without changing
+the saved gate/matrix, kernels or numerical defaults. See
 [kernel lifetime ownership](KERNELS.md#gated-deltanet-scratch-lifetimes).
 
 **Constraints and exceptions**

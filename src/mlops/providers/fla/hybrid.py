@@ -1,4 +1,4 @@
-"""FLA-backed causal-convolution, normalization, and delta-rule adapters."""
+"""FLA adapters with delta-rule forward and backward scratch released at last use."""
 
 from __future__ import annotations
 

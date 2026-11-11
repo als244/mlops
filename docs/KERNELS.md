@@ -30,13 +30,14 @@ backward, immutability, and capture tests.
 
 ## Gated DeltaNet scratch lifetimes
 
-`kernels/gated_delta_rule.py` composes the existing FLA 0.5.2 backward helpers
-for `linear_attention`. It releases the private WY value factor `u` after state
-reconstruction, then releases `w`, `h`, `v_new` and `dh` after their last gradient
-consumer, before WY backward allocates its temporaries. The same kernels run in
-the same order with the same arithmetic and FLA backend selection. It changes
-neither saved forward residuals nor caller-owned inputs. The adapted composition
-includes its source attribution and MIT license.
+`kernels/gated_delta_rule.py` composes the existing FLA 0.5.2 forward and backward
+helpers for `linear_attention`. Forward releases the private WY factors `w` and
+`u` after state reconstruction, before output assembly. Backward releases `u`
+after state reconstruction, then `w`, `h`, `v_new` and `dh` after their last
+gradient consumer, before WY backward allocates its temporaries. The same kernels
+run in the same order with the same arithmetic and FLA backend selection. These
+releases change neither saved forward residuals nor caller-owned inputs. The
+adapted compositions include their source attribution and MIT license.
 
 The existing contract remains packed sequences with 64-token recurrence tiles,
 zero initial state and no final-state gradient. This is internal workspace

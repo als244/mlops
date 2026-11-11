@@ -7,7 +7,47 @@ import weakref
 import pytest
 import torch
 
-from mlops.kernels.gated_delta_rule import backward
+from mlops.kernels.gated_delta_rule import backward, forward
+
+
+def test_forward_releases_wy_factors_before_output_allocations(monkeypatch):
+    references = {}
+
+    def scratch(name):
+        value = torch.ones(1)
+        references[name] = weakref.ref(value)
+        return value
+
+    def factors(**kwargs):
+        return tuple(scratch(n) for n in ("w", "u", "matrix"))
+
+    def state(**kwargs):
+        assert kwargs["w"] is references["w"]()
+        assert kwargs["u"] is references["u"]()
+        return scratch("h"), scratch("v_new"), None
+
+    def output(**kwargs):
+        assert references["w"]() is references["u"]() is None
+        assert kwargs["h"] is references["h"]()
+        assert kwargs["v"] is references["v_new"]()
+        return scratch("output")
+
+    module = types.ModuleType("fla.ops.gated_delta_rule")
+    module.chunk = types.SimpleNamespace(
+        RCP_LN2=1.4426950408889634,
+        gdn_gate_chunk_cumsum=lambda **kwargs: scratch("gate"),
+        chunk_gated_delta_rule_fwd_intra=factors,
+        chunk_gated_delta_rule_fwd_h=state,
+        chunk_fwd_o=output,
+    )
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    result = forward(*(None,) * 9, 1.0)
+    assert len(result) == 3
+    assert {n for n, ref in references.items() if ref() is not None} == {
+        "output",
+        "gate",
+        "matrix",
+    }
 
 
 def test_backward_releases_replay_scratch_before_wy_allocations(monkeypatch):
@@ -85,11 +125,14 @@ def test_backward_releases_replay_scratch_before_wy_allocations(monkeypatch):
         (torch.bfloat16, (31, 65, 9), (2, 2), True),
     ],
 )
-def test_public_backward_matches_upstream_and_preserves_inputs(
+def test_public_forward_backward_matches_upstream_and_preserves_inputs(
     dtype, lengths, heads, strided
 ):
     pytest.importorskip("fla")
-    from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_bwd
+    from fla.ops.gated_delta_rule.chunk import (
+        chunk_gated_delta_rule_bwd,
+        chunk_gated_delta_rule_fwd,
+    )
 
     import mlops
     from mlops import explicit
@@ -119,6 +162,29 @@ def test_public_backward_matches_upstream_and_preserves_inputs(
         "linear_attention", "fla.linear_attention.gated_delta_rule"
     ):
         output, gate, matrix = explicit.linear_attention.forward(*operands, scale=scale)
+        expected_gate, expected_output, expected_matrix, *_ = (
+            chunk_gated_delta_rule_fwd(
+                q=q.contiguous().unsqueeze(0),
+                k=k.contiguous().unsqueeze(0),
+                v=v.contiguous().unsqueeze(0),
+                g=a.contiguous().unsqueeze(0),
+                beta=beta.contiguous().unsqueeze(0),
+                scale=scale,
+                initial_state=None,
+                output_final_state=False,
+                cu_seqlens=cumulative if cumulative.numel() else None,
+                chunk_indices=chunks if chunks.numel() else None,
+                use_gate_in_kernel=True,
+                A_log=a_log,
+                dt_bias=bias,
+            )
+        )
+        for got, want in zip(
+            (output, gate, matrix),
+            (expected_output.squeeze(0), expected_gate, expected_matrix),
+            strict=True,
+        ):
+            torch.testing.assert_close(got, want, rtol=0, atol=0)
         grad = operand(tokens, hv, width)
         immutable = (*operands, gate, matrix, grad)
         snapshots = tuple(t.clone() for t in immutable)

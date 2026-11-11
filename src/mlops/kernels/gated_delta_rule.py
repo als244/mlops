@@ -1,8 +1,9 @@
-"""FLA gated-delta backward with private scratch released at last use.
+"""FLA gated-delta compositions with private scratch released at last use.
 
 Adapted from fla-core 0.5.2, fla/ops/gated_delta_rule/chunk.py,
-chunk_gated_delta_rule_bwd (source SHA256:
-5b342b42f3caa97af4ac43f6a04398152114252abc5cc375e47268fc590a5179).
+chunk_gated_delta_rule_fwd and chunk_gated_delta_rule_bwd (source SHA256s:
+forward: dae73a3e734dfe069747b45286279dad19fa77e372c4eb4d3ee0456549ba19ad;
+backward: 5b342b42f3caa97af4ac43f6a04398152114252abc5cc375e47268fc590a5179).
 Only the existing MLOps contract is exposed: packed sequences, 64-token
 recurrence tiles, zero initial state and no final-state gradient. Kernels,
 their order and arithmetic are unchanged, including FLA's backend dispatch.
@@ -27,6 +28,57 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
+
+
+def forward(q, k, v, beta, a, a_log, dt_bias, cumulative, chunks, scale):
+    """Return output and paired residuals without retaining dead WY factors."""
+    from fla.ops.gated_delta_rule import chunk as fla
+
+    gate = fla.gdn_gate_chunk_cumsum(
+        g=a,
+        A_log=a_log,
+        chunk_size=64,
+        scale=fla.RCP_LN2,
+        dt_bias=dt_bias,
+        cu_seqlens=cumulative,
+        chunk_indices=chunks,
+    )
+    w, u, matrix = fla.chunk_gated_delta_rule_fwd_intra(
+        k=k,
+        v=v,
+        g=gate,
+        beta=beta,
+        cu_seqlens=cumulative,
+        chunk_indices=chunks,
+        chunk_size=64,
+    )
+    h, v_new, _final = fla.chunk_gated_delta_rule_fwd_h(
+        k=k,
+        w=w,
+        u=u,
+        g=gate,
+        initial_state=None,
+        output_final_state=False,
+        cu_seqlens=cumulative,
+        chunk_indices=chunks,
+        state_v_first=False,
+        chunk_size=64,
+    )
+    # The output kernel uses h and v_new; neither WY factor has another reader.
+    del w, u
+    output = fla.chunk_fwd_o(
+        q=q,
+        k=k,
+        v=v_new,
+        h=h,
+        g=gate,
+        scale=scale,
+        cu_seqlens=cumulative,
+        chunk_indices=chunks,
+        state_v_first=False,
+        chunk_size=64,
+    )
+    return output, gate, matrix
 
 
 def backward(
