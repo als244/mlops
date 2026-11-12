@@ -129,19 +129,27 @@ def test_grouped_cuda_projections_and_gradients(dtype, shape):
     w = (torch.randn(4, h, d, device="cuda", dtype=dtype) * 0.1).requires_grad_()
     offsets = torch.tensor([0, 57, 57, 129, 173], device="cuda", dtype=torch.int32)
     y = grouped_linear(x, w, offsets)
+    seed = torch.randn_like(y) * 0.1
+    grads = torch.autograd.grad(y, (x, w), seed)
+    # A BF16 cuBLAS reference may truncate partial reductions. Use independent
+    # FP64 products so its rounding cannot reject the more accurate grouped VJP.
+    ref_x = x.detach().cpu().double().requires_grad_()
+    ref_w = w.detach().cpu().double().requires_grad_()
     ref = torch.cat(
         [
-            x[a:b] @ w[i].T
+            ref_x[a:b] @ ref_w[i].T
             for i, (a, b) in enumerate([(0, 57), (57, 57), (57, 129), (129, 173)])
         ]
     )
-    seed = torch.randn_like(y) * 0.1
-    grads = torch.autograd.grad(y, (x, w), seed)
-    expected = torch.autograd.grad(ref, (x, w), seed)
+    expected = torch.autograd.grad(ref, (ref_x, ref_w), seed.cpu().double())
     tolerance = (
         {"atol": 2e-3, "rtol": 2e-2}
         if dtype == torch.bfloat16
         else {"atol": 2e-4, "rtol": 2e-3}
     )
-    torch.testing.assert_close(y, ref, **tolerance)
-    torch.testing.assert_close(grads, expected, **tolerance)
+    torch.testing.assert_close(y.cpu(), ref.to(dtype), **tolerance)
+    torch.testing.assert_close(
+        tuple(grad.cpu() for grad in grads),
+        tuple(grad.to(dtype) for grad in expected),
+        **tolerance,
+    )

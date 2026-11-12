@@ -84,6 +84,12 @@ def test_fixed_returns_support_fake_capture_and_aot_functionalization(
     overload = getattr(
         torch.ops.mlops, f"lora_sonicmoe_{direction}_bwd_accumulate"
     ).default
+    assert {
+        argument.name
+        for argument in overload._schema.arguments
+        if argument.alias_info is not None and argument.alias_info.is_write
+    } == {"destinations"}
+    assert all(result.alias_info is None for result in overload._schema.returns)
     assert can_auto_functionalize(overload)
 
     def function(*values):

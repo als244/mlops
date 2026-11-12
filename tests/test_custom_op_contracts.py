@@ -43,14 +43,11 @@ rms_norm_builtin = importlib.import_module("mlops.providers.builtin.rms_norm")
 sonicmoe_moe = importlib.import_module("mlops.providers.sonicmoe.moe")
 sonicmoe_moe_composed = importlib.import_module("mlops.providers.sonicmoe.moe_composed")
 sonicmoe_lora = importlib.import_module("mlops.providers.sonicmoe.lora")
+sonicmoe_lora_destinations = importlib.import_module(
+    "mlops.providers.sonicmoe.lora_destinations"
+)
 rope = importlib.import_module("mlops.providers.builtin.rope")
 swiglu = importlib.import_module("mlops.providers.builtin.swiglu")
-
-
-pytestmark = [
-    pytest.mark.gpu,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"),
-]
 
 
 PACKAGE_ROOT = Path(mlops.__file__).resolve().parent
@@ -70,7 +67,9 @@ cula_kda = importlib.import_module("mlops.providers.cula.kda")
 cula_kda_native = importlib.import_module("mlops.providers.cula.kda_native")
 cudnn_indexer = importlib.import_module("mlops.providers.cudnn.pooled_indexer")
 mhc_builtin = importlib.import_module("mlops.providers.builtin.hyper_connection")
-mhc_tilekernels = importlib.import_module("mlops.providers.tilekernels.hyper_connection")
+mhc_tilekernels = importlib.import_module(
+    "mlops.providers.tilekernels.hyper_connection"
+)
 mhc_deepgemm = importlib.import_module("mlops.providers.deepgemm.hyper_connection")
 
 FORWARD_OPERATORS = {
@@ -175,6 +174,10 @@ BACKWARD_OPERATORS = {
 }
 
 AUXILIARY_OPERATORS = {
+    # These backward variants mutate explicit gradient destinations. Their
+    # schemas and AOT functionalization are checked by the destination tests.
+    "lora_sonicmoe_up_bwd_accumulate": sonicmoe_lora_destinations.accumulate_up,
+    "lora_sonicmoe_down_bwd_accumulate": sonicmoe_lora_destinations.accumulate_down,
     "lora_assignment_layout": lora_routing.layout,
     "sonicmoe_routing_metadata": sonicmoe_moe.routing_metadata,
     "prepare_packed_sequence_metadata": _prepare_op,
@@ -802,6 +805,8 @@ def test_registered_operator_schema_is_functional(name):
     assert "!" not in str(schema)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize(
     "_name,operator,make_args",
     OPCHECK_CASES,
