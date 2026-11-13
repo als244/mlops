@@ -75,3 +75,15 @@ Default winner results live under `~/.quack/cache`; compiled kernels use
 Cooperative searches require every rank to enter identical tuner searches with
 identical inputs and ordering. Ordinary independent workers must leave
 `MLOPS_QUACK_TUNE_DISTRIBUTED` disabled.
+
+## Comparing numerical results
+
+Independent searches can select different tiles and therefore different
+floating-point reduction groupings. Even with the same selected configuration,
+a process that ran the CUDA-graph tuning sweep can differ at BF16 rounding
+boundaries from one that only loaded its cache. Both compute the same operation
+within numerical tolerances; a cache is not a general bitwise guarantee.
+
+For controlled comparisons, tune in a separate process using PyTorch's allocator
+and point the comparison processes at the same winner cache. Changing hardware,
+precision or geometry still requires an appropriate numerical comparison.

@@ -161,29 +161,19 @@ def test_compiler_metadata_exports_are_documented():
 def test_extension_guide_covers_supported_workflows():
     reference = (DOCS_ROOT / "EXTENDING.md").read_text()
     required_sections = (
-        "## What mlops considers an operation",
         "## Add an implementation for an existing operation",
-        "### Worked example: the SonicMoE implementations of `moe`",
-        "### Worked example: one QuACK provider for RMSNorm and cross entropy",
         "## Add a new semantic operation",
-        "## Other supported extensions",
+        "## Compiler-facing declarations",
         "## Validation matrix",
-        "## Completion checklist",
     )
     for section in required_sections:
         assert section in reference
-
-    sonic_example = reference.split(
-        "### Worked example: the SonicMoE implementations of `moe`", 1
-    )[1].split("### Worked example: one QuACK", 1)[0]
-    quack_example = reference.split(
-        "### Worked example: one QuACK provider for RMSNorm and cross entropy", 1
-    )[1].split("## Add a new semantic operation", 1)[0]
-    for example in (sonic_example, quack_example):
-        assert "SM90" in example and "SM100" in example
-        assert "(9, 0)" in example and "(10, 0)" in example
-    assert "quack.rms_norm" in reference
-    assert "quack.cross_entropy" in reference
+    # Examples must lead to real adapters, not proposed registrations presented
+    # beside supported implementations. API completeness is checked separately.
+    examples = re.findall(r"\]\((\.\./src/mlops/providers/[^)]+\.py)\)", reference)
+    assert examples, "link to working provider adapters"
+    for example in examples:
+        assert (DOCS_ROOT / example).resolve().is_file(), example
 
 
 def test_markdown_tables_have_consistent_column_counts():

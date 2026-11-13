@@ -12,72 +12,35 @@ and cost estimates. Ordinary tensor calls are documented in [OPS.md](OPS.md).
 
 ## Selection and precision
 
-`mlops.dispatch` exposes exact per-operation selection and diagnostics:
+Without an override, resolution chooses the highest-priority supported
+implementation, breaking ties by exact ID. Inspect support or force a choice:
 
 ```python
-implementation_registry()
-resolve_implementation(operation, *args, surface="semantic", **kwargs)
-explain_implementation(operation, *args, surface="semantic", **kwargs)
-implementation_pairs(operations)
-use_implementation(operation, implementation_id)
-use_implementations({operation: implementation_id})
-set_implementations({operation: implementation_id})
-deterministic_kernels(enabled=True)
-set_deterministic_kernels(enabled=True)
-deterministic_required()
-weight_gradients_at(dtype)
-set_weight_gradient_dtype(dtype)
-weight_gradient_dtype()
-capture_dispatch()
-dispatch_manifest(trace)
-estimate_implementation(operation, *args, entrypoint="forward", **kwargs)
-flop_formula(*operators)
-has_flop_formula(operator)
-gradcheck_implementation(operation, implementation_id, inputs, **options)
-gradcheck_implementations(cases, **options)
+from mlops import rms_norm
+from mlops.dispatch import explain_implementation, use_implementation
+
+support = explain_implementation("rms_norm", x, weight)
+with use_implementation("rms_norm", "builtin.rms_norm.triton"):
+    output = rms_norm(x, weight)
 ```
 
-The same module exports the immutable records `Implementation`,
-`SupportResult`, `CostHints`, `GradcheckCase`, and `GradcheckResult`. Records
-describe registration metadata, support decisions, optional scalar cost
-estimates, development inputs, and gradcheck outcomes respectively; none may
-retain invocation tensors in global registry or cache state.
+Forced unsupported choices fail with their support reason. Overrides are exact,
+context-local and nestable. `use_implementations(mapping)` sets several for one
+block; `set_implementations(mapping)` retains them in the calling context.
+Importing MLOps applies `MLOPS_IMPLEMENTATIONS`, a comma-separated list of
+`operation=implementation_id` pairs, through `apply_environment_overrides`.
 
-Selection overrides are context-local and exact. Unsupported forced choices
-fail with their support reason; implementations never silently fall back.
-`use_implementations` applies its overrides for one block; `set_implementations`
-applies the same validated overrides for the rest of the calling context, for a
-process that chooses once, and so do `set_deterministic_kernels` and
-`set_weight_gradient_dtype` for the requests below. The environment can make
-the `set_implementations` choice for a whole process tree:
-`MLOPS_IMPLEMENTATIONS=moe=builtin.moe.grouped_gemm_composed,rms_norm=...`
-(comma-separated `operation=implementation_id` pairs) is applied when `mlops`
-is imported, by `apply_environment_overrides`.
-
-Without an override, resolution filters unsupported candidates and selects the
-highest-priority remaining implementation. Variable-length FlashAttention requires
-CUDA compute capability 8.0 or newer. On an RTX 2080 Ti (7.5), ordinary
-`mlops.flash_attention` resolves to the PyTorch SDPA provider,
-`native_torch.flash_attention`, which supports autograd and graph capture.
-An exact override selecting `builtin.flash_attention.aten` remains an error on
-that GPU; remove the override to allow automatic selection. The SDPA provider
-serves the model-facing API, not the separate explicit forward/VJP API.
-
-`torch.compile` and export can resolve implementations during graph capture.
-Support checks inspect tensor metadata (device, dtype, shape, and strides),
-without executing the model or reading tensor contents. The captured graph
-contains the selected implementation; replay does not resolve providers again.
-Only catalog registration and device-only extension activation run outside
-tracing. Importing mlops still does not initialize CUDA.
-
-To explicitly fix implementation identities, optionally run an eager call under
-`capture_dispatch()`, obtain its `dispatch_manifest(trace)`, and use that manifest
-with `use_implementations(...)`. Explicit choices are checked for support during
-capture too. A full eager-model warmup is not required for automatic selection.
+Capture resolves from metadata without reading tensor contents. The captured
+graph keeps its selected implementation; replay does not dispatch again. A full
+eager-model warmup is unnecessary. To freeze choices explicitly, record calls
+under `capture_dispatch()` and pass `dispatch_manifest(trace)` to
+`use_implementations(...)`. A manifest rejects an operation that resolved to
+multiple implementations.
 
 ### Determinism
 
-`deterministic_kernels` requests ordered variants of operations that support it.
+`deterministic_kernels(enabled=True)` requests ordered variants for one context;
+`set_deterministic_kernels(enabled=True)` sets the calling context's default.
 The default is off; ordered variants can cost throughput. An operation that is
 already ordered ignores the request; one that cannot honor it raises.
 `deterministic_required` reports the setting used to resolve a
@@ -86,22 +49,20 @@ of bitwise equality across hardware, dtypes, chunk geometries or an entire model
 
 ### Weight-gradient precision
 
-`weight_gradients_at` asks operations for the gradients of their weights at a
-dtype -- fp32, say, for a caller that keeps gradients at fp32 over bf16
-weights. An operation that sums a weight's gradient over rows (a norm's weight
-and bias, an embedding table, an expert's or a router's weights) keeps that
-sum at fp32 and rounds it to the weight's dtype as it returns it; asked for
-another dtype it returns the sum at that one, and the chunked head sums its
-chunks at it. The dtype is read when the operation is called and passed to its
-forward and backward operators, so a captured graph keeps the dtype it was
-captured under. `None`, the default, is each weight's own dtype and leaves
-every operation as it was. Weight gradients another library computes and
-rounds -- FLA's causal convolution and gated RMSNorm -- come back as that
-library returns them. Autograd gives
-a parameter its gradient at the parameter's dtype, so eager training rounds
-the result again there. A caller that manages returned gradient tensors directly
-can retain the operation's output dtype. `weight_gradient_dtype`
-reports the setting.
+`weight_gradients_at(dtype)` requests a weight-gradient dtype within a context;
+`set_weight_gradient_dtype(dtype)` sets the calling context's default, and
+`weight_gradient_dtype()` reads it. The default `None` preserves each
+implementation's usual behavior.
+
+Supported reductions can return their FP32 sums directly instead of rounding
+to a narrow weight dtype. The chunked head also accumulates chunks at the
+requested dtype. Capture records the setting in forward/backward arguments;
+changing the ambient setting later does not alter that graph.
+
+This cannot recover precision already discarded by a library: FLA causal
+convolution and gated RMSNorm return their library's rounded gradients. Eager
+autograd also stores a parameter's `.grad` at the parameter dtype. Callers that
+manage returned gradient tensors directly can retain their wider dtype.
 
 
 ## Implementation-control API
@@ -294,35 +255,26 @@ order.
 
 ## Cost hints
 
-`estimate_implementation(...)` returns a `CostHints` record: the operation's
-canonical logical estimate merged with the exact implementation's optional
-physical one. Every field is `int | None`: `None` means unknown and `0` means
-known-zero. Hints are advisory; measured runtime and allocator profiling remain
-authoritative.
+`estimate_implementation(...)` combines canonical logical work with the selected
+implementation's optional physical estimates. These are advisory; measured
+runtime and allocator evidence remain authoritative.
 
-Canonical estimates are grouped under `src/mlops/dispatch/`:
-`logical_costs.py` holds common formulas and `attention_costs.py` holds KDA,
-tied-latent attention and pooled-indexing formulas. There is one estimator per operation, taking the
-operation's forward arguments plus `entrypoint` and reporting logical FLOPs and
-minimum tensor traffic for the forward and the backward. Logical means the
-mathematical work -- two per multiply-add of a matrix product, a small constant
-per element of an elementwise or normalizing pass, zero for a gather -- and
-work whose extent a shape cannot show is bounded from the shapes: packed
-attention charges every token at `max_seqlen`, a mixture of experts charges
-every assignment as one row of dense expert work. Exact implementations overlay
-physical FLOPs, physical bytes, and invocation-local workspace through their
-own `estimate`.
+| Quantity | Meaning |
+|---|---|
+| Logical FLOPs | Mathematical work, shared across providers; matrix multiply-add counts as two |
+| Logical bytes | Minimum tensor traffic implied by the operation |
+| Implementation FLOPs/bytes | Additional physical estimate supplied by the provider |
+| Workspace | Scratch that dies within this forward/backward invocation |
 
-The same arithmetic reaches PyTorch's flop counter. Every custom operator in
-the `mlops` namespace, forward and backward, carries a flop formula, registered
-with `flop_formula(...)` beside the operator and delegating to the operation's
-canonical estimator, so `torch.utils.flop_counter.FlopCounterMode` counts an
-mlops operator as it counts `aten.mm`, on fake tensors as readily as real ones.
-A consumer that prices a graph by arithmetic intensity -- a partitioner
-deciding what is cheap enough to recompute -- therefore sees each operator as
-it is rather than as unknown. `has_flop_formula(operator)` reports the
-registration, and the test suite requires one of every operator in the `mlops`
-namespace.
+Unknown fields are `None`; zero means known-zero. Shape-only estimates bound
+value-dependent work: packed attention charges each token at `max_seqlen`, and
+MoE charges each assignment as dense expert work. They do not predict the actual
+routing distribution or elapsed time.
+
+Canonical estimators live in `dispatch/logical_costs.py` and focused modules
+such as `attention_costs.py`. Custom-op `flop_formula` registrations delegate to
+these estimators so PyTorch's `FlopCounterMode` uses the same arithmetic on real
+or fake tensors. Estimation never runs kernels or retains tensors.
 
 ## Gradcheck
 

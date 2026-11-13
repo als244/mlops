@@ -20,8 +20,7 @@ shapes, dtypes, effects, implementations and examples. Separate references cover
 - [Hyper-connections](#hyper-connections)
 - [Language-model epilogues](#language-model-epilogues)
 - [Implementation-control API](DISPATCH.md#implementation-control-api)
-- [Private dispatcher boundary](PROVIDERS.md#private-dispatcher-boundary)
-- [Operation-package example](PROVIDERS.md#operation-package-example)
+- [Provider requirements](PROVIDERS.md)
 - [Explicit operations](EXPLICIT_OPS.md#explicit-operation-reference)
 
 ## API scope
@@ -1639,8 +1638,35 @@ diagnostics.
 | `shared_w2` | `Optional[Tensor[D,Fs]]` | optional shared down projection |
 | `shared_gate_weight` | tensor compatible with `[1,D]` | required by sigmoid-gated shared mode |
 | `shared_mode` | `Literal["add", "sigmoid"]` | shared-expert combination |
-| `compute_precision` | `Optional[str]` | the precision of the experts' GEMMs, apart from how the weights are stored. `None`: the weights' own -- `"fp8_current"` when `w13_experts`/`w2_experts` are `QuackFP8Weight` containers (`expert_parallel/quack/parameters/fp8.py`: each weight's E4M3 rows and transpose with a descale per row, built once by `QuackFP8Weight.quantize(weight, interleaved=True)` for `w13` and `.quantize(weight)` for `w2`, or published from a master with `copy_`), `"fp8_block"` when they are `BlockFP8Weight` containers (`mlops/block_fp8.py`: E4M3 stored once with an FP32 scale per 128x128 block, rows in `nn.Linear` order, built by `BlockFP8Weight.quantize(weight)` or taken from an FP8 checkpoint's blocks), bf16 otherwise. `"fp8_current"`: E4M3 GEMMs with current per-row scaling of the routed rows and cotangents, served by the SonicMoE implementations on SM90; bf16 weights are quantized per call. `"fp8_block"`: the same rows against the weights' block scales, one stored copy serving both the projections and the input gradients (SonicMoE, SM90); bf16 weights are quantized per call. `"bf16"`: bf16 GEMMs, FP8 containers dequantized per call (every implementation). Weight gradients come at the weights' logical dtype in `nn.Linear` row order; implementations that cannot honor a request decline, and dispatch fails when none can |
+| `compute_precision` | `Optional[str]` | expert GEMM precision: `None`, `"bf16"`, `"fp8_current"` or `"fp8_block"`; see precision modes below |
 | `swiglu_limit` | `Optional[float]`, positive | clamps every expert's SwiGLU, routed and shared, as GLM's experts do: `silu(min(gate, limit)) * clamp(up, -limit, limit)`, with no gradient through a clipped value (`packed_swiglu(limit=)`'s semantics, a value exactly at the limit passing its gradient); `None` leaves SwiGLU unclamped. Every implementation serves it |
+
+**Expert precision modes**
+
+Weight storage and GEMM precision are separate choices:
+
+| `compute_precision` | Expert computation and weight handling |
+|---|---|
+| `None` | Use the weight container's default: current-scaled FP8 for `QuackFP8Weight`, block-scaled FP8 for `BlockFP8Weight`, BF16 otherwise |
+| `"bf16"` | BF16 GEMMs; FP8 containers are dequantized per call |
+| `"fp8_current"` | SM90 SonicMoE E4M3 GEMMs with per-row scales for weights, routed activations and cotangents; plain BF16 weights are quantized per call |
+| `"fp8_block"` | SM90 SonicMoE E4M3 GEMMs with 128×128 weight-block scales and per-row activation/cotangent scales; plain BF16 weights are quantized per call |
+
+`QuackFP8Weight` stores weight rows and their transpose, each with a descale
+per row. Build W13 with `QuackFP8Weight.quantize(weight, interleaved=True)` and
+W2 with `QuackFP8Weight.quantize(weight)`. The internal W13 gate/up rows are
+interleaved; its logical view and gradients remain in `nn.Linear` order.
+
+`BlockFP8Weight` stores one E4M3 matrix in `nn.Linear` order and one FP32 scale
+per 128×128 block. Construct it with `BlockFP8Weight.quantize(weight)` or use
+checkpoint blocks directly. One stored matrix serves both projections and input
+gradients; no transposed weight copy is retained. `copy_` publishes updated
+weights from a master into either container type.
+
+Weight gradients use the logical dtype and `nn.Linear` row order, subject to
+[weight-gradient precision requests](DISPATCH.md#weight-gradient-precision).
+Unsupported precision, container or geometry combinations are declined by the
+implementation; dispatch fails if none can honor the request.
 
 **Returns**
 
@@ -1686,7 +1712,9 @@ implementations raise their backend error.
 when the `sonicmoe` extra is installed -- and its single-region form
 `sonicmoe.moe`; `builtin.moe.grouped_gemm_composed` (the default elsewhere)
 and the single-region opaque control `builtin.moe.grouped_gemm`; or
-`native_torch.moe`. The SonicMoE forms are semantic-only and bfloat16-only.
+`native_torch.moe`. The SonicMoE forms are semantic-only and require BF16
+activations. BF16 expert computation supports capability 9.x/10.x; FP8 expert
+computation supports SM90 with the container and geometry restrictions above.
 The composed builtin keeps the same semantic call but exposes routing/dispatch/
 `w13` separately from SwiGLU/`w2`/combine so AOT can rematerialize `h13`
 without replaying the expert down projection. Routed expert activation remains

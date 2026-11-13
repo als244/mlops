@@ -1,554 +1,171 @@
 # Provider implementation requirements
 
-Directories under `src/mlops/providers/` adapt one package or source into the operation library's
-exact implementation registry. A provider may implement one operation, several
-operations, or several variants of one operation. Models never import provider
-modules directly.
+A provider adapts a kernel package or source into MLOps' implementation registry.
+It preserves the public operation while owning its private kernels and saved
+state. Models call the semantic API and never import provider modules.
 
-For a step-by-step implementation walkthrough, start with [EXTENDING.md](EXTENDING.md).
-This reference defines registration, effects, layout and ownership requirements.
-
-## Contents
-
-1. [Choose the boundary](#choose-the-boundary)
-2. [Registration contract](#registration-contract)
-3. [Tensor ownership](#tensor-ownership)
-4. [Asynchronous entrypoints and metadata](#asynchronous-entrypoints-and-metadata)
-5. [Opaque custom operations](#opaque-custom-operations)
-6. [Non-differentiable state-update operations](#non-differentiable-state-update-operations)
-7. [Explicit forward and backward](#explicit-forward-and-backward)
-8. [Support and cost hints](#support-and-cost-hints)
-9. [Atomic example: FLA L2 norm](#atomic-example-fla-l2-norm)
-10. [Composite example: the composed builtin MoE](#composite-example-the-composed-builtin-moe)
-11. [SonicMoE](#sonicmoe)
-12. [Multi-operation example: QuACK](#multi-operation-example-quack)
-13. [Acceptance checklist](#acceptance-checklist)
-14. [Expert-parallel modules](#expert-parallel-modules)
-15. [Hyper-connection implementations](#hyper-connection-implementations)
-16. [Packed linear-attention preparation](#packed-linear-attention-preparation)
+Use [Extending MLOps](EXTENDING.md) for the implementation workflow and source
+examples. This reference defines the requirements those implementations satisfy.
 
 ## Choose the boundary
 
-Start from the public mathematical operation in [OPS.md](OPS.md), not
-from a third-party module class. An implementation adapter must preserve that
-operation's model-facing signature and outputs.
+Start from the mathematical operation in [OPS.md](OPS.md):
 
-- Use an ordinary native-Torch graph when all math is captureable and no raw
-  explicit VJP is available.
-- Use a registered opaque custom-op pair when a Triton/CUDA/library call must
-  remain one dispatcher target or exposes a low-level forward/backward pair.
-- For a multi-kernel implementation, use a graph-visible composition of
-  registered regions when backward can regenerate its residuals from only a
-  prefix. `setup_context` declares required values, not a partial regeneration
-  algorithm; one overly broad opaque producer can only be replayed in full.
-- Keep raw kernels in `src/mlops/kernels/` or inside the optional dependency.
-  Kernel files never resolve implementations or silently fall back.
+- Use a native PyTorch graph when its computation can remain visible to capture.
+- Use an opaque custom-op pair for a library or fused kernel with a raw VJP.
+- Expose several registered regions when backward only needs to regenerate a
+  prefix of a multi-kernel computation. `setup_context` identifies saved values;
+  it cannot make a compiler replay only part of an opaque producer.
+
+Raw kernels live in `src/mlops/kernels/` or the optional dependency. They do not
+resolve implementations or silently fall back. One provider can implement
+several operations, and each operation can have several exact variants.
 
 ## Registration contract
 
-Register one immutable record:
+An immutable `Implementation` record identifies the operation, exact
+`implementation_id`, source `provider`, priority, default determinism, support
+predicate and entrypoints. Its module belongs in the explicit catalog in
+`src/mlops/providers/__init__.py`; importing the catalog must tolerate missing
+optional packages and must not initialize CUDA.
 
-```python
-Implementation(
-    operation="rms_norm",
-    implementation_id="example.rms_norm.variant",
-    provider="example",
-    priority=25,
-    deterministic=True,
-    supports=supports,
-    apply=apply,
-    forward=forward,
-    backward=backward,
-    estimate=estimate,
-)
-```
+`apply` serves model calls. Optional `forward` and `backward` serve the explicit
+API and must be present together. Both surfaces use the same raw math. The
+[dispatch reference](DISPATCH.md#implementation) gives the record's fields.
 
-`implementation_id` is the exact selectable and serialized identity.
-`provider` is descriptive source metadata only. `forward` and `backward` must
-both be present or both absent. Add the provider module to the explicit catalog
-in `src/mlops/providers/__init__.py`; optional-package imports must remain lazy.
+For operations with a `deterministic` request, every implementation must accept
+it, honor it or raise. The record's `deterministic` flag describes its default
+behavior. An already ordered implementation may ignore the request.
 
-`apply` serves ordinary PyTorch model code. `forward`/`backward` serve the
-autograd-independent explicit API. Both surfaces call the same raw math.
-
-`deterministic` describes what the implementation does when nothing is asked
-of it. Some operations also take a determinism *request*: they pass
-`deterministic=` to `apply`, and every implementation of such an operation
-must accept the keyword. An implementation that is ordered already records
-`deterministic=True` and ignores the request; one that can be ordered on
-demand records what its default does and honours the request; one that cannot
-honour it raises rather than returning an unordered result. See
-[`flash_attention`](OPS.md#flash_attention) for the worked case and
-[`deterministic_kernels`](DISPATCH.md#selection-and-precision) for
-the ambient form.
-
-An implementation whose backward returns a weight's gradient reads
-[`weight_gradient_dtype()`](DISPATCH.md#selection-and-precision) in
-`apply`, passes it to its forward and backward operators -- so a captured
-forward records the dtype its backward uses, and fake implementations report
-it -- and returns the gradient at it, unrounded where its kernel sums at a
-wider precision. `None` must leave the implementation exactly as it was. One
-whose weight gradient another library computes and rounds returns it as that
-library does. See [`rms_norm`](OPS.md#rms_norm) for the worked case.
+Read `weight_gradient_dtype()` at the semantic call and pass the resolved dtype
+through captured forward/backward arguments and fakes. Return weight gradients
+at that dtype where the implementation controls their reduction. `None` leaves
+normal behavior unchanged. A library that already rounded a gradient cannot
+recover wider precision by casting it afterward. See
+[precision controls](DISPATCH.md#weight-gradient-precision).
 
 ## Tensor ownership
 
-The registry and provider adapter are stateless: neither may retain an input,
-output, gradient, residual, table, or temporary tensor.
+Registries, provider objects and dispatch traces must not retain invocation
+tensors. Every dependency has an explicit owner:
 
-| Tensor category | Owner | Lifetime |
-|---|---|---|
-| operation input | caller or module | determined by caller/graph |
-| autograd residual | one PyTorch autograd/AOT graph | forward through matching backward |
-| public output | caller | after return |
-| reusable preparation data | caller, non-persistent module buffer, or compiled artifact | explicit reusable lifetime |
-| workspace | the implementation invocation | allocated and dead within one forward or backward call |
+| Tensor | Owner and lifetime |
+|---|---|
+| Input or public output | Caller/module; determined by its graph |
+| Saved residual | One autograd/AOT graph, from forward through matching backward |
+| Reusable tables or preparation data | Caller, non-persistent module buffer or compiled artifact |
+| Workspace | One invocation; dead before its forward or backward returns |
 
-Normal `ctx.save_for_backward` is expected. It retains graph-owned references;
-it does not create provider state. Reusable data such as RoPE cosine/sine tables
-must be ordinary explicit inputs. It is not workspace, even when the VJP saves
-a reference to it.
-
-Do not add a universal `extra` argument or residual object. If an opaque
-implementation needs different private backward state, expose that state only
-in its private custom-op schema and save it in `setup_context`.
+`ctx.save_for_backward` retains graph-owned references and is expected. Tables,
+prepacked weights, inputs, outputs and saved residuals are not workspace.
+Provider-private residuals belong in private custom-op outputs and
+`setup_context`, not a universal public `extra` argument or residual object.
 
 ## Asynchronous entrypoints and metadata
 
-Forward and backward entrypoints must enqueue work without device-wide
-synchronization or host readback. Never call `item()`, `tolist()`, Python
-reductions, or count-driven tensor factories on device values to construct
-launch metadata. Such a read makes completion invisible to an asynchronous
-caller and can cause a profiler to attribute unrelated stream work to the op.
+Forward and backward enqueue work without device-wide synchronization or host
+readback. Do not derive launch metadata with device `item()`, `tolist()`, Python
+reductions or data-dependent tensor factories.
 
-When offsets, chunk maps, routing indices, tables, or similar values are known
-from host round/configuration data, prepare them once and pass caller-owned
-tensors explicitly. For example, `prepare_packed_sequence_metadata` returns
-the cumulative lengths and FLA chunk indices shared by every Gated-DeltaNet
-layer in a packed round. Both packed causal convolution and linear attention
-consume those tensors; their implementations do not build or cache them.
-The helper is itself a small graph-visible, non-differentiable custom target so
-FakeTensor/AOT cannot mistake call-derived metadata for a serialized constant.
+Prepare reusable offsets, tables and chunk maps from caller-owned host
+configuration and pass them explicitly. For example,
+[`prepare_packed_sequence_metadata`](OPS.md#prepare_packed_sequence_metadata)
+provides cumulative lengths and FLA chunk indices. Its graph-visible target
+keeps call-derived metadata from becoming a serialized constant.
 
-An operation must also allocate the same way on every call: a planner
-profiles a task once and replays it, and reclaims what a closed plan's tasks
-allocated. FLA memoizes its own sequence-index helpers (`fla.utils.tensor_cache`,
-such as the chunk offsets its delta-rule kernels derive from the cumulative
-lengths) by argument identity and keeps the tensors it computed, so a result
-cached under one plan and found under the next changes what a task allocates.
-The FLA provider package turns that cache off when its adapters load
-(`FLA_DISABLE_TENSOR_CACHE`, for FLA imported before or after them); FLA then
-recomputes a few small index tensors per call.
+Allocation behavior must also be repeatable. An invocation-tensor cache can
+change both ownership and measured workspace on a later call. The FLA adapters
+disable FLA's identity-based tensor cache (`FLA_DISABLE_TENSOR_CACHE`), including
+when FLA was imported earlier, and regenerate small index tensors per call.
+Compiled code and immutable scalar metadata are separate from tensor caches.
 
-Use `torch.cuda.set_sync_debug_mode("error")` as a development check, restoring
-the prior mode afterward. PyTorch documents this detector as experimental and
-incomplete, so also inspect warmed host-enqueue latency and a CUDA profiler
-timeline. The enqueue call should return before device completion.
+During development, enable `torch.cuda.set_sync_debug_mode("error")` and restore
+the prior mode afterward. Also inspect warmed host enqueue time and a CUDA
+trace: the detector is incomplete, and enqueue must return before completion.
 
 ## Opaque custom operations
 
-Keep the complete adapter together in the owning provider module:
+Keep these pieces in the owning provider module:
 
-1. raw stateless `forward` and `backward` functions;
-2. functional `torch.library.custom_op(..., mutates_args=())` targets;
-3. fake implementations with exact dtype/device/shape/stride semantics;
-4. `setup_context` with ordinary `ctx.save_for_backward` references;
-5. `register_autograd` for the forward target; and
-6. `apply`, which calls the forward target and returns only semantic outputs.
+1. Stateless raw forward and backward functions.
+2. Custom-op targets with truthful mutation schemas.
+3. Fake implementations matching real shapes, dtypes, devices, strides, storage
+   offsets and aliases for supported caller layouts.
+4. `setup_context` saving required inputs/outputs, and registered autograd.
+5. A semantic `apply` that hides private residual outputs.
+6. Forward and backward FLOP formulas delegating to the canonical estimator.
 
-The registry chooses an implementation; it does not replace PyTorch's
-dispatcher or autograd. The custom op gives Export/AOT a stable opaque target,
-the fake function makes metadata propagation possible, and `register_autograd`
-defines the local VJP that AOT composes into a stage backward.
+Name private targets `<operation>_<provider>_<variant>_{fwd,bwd}` so exported
+graphs preserve exact implementation identity. Their residual schemas are
+implementation details, documented beside their source rather than made into
+another public API.
 
-Name targets `<operation>_<provider>_<variant>_{fwd,bwd}`. Treat saved tensors
-and incoming cotangents as immutable. If performance requires mutation, expose
-it as a separate truthful mutable execution contract; never hide it inside the
-functional training op.
+Functional training targets use `mutates_args=()` and preserve inputs, saved
+state and cotangents across repeated backward. A destination-writing or storage-
+donating optimization needs a separate mutable overload listing every write;
+the caller must prove ownership. For example,
+`moe_builtin_grouped_gemm_finish_bwd_donate_h13` is compiler-only: it may overwrite
+`h13` only after its final reader. Ordinary MLOps calls do not select it.
 
-## Non-differentiable state-update operations
-
-Optimizer updates such as `adamw` are valid operation boundaries even though
-they have no VJP. Keep their raw kernel in `kernels/`, registered functional,
-`out=`, and mutation targets in the owning provider module, and the standard
-`torch.optim.Optimizer` façade under `optim/`.
-
-The functional target remains the compiler/reference semantic form and uses
-`mutates_args=()`. Distinct-destination and in-place targets must list every
-written argument in `mutates_args`; they do not register autograd. Register the
-functional form as an apply-only `Implementation`, with `forward=None` and
-`backward=None`. The public optimizer advertises the exact implementation ID
-and calls the mutation form under `torch.no_grad()`.
-
-The builtin mixed-dtype AdamW layout is the concrete example:
-
-```text
-optim/adamw_optimizer.py       -> standard mlops.optim.AdamW
-providers/builtin/adamw.py     -> registry + custom-op/fake boundaries
-kernels/adamw.py               -> allocation-free Triton mechanics
-```
-
-The provider layer owns stateless local tensor transitions. A training engine
-can place the same transition inside a larger task containing its own gradient
-communication and shard ownership. Process groups and communication streams do
-not appear in the optimizer or its custom-op interface.
+The registry selects the implementation; PyTorch's dispatcher, fake propagation
+and registered VJP still perform their usual roles. Every opaque forward must
+pass `torch.library.opcheck` and fake/runtime layout comparisons.
 
 ## Explicit forward and backward
 
-The public explicit façade has flat mathematical signatures:
+The explicit façade resolves `surface="explicit"` and invokes raw functions
+under `torch.no_grad()`. It neither invokes autograd nor writes `.grad`.
 
 ```python
-output, residual = explicit.rms_norm.forward(x, weight, eps)
-grad_x, grad_weight = explicit.rms_norm.backward(
-    grad_output, x, weight, residual
-)
+from mlops import explicit
+from mlops.dispatch import use_implementation
+
+with use_implementation("rms_norm", "builtin.rms_norm.triton"):
+    output, residual = explicit.rms_norm.forward(x, weight, eps)
+    grad_x, grad_weight = explicit.rms_norm.backward(
+        grad_output, x, weight, residual
+    )
 ```
 
-It resolves `surface="explicit"` and calls the registered raw functions under
-`torch.no_grad()`. It never invokes autograd or writes `.grad`. Use an exact
-override or frozen implementation manifest around both calls so a pair cannot
-resolve to different variants.
+Keep an exact override or frozen implementation manifest around both calls so
+the pair cannot resolve to different variants. Apply-only providers must reject
+explicit selection with a reason. See [explicit signatures](EXPLICIT_OPS.md).
 
-Apply-only implementations must reject explicit resolution clearly.
+## Non-differentiable state updates
+
+Optimizer operations have no VJP. Register their functional form as apply-only,
+with `forward=None` and `backward=None`. Functional, `out=` and in-place targets
+share raw math; mutable schemas list every written argument and do not register
+autograd. The standard optimizer façade calls the mutation form under
+`torch.no_grad()`.
+
+The [AdamW implementation](../src/mlops/providers/builtin/adamw.py) illustrates
+this split: `optim/` owns the PyTorch optimizer façade, the provider owns local
+tensor transitions and `kernels/` owns raw mechanics. Communication, process
+groups, streams and global shard ownership belong to callers.
 
 ## Support and cost hints
 
-`supports(...)` performs metadata-only validation and returns either
-`SupportResult.yes()` or `SupportResult.no(reason)`. Check dependency version,
-device architecture, dtype, layout, widths, top-k, and any backend constraint.
-Never execute a kernel or silently select another implementation.
+`supports(...)` inspects metadata and returns `SupportResult.yes()` or
+`SupportResult.no(reason)`. Check package/version, device capability, dtype,
+layout, dimensions and operation-specific restrictions. Never execute a kernel
+or substitute another implementation inside the predicate.
 
-`estimate(...)` is optional. It may report:
+Canonical estimators under `dispatch/` define provider-independent logical work
+and minimum traffic. Every custom-op FLOP formula delegates to one. Optional
+`Implementation.estimate` adds physical work, traffic and invocation-local
+workspace; it must not count inputs, outputs, residuals, reusable data, allocator
+cache or runtime leeway as workspace. Unknown is `None`; known-zero is `0`.
+Measurements remain authoritative. See [cost hints](DISPATCH.md#cost-hints).
 
-- implementation-specific physical FLOPs and accessed bytes; and
-- invocation-local workspace bytes.
+## Implementation-specific references
 
-Operation-level logical FLOPs and minimum bytes are not the adapter's to
-report: they come from the operation's canonical estimator under
-`src/mlops/dispatch/`. Common formulas live in `logical_costs.py`; additional
-operation families can use focused modules such as `attention_costs.py`.
-The adapter gives every custom operator it registers, forward and backward,
-a flop formula that
-delegates to that estimator, with `flop_formula` from `mlops.dispatch.costs`,
-so PyTorch's flop counter prices the operator as it prices an ATen matrix
-product.
-
-Use `None` for unknown and `0` only for known-zero. Workspace excludes model
-state, inputs, outputs, autograd residuals, reusable tables/prepacked weights,
-allocator cache, and runtime leeway. Profiling remains authoritative.
-
-## Atomic example: FLA L2 norm
-
-The `l2_norm` adapter in [`fla/hybrid.py`](../src/mlops/providers/fla/hybrid.py)
-wraps flash-linear-attention's low-level L2-norm forward and backward
-functions under `torch.no_grad()`. It does not use FLA's own
-`autograd.Function` as the compiler boundary.
-
-The adapter:
-
-- gates on CUDA tensors through the provider's shared `_cuda_support` check;
-- owns a functional forward custom-op target that returns the normalized
-  output and the `rstd` residual, with a fake that reproduces both;
-- owns a functional backward custom-op target and registers autograd that
-  saves exactly the residuals the backward reads and marks `rstd`
-  non-differentiable; and
-- gives both custom operators flop formulas that delegate to the L2-norm
-  canonical estimate.
-
-This is the template for a small third-party kernel integration.
-
-## Composite example: the composed builtin MoE
-
-[`builtin/moe_composed.py`](../src/mlops/providers/builtin/moe_composed.py)
-splits the routed MoE into two opaque regions -- routing and the `w13`
-projection, then activation, the `w2` projection and the combine -- behind
-the one public `moe` contract, so AOTAutograd can rematerialize the first
-without replaying the second.
-
-The public MoE ABI keeps routing policy, auxiliary loss, residual/shared-expert
-composition, and logical parameters stable. The regions' assignment ordering,
-offsets and the `h13` pre-activation are private custom-op residuals.
-Model-owned `w13`/`w2` tensors are passed directly.
-
-This is the template for a composite provider whose private VJP state differs
-from another implementation without changing model code.
-
-## SonicMoE
-
-[`sonicmoe/moe.py`](../src/mlops/providers/sonicmoe/moe.py) and
-[`sonicmoe/moe_composed.py`](../src/mlops/providers/sonicmoe/moe_composed.py)
-implement `moe` on [SonicMoE](https://github.com/Dao-AILab/sonic-moe)'s fused
-kernels (commit `7396f3e`, on Quack `35266c3`): the routing metadata, the
-gathered up projection with SwiGLU, the down projection with the
-score-weighted combine, and the fused backward kernels. Routing, the
-auxiliary loss and the probability sums are the package's own
-(`kernels/moe_router.py`, `providers/moe_common.py`), so every routing mode
-behaves exactly as with the builtin.
-
-The implementation is a composition, for both BF16 and FP8:
-
-| Responsibility | Implementation |
+| Topic | Reference |
 |---|---|
-| Router logits, expert selection and group policy | MLOps routing operators |
-| Assignment metadata, weighted token combine and token-broadcast VJP | SonicMoE functional kernels |
-| Grouped projections, LoRA GEMMs and activation epilogues | Quack plus `mlops.kernels.quack_moe` |
-| Cross-rank dispatch/combine (EP only) | `mlops.expert_parallel` transport adapters |
-
-BF16 projections call Quack's `gemm_act`/`gemm`/`gemm_add` and fused backward
-pieces; they still use SonicMoE metadata and combination kernels. No monolithic
-upstream SonicMoE layer is called. Shared local expert kernels have a neutral
-module name, so profiler names do not imply EP communication during DP runs.
-The `expert_parallel.quack.experts`/`kernels` module paths are import
-aliases for saved artifacts; new code imports `mlops.kernels.quack_moe`.
-
-A `swiglu_limit` (GLM's clamped SwiGLU, `moe`'s option) runs in the same
-kernels: the gated forward and backward GEMMs use the package's own Quack
-epilogues (`kernels/quack_moe/swiglu_limit.py`, bf16 and FP8,
-with and without a LoRA term entering before the activation), which take the
-limit as a run-time scalar operand, and the row kernels
-(`kernels/quack_moe/swiglu_rows.py`) take it as a run-time
-argument, so one compiled kernel serves every limit.
-
-The adapters accept CUDA tensors on compute capability 9.x and 10.x, bfloat16
-activations and expert weights, contiguous weights, and widths that are
-multiples of 8; there `sonicmoe.moe.composed` (priority 110) is the semantic
-default and `sonicmoe.moe` (95) the single-operator form. Both are
-semantic-only: the explicit façade's residual tuple is the builtin's.
-SonicMoE's expert-frequency offsets, gather/scatter/reverse indices and the
-saved pre-activation are private custom-op residuals. The logical package
-weights `w13 [E,2I,H]` (gate rows, then up rows) and `w2 [E,H,I]` are
-SonicMoE's native `[E, out, in]` storage with its concatenated gate/up
-layout, so the adapters take views and copy nothing. Quack is set up through
-`mlops.quack_runtime` (patches, tuning cache, SonicMoE imports that keep
-Quack's tuning policy).
-
-Quack tunes each GEMM once per key (function, shapes, stride pattern,
-dtypes) and, with `QUACK_CACHE_AUTOTUNING=1` (the runtime's default),
-persists the choice under `QUACK_CACHE_DIR`; later processes read it. A
-process whose allocator replaces PyTorch's own times the candidates eagerly
-rather than under CUDA-graph capture and keeps its choice in memory: the
-cache holds only graph-timed sweeps
-([timing and caching](sonicmoe-autotuning.md#timing-and-caching)). Two
-things follow for anyone comparing runs across processes. Processes that
-tune independently can choose different tile configs, which accumulate in a
-different grouping and differ at an occasional bf16 rounding boundary. And
-a process that ran the tuning sweep itself -- candidates compiled in Quack's
-worker pool and benchmarked under CUDA-graph capture -- computes a slightly
-different, deterministic result for the rest of its life than a process that
-reads the cache, even for the same config. Both are valid roundings of the
-same math; for bitwise agreement between processes, tune first in a
-separate process on PyTorch's own allocator and point every process at one
-cache directory. The file-by-file structure is in
-[Worked example: the SonicMoE implementations of `moe`](EXTENDING.md#worked-example-the-sonicmoe-implementations-of-moe).
-
-FP8 expert weights are `QuackFP8Weight` containers, the expert-parallel
-path's parameter type (`expert_parallel/quack/parameters/fp8.py`): each
-weight's E4M3 rows and E4M3 transpose with one descale per row of each,
-quantized once -- `QuackFP8Weight.quantize(w13, interleaved=True)` and
-`QuackFP8Weight.quantize(w2)` from a checkpoint's weights, or `copy_` from a
-bf16/fp32 master after an optimizer step (both orientations by the Triton
-quantizers in `kernels/quack_moe/`). `w13`'s rows are stored
-interleaved, gate and up rows adjacent, the order Quack's paired SwiGLU
-epilogue reads; the logical view, `dequantize()` and the gradients stay in
-`nn.Linear` order. With such weights `moe` runs the experts' GEMMs in E4M3 on
-SM90 (`providers/sonicmoe/fp8.py`): the routed rows, the cotangents and the
-rematerialized activation are quantized per row per call by the same
-kernels, gathered or activated in the one pass; the up projection (with the
-SwiGLU epilogue), the down projection and the two activation-gradient GEMMs
-are the expert-parallel path's scale-aware epilogue kernels on the same
-routing metadata as the bf16 forms, so the saved pre-activation `h` and the
-residuals are unchanged. Weight gradients stay the bf16 varlen-K GEMMs, at
-the containers' logical dtype. The operators take containers as the
-expert-parallel operators do (a dispatch rule turns each into its
-components). `compute_precision` names the GEMMs' precision apart from the
-weights: `"fp8_current"` on bf16 weights quantizes them per call (straight
-through for their gradients), `"bf16"` on containers dequantizes them per
-call -- in every implementation, which is how the builtin and native
-implementations take FP8 weights. SM100 is declined for FP8 math: the
-kernels are validated on SM90 only.
-
-Block-scaled FP8 weights are `BlockFP8Weight` containers (`mlops/block_fp8.py`):
-E4M3 stored once, in `nn.Linear` row order, with an FP32 scale per 128x128
-block -- the layout of DeepSeek-style FP8 checkpoints. A block covers both
-axes, so one copy serves the projections, which reduce over a weight's input
-axis, and the input gradients, which reduce over its output axis; no
-transposed copy is kept. They compute at `"fp8_block"` (their default) on
-SM90 through Quack `GemmSm90` subclasses with their own producers and
-mainloop (`kernels/quack_moe/block_fp8_gemm.py`): 128x128x128
-tiles over the same routing metadata, each K tile one scale block, its
-wgmmas accumulated from zero and folded into the FP32 sum at the block's
-scale. The rows are E4M3, quantized per row per call and gathered in the
-same pass as for `"fp8_current"`, their scales applied in the epilogue.
-Projections read the weight K-major, as stored; the up projection reads
-`w13`'s gate and up rows as interleaved column pairs and writes `h` with gate
-and up interleaved and the SwiGLU in its epilogue, as the two-copy form does.
-Input gradients read it MN-major, which Hopper's E4M3 tensor cores do not
-take, so a transposing warpgroup rewrites each tile in shared memory after
-TMA loads it (FlashAttention-3's ldmatrix/prmt/stmatrix sequence) and the
-cotangent rows are quantized in that transposition's K order -- the
-interleaved `dh` read gate columns first; the down projection's input
-gradient runs the SwiGLU backward in its epilogue. An up projection whose
-gate and up halves are not whole 64-row groups runs on a grouped Triton
-kernel (`kernels/block_fp8.py`) and the SwiGLU row kernel instead. Weight
-gradients are the bf16 varlen-K GEMMs, as for the two-copy containers.
-
-## Multi-operation example: QuACK
-
-[QuACK](https://github.com/Dao-AILab/quack) illustrates a provider that can
-contribute multiple exact implementations. Its adapters would register
-`quack.rms_norm` for RMSNorm and `quack.cross_entropy` for the existing
-standalone logits-to-loss operation; the catalog registers neither. These are
-independent implementation choices even though they share a package and
-availability helper.
-
-Such adapters would be deliberately limited to SM90 and SM100: their support
-functions accept exactly `(9, 0)` and `(10, 0)` and reject SM120, which has no
-separate validation. They would call QuACK's low-level forward/backward pairs,
-disable in-place backward, and own mlops custom-op/fake/registered-autograd
-boundaries. The complete two-operation workflow is documented in
-[Worked example: one QuACK provider for RMSNorm and cross entropy](EXTENDING.md#worked-example-one-quack-provider-for-rmsnorm-and-cross-entropy).
-
-## Acceptance checklist
-
-- [ ] Exact ID and conservative support reasons are registered.
-- [ ] Semantic and explicit surfaces share raw math.
-- [ ] No hidden fallback or retained tensor state exists.
-- [ ] Warmed forward/backward enqueue without hidden device synchronization;
-      caller-derived metadata is passed explicitly.
-- [ ] Every opaque forward passes `torch.library.opcheck`.
-- [ ] Fake outputs match real metadata.
-- [ ] Every registered custom operator, forward and backward, has a flop
-      formula.
-- [ ] Repeated non-unit backward preserves saved inputs and cotangents.
-- [ ] Float64-capable paths pass registry-aware `gradcheck`; low-precision-only
-      paths record an explicit skip and pass direct VJP parity.
-- [ ] Forward, gradients, parameters, and optimizer state pass tensor metrics.
-- [ ] Export/AOT retains the exact custom-op target.
-- [ ] Runtime, invocation-local workspace, and allocator peak are measured.
-- [ ] A many-step real-data canary records loss and throughput.
-
-## Expert-parallel modules
-
-`mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
-TEMoELoRA modules with caller-owned groups and communication buffers.
-See [expert-parallel configuration, installation and examples](EXPERT_PARALLEL.md).
-
-
-## Hyper-connection implementations
-
-`hyper_connection.py` defines the public `mhc_pre` and `mhc_combine` contracts.
-Adapters live in `providers/native_torch/hyper_connection.py`,
-`providers/builtin/hyper_connection.py`,
-`providers/tilekernels/hyper_connection.py`, and
-`providers/deepgemm/hyper_connection.py`; private Triton code lives in
-`kernels/hyper_connection.py` and `kernels/mhc_pre.py`. All adapters use the normal immutable registry,
-metadata support predicates and per-operation overrides. Optional imports occur
-only inside execution. Neither a model nor an engine built on mlops owns
-provider selection.
-
-Preprocessing includes Sinkhorn but excludes the attention/MLP branch.
-Postprocessing includes mixing, branch expansion and addition. The
-adapters expose the semantic/autograd surface; they do not advertise public
-`mlops.explicit` entrypoints. Their private backward custom ops expose fake
-outputs, canonical FLOP formulas, and first-order VJPs with tensor-only saved
-state. Native preprocessing stays decomposable for recomputation. TileKernels
-saves the small logits and reconstructs Sinkhorn iteration states on chip.
-
-TileKernels is eligible only on SM90/SM100 and when its dependency is present.
-Pre requires four streams and tokens divisible by eight; post requires
-BF16 contiguous activations, four streams, hidden width divisible by 128, and
-FP32 coefficient mode. SM90 has numerical/compiled forward/backward validation;
-SM100 eligibility follows upstream support, without local hardware validation.
-See [the operation contracts](OPS.md#hyper-connections) for exact provider IDs
-and precision options. Unsupported cases select builtin/native implementations.
-
-Install [DeepGEMM and its build dependencies](INSTALLATION.md#deepgemm-mhc-preprocessing-setup)
-for this optional implementation.
-
-`deepgemm.mhc_pre` uses the same semantic interface and first-order custom
-op VJP, fake outputs and FLOP formulas. It is gated to SM90/SM100 and compatible
-four-stream geometry; missing dependencies and unsupported geometry leave the
-other providers available. See the precision, saved-state and backward
-workspace description in [the operation contract](OPS.md#mhc_pre). SM100 is
-supported by upstream kernels but has not been tested locally.
-
-
-## Packed linear-attention preparation
-
-The FLA L2 adapter accepts strided inputs. For feature widths up to 512, its
-layout kernel reads the original row strides and writes contiguous normalized
-output plus FP32 reciprocal norms in one pass. It avoids Q/K `.contiguous()`
-copies for views of packed QKV; wider inputs retain the FLA fallback. Its fake
-implementation advertises the same contiguous output layout.
-
-The causal-convolution autograd adapter selects
-`causal_conv_silu_fla_input_bwd` when the convolution weight is frozen. For
-widths up to eight, this private kernel reconstructs a tile and halo on chip,
-computes SiLU derivatives once, and returns only the input gradient. It keeps
-the FLA preactivation rounding boundary without a global preactivation buffer
-or unused partial weight-gradient buffer. Full weight training and the public
-explicit backward retain FLA's input-and-weight gradient implementation. Wider
-convolutions retain that fallback. Both private paths register fake behavior
-and logical FLOP formulas; the input-only formula excludes weight-gradient work.
-
-The split-projection operation `causal_conv_silu_qkv` reuses FLA forward for each
-projection, with a separate-gradient input VJP. An opaque multi-output forward
-and registered autograd retain that VJP across export and AOT differentiation;
-its fourth, private output is the packed input saved for backward. Frozen weights
-select `fla.causal_conv_silu_qkv`; unsupported widths or trainable weights select
-`builtin.causal_conv_silu_qkv.composed`. The raw kernel reuses the existing
-input-gradient tile with channel offsets and writes contiguous Q/K/V gradients.
-
-The layout kernels are in `src/mlops/kernels/hybrid_layout.py`. GPU correctness
-and matched-stage measurements are required for changes to these kernels.
-
-## Private dispatcher boundary
-
-Opaque implementations register stable functional custom-op targets in the
-`mlops` namespace. These targets are private to the
-implementation adapter: model and block code calls the semantic façade, while
-manual runtimes call the explicit façade.
-
-Each owning provider module keeps its forward custom op, fake implementation,
-`register_autograd` setup, and optional backward custom op together. Residual
-outputs are visible to FakeTensor and AOTAutograd but hidden from model code.
-Their exact schema is implementation-specific and is therefore documented in
-the provider source rather than frozen as another public ABI.
-
-Every forward and backward schema is functional (`mutates_args=()`), and the
-contract suite runs `torch.library.opcheck` over every registered opaque
-forward. The mutable schemas are auxiliary: the optimizer update targets in
-[OPTIMIZERS.md](OPTIMIZERS.md), and
-`moe_builtin_grouped_gemm_finish_bwd_donate_h13`, a deployment-only VJP that
-writes `grad_h13` into an `h13` a compiler has proven dead and that no mlops
-call path reaches. Target names include operation, provider, and variant—for
-example `l2_norm_fla_fwd` and `moe_builtin_grouped_gemm_fwd`—so captured graphs
-retain exact implementation identity.
-
-## Operation-package example
-
-The following shows the intended dependency direction:
-
-```python
-import torch
-import torch.nn as nn
-
-from mlops import rms_norm, swiglu
-
-
-class FeedForward(nn.Module):
-    def __init__(self, width: int, hidden_width: int):
-        super().__init__()
-        self.norm_weight = nn.Parameter(torch.ones(width))
-        self.gate = nn.Linear(width, hidden_width, bias=False)
-        self.up = nn.Linear(width, hidden_width, bias=False)
-        self.down = nn.Linear(hidden_width, width, bias=False)
-
-    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        normalized = rms_norm(hidden, self.norm_weight)
-        return hidden + self.down(swiglu(self.gate(normalized), self.up(normalized)))
-```
-
-The module owns parameters and composition. The operation package owns tensor
-semantics, implementation selection, registered dispatcher boundaries, and
-VJPs.
+| Shapes, precision, saved state and supported implementations | [Operations](OPS.md) |
+| SonicMoE tuning, allocator behavior and caches | [SonicMoE tuning](sonicmoe-autotuning.md) |
+| Attention and hyper-connection algorithms | [Attention](ATTENTION.md) |
+| Caller-owned expert-parallel groups and communication buffers | [Expert parallelism](EXPERT_PARALLEL.md) |
+| Axis, reduction, destination and layout declarations | [Compiler metadata](COMPILER_METADATA.md) |
+| External binaries and their build/load lifetime | [Prepared kernels](PREPARED_KERNELS.md) |
+| Required tests | [Extension validation matrix](EXTENDING.md#validation-matrix) |
