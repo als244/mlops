@@ -95,11 +95,13 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 | `src/mlops/providers/<source>/` | exact implementation adapters; opaque custom-op/fake/autograd registration |
 | `src/mlops/kernels/` | raw Torch/Triton/TileLang mechanics; no selection or fallback |
 | `src/mlops/optim/` | standard optimizers plus functional, `out=`, and in-place update entrypoints |
-| `src/mlops/preparation/` | private graph-visible preparation targets behind public helpers such as `prepare_packed_sequence_metadata` |
+| `src/mlops/preparation/` | graph-visible sequence metadata plus explicit external-kernel build/load factories |
+| `src/mlops/contracts/` | standalone axis, reduction, gradient, layout and preparation declarations; consuming compilers own their adapters |
+| `src/mlops/triton_runtime/` | prepared external Triton calls, validated binaries and owned CUDA modules |
 | `src/mlops/lora/` | LoRA configuration, model-independent conversion and low-rank modules |
 | `src/mlops/expert_parallel/`, `src/mlops/sequential_moe/` | optional MoE layer packages with their own documentation |
 | `src/mlops/kernels/kda/`, `kernels/sparse_mla/` | attributed attention kernels, imported lazily by standard registrations |
-| `src/mlops/quack_runtime/` | process-wide Quack setup shared by the expert-parallel layers and the SonicMoE provider: source-checked patches, the tuning-cache default, kernel-source fingerprint registration, and SonicMoE imports that keep Quack's tuning policy |
+| `src/mlops/quack_runtime/` | process-wide Quack setup shared by the expert-parallel layers and the SonicMoE provider: source-checked patches, the tuning-cache default, kernel-source fingerprint registration, SonicMoE imports that keep Quack's tuning policy, and task-local choices/caches with owned prepared objects |
 | `src/mlops/bootstrap.py` | registers custom-op targets before artifact loading: the implementation catalog's and the LoRA, router and sequential-MoE operators; expert-parallel operators register when the modules defining them are imported, and accessing a layer class imports its own |
 
 `provider` is source metadata (`builtin`, `native_torch`, `fla`, `cula`,
@@ -297,3 +299,17 @@ accepts SiLU or sigmoid gating. Dense projections, LoRA factors, model compositi
 and checkpoint naming remain caller-owned.
 
 See [ATTENTION.md](ATTENTION.md) for contracts and kernel attribution.
+
+## Compiler integration boundary
+
+[Operator contracts](COMPILER_CONTRACTS.md) live in MLOps because provider authors
+own their semantics. They contain no imports or types from an execution engine.
+The consuming project translates these facts into its own build controls and
+owns integration tests. No compiler adapter is installed in this package.
+
+[Prepared-kernel factories](PREPARED_KERNELS.md) own external source checks,
+autotuning choices, host launchers and device-module lifetimes. Their manifests
+are opaque to callers. These compiled resources are distinct from invocation
+tensors: preparation does not retain model activations, choose checkpoint cuts
+or implement execution-region chunking. Destination-writing backward overloads
+explicitly declare mutation and are used only when the caller proves it legal.

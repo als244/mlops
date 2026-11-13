@@ -1,8 +1,8 @@
 # Prepared external kernels
 
 These components support the explicit `mlops.preparation.sonic:factory` adapter
-for ShadowSpill's generic `OperatorPreparation` lifecycle. They are not activated
-by importing MLOps. See the [opt-in build example](SHADOWSPILL.md#preparing-sonic-kernels).
+for a caller-owned build/export and load/bind lifecycle. Importing MLOps does
+not activate them. See the [declaration API](COMPILER_CONTRACTS.md#prepared-implementations).
 They freeze the implementation already selected by dispatch and autotuning;
 they do not add a search candidate or change checkpoint retention/chunk sizes.
 
@@ -90,7 +90,7 @@ also validate their transitive dependencies.
 The engine binds these assets to each unique executable,
 including full/tail and accumulating forms, stores manifests/blobs, incorporates
 their identity into profiling compatibility, shares loaded objects, and performs
-cold admission before execution. ShadowSpill installs its allocator before
+cold admission before execution. The caller installs its allocator before
 loading the modules; loading precedes Plan layout admission and the final
 physical-budget seal. The measured external footprint includes device-library
 memory outside PyTorch's allocator. This adapter prepares its selected external
@@ -98,19 +98,18 @@ kernels. Prebuilt PyTorch/cuBLAS libraries can still initialize lazily on their
 first native operation; their footprint belongs to the measured external
 reservation, and their first-use latency is distinct from steady execution.
 The adapter does not export these framework libraries or override their loading.
-A provider-kernel replay is not evidence that
-a complete saved Plan is compilation-free or that full-model numerical/DP
-qualification passes. Those integration checks remain separate acceptance gates.
+A provider-kernel replay does not establish that a complete saved computation
+is compilation-free or that full-model numerical/DP qualification passes. Those integration checks remain separate acceptance gates.
 
-## Selection ownership and migration
+## Selection ownership and compatibility
 
 The v2 Sonic task manifest includes Quack's selected configurations. Capture
 uses the same task-local host-cache scope as binary capture, so a warm generated
 epilogue cannot hide its choice. Loading validates the provider fingerprint;
 activation dispatches the saved winner without tuning. Each task retains its
 own warm host recipes. No Quack imports, private cache layouts or source hashes
-are required in ShadowSpill. Older mixed engine-choice artifacts and v1 Sonic
-preparations require rebuild and reprofile.
+are required in a consuming engine. Only the current manifest schema is
+accepted; changed sources or schemas require rebuilding and profiling.
 
 Numerical qualification can record choices with the public
 `mlops.quack_runtime.capture_choices()` context manager and pin that serialized
@@ -121,7 +120,7 @@ changed. Leaving the scope restores ordinary selection. This provider control
 covers Quack GEMMs; the caller must also pin Triton autotuners when comparing
 complete SonicMoE computations. Production dispatch remains unchanged.
 
-`mlops.integrations.shadowspill.operator_preparations(dtype=...)` constructs
+`mlops.contracts.operator_preparations(dtype=...)` constructs
 CPU-only descriptions for ordinary MLOps workloads. The provider's
 `preparation.available` factory checks supported BF16 Sonic availability and
 device capability when build opens it. On other devices it records an empty
@@ -139,3 +138,26 @@ saved TileLang choice remains TileLang if FlashMLA is later installed. Tasks
 without sparse-forward calls need no optional backend. Eager calls outside the
 binding keep ordinary detection. This prepares selection and LSE semantics;
 it does not archive attention binaries or the cuDNN backward compiler.
+
+## Caller lifecycle
+
+A factory is imported from the declaration's `module:function` string and called
+with `phase="build"` or `phase="load"`, an explicit CUDA device, and `options`.
+
+1. During build, surround the existing task finalization call with
+   `builder.capture()`. Pass the yielded record to `builder.export(record)` to
+   obtain a JSON manifest and digest-keyed immutable binary blobs. Do not execute
+   a mutating task again just to collect its binaries.
+2. Archive that manifest and those bytes together with the exact executable.
+   Changed implementations require new measurements and memory admission.
+3. During load, call `loader.bind(manifest, read_blob)` before timing or execution
+   admission. `read_blob(digest)` supplies archived bytes. Validation and module
+   loading happen here; a missing specialization must not fall back to tuning.
+4. Execute each task inside `binding.activate()`. Keep the owning CUDA context
+   current. Activation must not compile or lazily load prepared modules.
+5. Drain all streams before `close()` on the builder or loader. A loader refuses
+   to close while a binding is active. Native Python launcher extensions have
+   process lifetime; owned CUDA modules and libraries are released separately.
+
+The consuming project owns its adapters, profiling, allocator, admission and
+training integration tests. This package has no dependency on those systems.

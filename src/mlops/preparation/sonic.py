@@ -1,8 +1,8 @@
-"""BF16 Sonic/Quack task preparation for ShadowSpill's generic lifecycle.
+"""BF16 Sonic/Quack task preparation for caller-owned build/load lifecycles.
 
 This adapter owns selected Quack objects, external Triton CUBINs, the native
 Triton launcher helper, CuTe's live occupancy-query helper, and Quack's tuning
-choices. ShadowSpill only handles the opaque preparation lifecycle. The adapter
+choices. The caller only handles the opaque preparation lifecycle. The adapter
 does not cover FP8,
 expert parallelism, unrelated attention providers, or change gradient math.
 """

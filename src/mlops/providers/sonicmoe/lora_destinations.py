@@ -1,7 +1,7 @@
 """Explicit destinations for SonicMoE parameter-gradient products.
 
 Normal ``mlops.bootstrap`` registers these accumulating dispatcher operators
-before loading saved artifacts; no ShadowSpill integration import is needed. Each
+before loading saved artifacts; no compiler integration import is needed. Each
 operator performs its original backward once and updates all selected parameter
 gradients in their GEMM epilogues. Activation and routing outputs are unchanged.
 Inactive and consumed output positions are empty tensors, permitting ordinary

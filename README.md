@@ -85,7 +85,7 @@ only their implementations unavailable.
 - [LoRA modules](docs/LORA.md)
 - [Sequential experts and compressed checkpoint storage](docs/SEQUENTIAL_MOE.md)
 - [Attention, routing and residual mixing](docs/ATTENTION.md)
-- [Optional ShadowSpill provider contracts](docs/SHADOWSPILL.md)
+- [Operator contracts for compilers](docs/COMPILER_CONTRACTS.md)
 - [Prepared external kernel ownership and compatibility](docs/PREPARED_KERNELS.md)
 
 ## Repository layout
@@ -97,7 +97,8 @@ mlops/
 ├── src/mlops/              importable package
 │   ├── dispatch/           registry, resolution, overrides, cost/gradcheck APIs
 │   ├── <operation>.py      general tensor functions, including KDA and MLA/DSA
-│   ├── preparation/        graph-visible preparation behind public helpers
+│   ├── contracts/          standalone compiler-facing operator declarations
+│   ├── preparation/        sequence metadata and external-kernel lifecycle factories
 │   ├── explicit/           public stateless forward/VJP entrypoints
 │   ├── expert_parallel/    optional Quack/TE MoE and LoRA layers
 │   ├── sequential_moe/     bounded sequential experts and LoRA
@@ -105,7 +106,8 @@ mlops/
 │   ├── kernels/            private raw Torch/Triton/TileLang mechanics
 │   ├── optim/              PyTorch optimizers and functional/out=/in-place updates
 │   ├── providers/          exact implementation adapters
-│   └── quack_runtime/      process-wide Quack setup, candidates and tuning sweeps
+│   ├── quack_runtime/      Quack setup, tuning choices and prepared object ownership
+│   └── triton_runtime/     prepared external Triton calls and owned CUDA modules
 ├── scripts/                setup and pinned provider builds
 ├── tests/                  standalone contract and numerical tests
 └── docs/                   API and contributor documentation

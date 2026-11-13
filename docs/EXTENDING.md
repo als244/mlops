@@ -582,6 +582,15 @@ In addition to provider tests, verify that:
 - unsupported exact overrides fail rather than fall back; and
 - the operation composes through normal autograd, Export, and AOTAutograd.
 
+## Compiler-facing declarations
+
+When a provider offers independently sliceable axes, additive outputs, writable
+gradient destinations or layout-independent inputs, declare those facts in
+[`mlops.contracts`](COMPILER_CONTRACTS.md) and test them with ordinary PyTorch.
+Do not import a training engine or put its adapter/tests in this repository.
+Opaque kernel preparation uses the [caller lifecycle](PREPARED_KERNELS.md#caller-lifecycle);
+the provider owns external cache formats and binary/source validation.
+
 ## Other supported extensions
 
 ### Add a variant from an existing provider

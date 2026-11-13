@@ -70,7 +70,7 @@ The shared backward composition releases its private WY factors, state and
 intra-chunk matrices immediately after their final kernel consumer. This changes
 allocation lifetimes without changing kernels or arithmetic; caller-owned inputs
 remain valid. This is internal operator workspace management, separate from
-ShadowSpill's execution-region chunking. The affected FLA and cuLA registration
+compiler-managed execution-region chunking. The affected FLA and cuLA registration
 sources have changed, so previously saved allocation profiles and executables
 must be rebuilt and reprofiled before use with this implementation.
 

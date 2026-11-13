@@ -1,4 +1,4 @@
-"""Private immutable Quack object inventory, independent of ShadowSpill storage.
+"""Private immutable Quack object inventory, independent of caller storage.
 
 Only selected, target-qualified capture owns exportable objects. Ordinary eager
 caches cannot establish provenance. A reader validates the complete manifest

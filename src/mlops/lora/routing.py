@@ -161,9 +161,9 @@ def _route_autograd(ctx, grad, _ids):
 _route.register_autograd(_route_autograd, setup_context=_route_context)
 
 # Static optional-consumer contract: backward must use forward's expert IDs
-# and weights. Declaring it here needs no ShadowSpill import or provider list
+# and weights. Declaring it here needs no compiler import or provider list
 # in the engine; an explicit user retention rule may still request replay.
-torch.ops.mlops.lora_route.default.shadowspill_retain_for_backward = True
+torch.ops.mlops.lora_route.default.retain_for_backward = True
 
 
 @torch.library.custom_op("mlops::lora_assignment_layout", mutates_args=())

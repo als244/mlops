@@ -45,7 +45,7 @@ import importlib.abc
 import sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'quack', 'sonicmoe', 'moonep', 'transformer_engine', 'quack_moe', 'te_moe', 'moe_lab', 'shadowspill'}:
+        if fullname.split('.')[0] in {'quack', 'sonicmoe', 'moonep', 'transformer_engine', 'quack_moe', 'te_moe', 'moe_lab'}:
             raise AssertionError('Unexpected dependency import: ' + fullname)
 sys.meta_path.insert(0, Block())
 import torch

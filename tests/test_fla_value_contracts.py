@@ -3,24 +3,15 @@
 import pytest
 import torch
 
-pytest.importorskip("shadowspill.pytorch")
-
-from mlops.integrations.shadowspill import fla_execution_lifetimes
+from mlops.contracts import fla_value_contracts
 
 
-def test_contract_factory_leaves_scheduling_to_the_caller():
-    from shadowspill.pytorch import LifetimeRule
-
+def test_contract_factory_needs_no_device_or_scheduling_policy():
     initialized = torch.cuda.is_initialized()
-    rule = LifetimeRule("aten.slice.Tensor", compact=True)
-    policy = fla_execution_lifetimes(rules=(rule,))
-    assert policy.rules == (rule,) and policy.select is None
+    contracts = fla_value_contracts()
+    assert len(contracts) == 9
     assert torch.cuda.is_initialized() == initialized
-    # The backward kernel reads saved output/statistics directly; relayout of
-    # these ports is deliberately not certified by its contiguous-grad wrapper.
-    contract = next(
-        c for c in policy.layout if c.target == "mlops.l2_norm_fla_bwd.default"
-    )
+    contract = next(c for c in contracts if c.target == "mlops.l2_norm_fla_bwd.default")
     assert contract.inputs == (0,)
 
 
@@ -99,7 +90,7 @@ def test_certified_value_operands_preserve_packed_forward_and_vjp(dtype):
             width**-0.5,
         ),
     }
-    for contract in fla_execution_lifetimes().layout:
+    for contract in fla_value_contracts():
         name = contract.target.split(".")[1]
         op = getattr(ops, name).default
         args = cases[name]
