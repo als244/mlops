@@ -85,7 +85,7 @@ only their implementations unavailable.
 - [LoRA modules](docs/LORA.md)
 - [Sequential experts and compressed checkpoint storage](docs/SEQUENTIAL_MOE.md)
 - [Attention, routing and residual mixing](docs/ATTENTION.md)
-- [Operator contracts for compilers](docs/COMPILER_CONTRACTS.md)
+- [Operator metadata for compilers](docs/COMPILER_METADATA.md)
 - [Prepared external kernel ownership and compatibility](docs/PREPARED_KERNELS.md)
 
 ## Repository layout
@@ -97,7 +97,7 @@ mlops/
 ├── src/mlops/              importable package
 │   ├── dispatch/           registry, resolution, overrides, cost/gradcheck APIs
 │   ├── <operation>.py      general tensor functions, including KDA and MLA/DSA
-│   ├── contracts/          standalone compiler-facing operator declarations
+│   ├── operator_metadata/  output axes, gradient writes, layouts, kernel preparation
 │   ├── preparation/        sequence metadata and external-kernel lifecycle factories
 │   ├── explicit/           public stateless forward/VJP entrypoints
 │   ├── expert_parallel/    optional Quack/TE MoE and LoRA layers

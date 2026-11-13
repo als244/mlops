@@ -6,13 +6,13 @@ import sys
 import pytest
 import torch
 
-from mlops.contracts import (
-    ChunkLocal,
-    mhc_chunk_contracts,
-    operator_chunk_contracts,
+from mlops.operator_metadata import (
+    ChunkLocalOutput,
+    mhc_chunking,
+    operator_chunking,
     operator_preparations,
-    sonicmoe_chunk_contracts,
-    sonicmoe_gradient_contracts,
+    sonicmoe_chunking,
+    sonicmoe_gradient_accumulation,
     sonicmoe_preparation,
 )
 
@@ -26,11 +26,11 @@ class NoExternal(importlib.abc.MetaPathFinder):
         if root not in sys.stdlib_module_names and root not in {'torch', 'mlops'}:
             raise AssertionError('unexpected dependency: ' + fullname)
 sys.meta_path.insert(0, NoExternal())
-from mlops import contracts
-for factory in (contracts.operator_chunk_contracts, contracts.sonicmoe_chunk_contracts,
-                contracts.mhc_chunk_contracts, contracts.sonicmoe_gradient_contracts,
-                contracts.fla_value_contracts, contracts.operator_preparations,
-                contracts.sonicmoe_preparation):
+from mlops import operator_metadata
+for factory in (operator_metadata.operator_chunking, operator_metadata.sonicmoe_chunking,
+                operator_metadata.mhc_chunking, operator_metadata.sonicmoe_gradient_accumulation,
+                operator_metadata.fla_input_layouts, operator_metadata.operator_preparations,
+                operator_metadata.sonicmoe_preparation):
     assert factory()
 assert not torch.cuda.is_initialized()
 """
@@ -38,8 +38,8 @@ assert not torch.cuda.is_initialized()
 
 
 def test_precision_domains_and_local_state_are_explicit():
-    bf16 = {c.target: c for c in sonicmoe_chunk_contracts()}
-    fp8 = sonicmoe_chunk_contracts(compute_precision="fp8_block")
+    bf16 = {c.target: c for c in sonicmoe_chunking()}
+    fp8 = sonicmoe_chunking(compute_precision="fp8_block")
     assert len(bf16) == 7 and len(fp8) == 5
     for c in fp8:
         assert "accumulate" not in c.target
@@ -47,12 +47,17 @@ def test_precision_domains_and_local_state_are_explicit():
         assert c.reductions == bf16[c.target].reductions
         assert c.version != bf16[c.target].version
     metadata = bf16["mlops.sonicmoe_routing_metadata.default"]
-    assert metadata.output_axes == (None, ChunkLocal(0), ChunkLocal(0), ChunkLocal(0))
+    assert metadata.output_axes == (
+        None,
+        ChunkLocalOutput(0),
+        ChunkLocalOutput(0),
+        ChunkLocalOutput(0),
+    )
     assert metadata.reductions == (0,)
-    assert len(sonicmoe_gradient_contracts()) == 2
+    assert len(sonicmoe_gradient_accumulation()) == 2
     with pytest.raises(ValueError, match="frozen fp8_block"):
-        sonicmoe_chunk_contracts(compute_precision="fp8_current")
-    for factory in (operator_chunk_contracts, mhc_chunk_contracts):
+        sonicmoe_chunking(compute_precision="fp8_current")
+    for factory in (operator_chunking, mhc_chunking):
         with pytest.raises(ValueError, match="positive"):
             factory(batch_size=0)
 
@@ -69,4 +74,4 @@ def test_preparation_options_are_owned_and_declarations_preserve_dispatch(monkey
         explicit.options["cache_root"] = "/tmp/changed"
     assert len(operator_preparations()) == 2
     assert operator_preparations(dtype=torch.float32) == ()
-    assert len(mhc_chunk_contracts()) == 4
+    assert len(mhc_chunking()) == 4

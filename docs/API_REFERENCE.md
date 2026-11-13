@@ -11,7 +11,7 @@ package requires PyTorch 2.13 or newer.
 - [Optimizer APIs](#optimizer-apis)
 - [Operation categories](#operation-categories)
 - [Dispatch and development APIs](#dispatch-and-development-apis)
-- [Compiler contracts](#compiler-contracts)
+- [Compiler metadata](#compiler-metadata)
 - [Private implementation boundary](#private-implementation-boundary)
 - [Contributor documentation](#contributor-documentation)
 - [Expert-parallel modules](#expert-parallel-modules)
@@ -193,12 +193,12 @@ Gradcheck uses normal semantic calls and reports low-precision-only
 implementations as `skipped`, with their support reason, instead of
 substituting another backend.
 
-## Compiler contracts
+## Compiler metadata
 
-`mlops.contracts` exposes standalone axis/reduction, gradient-destination,
+`mlops.operator_metadata` exposes standalone axis/reduction, gradient-destination,
 read-only/layout and kernel-preparation declarations. They describe the provider,
 not a graph schedule. A consuming compiler owns its adapter and all checkpoint,
-chunk-size, replay and residency decisions. See [operator contracts](COMPILER_CONTRACTS.md)
+chunk-size, replay and residency decisions. See [operator metadata](COMPILER_METADATA.md)
 and [prepared kernel ownership](PREPARED_KERNELS.md).
 
 `mlops.quack_runtime.capture_choices()` records selected Quack configurations;

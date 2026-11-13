@@ -3,16 +3,18 @@
 import pytest
 import torch
 
-from mlops.contracts import fla_value_contracts
+from mlops.operator_metadata import fla_input_layouts
 
 
-def test_contract_factory_needs_no_device_or_scheduling_policy():
+def test_layout_description_factory_needs_no_device_or_scheduling_policy():
     initialized = torch.cuda.is_initialized()
-    contracts = fla_value_contracts()
-    assert len(contracts) == 9
+    descriptions = fla_input_layouts()
+    assert len(descriptions) == 9
     assert torch.cuda.is_initialized() == initialized
-    contract = next(c for c in contracts if c.target == "mlops.l2_norm_fla_bwd.default")
-    assert contract.inputs == (0,)
+    description = next(
+        c for c in descriptions if c.target == "mlops.l2_norm_fla_bwd.default"
+    )
+    assert description.inputs == (0,)
 
 
 @pytest.mark.gpu
@@ -90,13 +92,13 @@ def test_certified_value_operands_preserve_packed_forward_and_vjp(dtype):
             width**-0.5,
         ),
     }
-    for contract in fla_value_contracts():
-        name = contract.target.split(".")[1]
+    for description in fla_input_layouts():
+        name = description.target.split(".")[1]
         op = getattr(ops, name).default
         args = cases[name]
         expected = op(*args)
         changed = list(args)
-        for index in contract.inputs:
+        for index in description.inputs:
             value = args[index]
             backing = torch.empty(
                 *value.shape[:-1],

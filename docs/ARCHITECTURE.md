@@ -96,7 +96,7 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 | `src/mlops/kernels/` | raw Torch/Triton/TileLang mechanics; no selection or fallback |
 | `src/mlops/optim/` | standard optimizers plus functional, `out=`, and in-place update entrypoints |
 | `src/mlops/preparation/` | graph-visible sequence metadata plus explicit external-kernel build/load factories |
-| `src/mlops/contracts/` | standalone axis, reduction, gradient, layout and preparation declarations; consuming compilers own their adapters |
+| `src/mlops/operator_metadata/` | standalone axis, reduction, gradient, layout and preparation declarations; consuming compilers own their adapters |
 | `src/mlops/triton_runtime/` | prepared external Triton calls, validated binaries and owned CUDA modules |
 | `src/mlops/lora/` | LoRA configuration, model-independent conversion and low-rank modules |
 | `src/mlops/expert_parallel/`, `src/mlops/sequential_moe/` | optional MoE layer packages with their own documentation |
@@ -302,7 +302,7 @@ See [ATTENTION.md](ATTENTION.md) for contracts and kernel attribution.
 
 ## Compiler integration boundary
 
-[Operator contracts](COMPILER_CONTRACTS.md) live in MLOps because provider authors
+[Operator metadata](COMPILER_METADATA.md) lives in MLOps because provider authors
 own their semantics. They contain no imports or types from an execution engine.
 The consuming project translates these facts into its own build controls and
 owns integration tests. No compiler adapter is installed in this package.

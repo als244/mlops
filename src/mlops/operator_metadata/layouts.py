@@ -1,9 +1,24 @@
 """Read-only and value-layout facts for the explicit FLA adapters."""
 
-from .types import ValueContract
+from dataclasses import dataclass
 
 
-def fla_value_contracts() -> tuple[ValueContract, ...]:
+@dataclass(frozen=True)
+class OperatorInputLayouts:
+    """Operator that only reads its inputs and supports new strides on some inputs.
+
+    ``inputs`` lists positional/schema argument indices. At those positions,
+    replacing a tensor with equal values/shape/dtype/device but different strides,
+    offsets or backing storage preserves the output values. Other inputs must
+    retain their layouts. This says nothing about independent chunk axes.
+    """
+
+    target: str
+    version: str
+    inputs: tuple[int, ...]
+
+
+def fla_input_layouts() -> tuple[OperatorInputLayouts, ...]:
     """Certify value operands without choosing movement, copies or replay.
 
     Other ports, including saved normalization statistics, retain their original
@@ -11,7 +26,7 @@ def fla_value_contracts() -> tuple[ValueContract, ...]:
     must still prove aliases/effects and profile the resulting executable.
     Construction imports no FLA kernels and initializes no device context.
     """
-    ports = {
+    input_positions = {
         "causal_conv_silu_fla_fwd": (0,),
         "causal_conv_silu_fla_bwd": (0, 1),
         "causal_conv_silu_fla_input_bwd": (0, 1),
@@ -23,6 +38,10 @@ def fla_value_contracts() -> tuple[ValueContract, ...]:
         "linear_attention_fla_gated_delta_rule_bwd": (0, 1, 2, 3, 4, 5),
     }
     return tuple(
-        ValueContract(f"mlops.{name}.default", "fla-value-operands-v1", inputs)
-        for name, inputs in ports.items()
+        OperatorInputLayouts(
+            target=f"mlops.{name}.default",
+            version="fla-value-operands-v1",
+            inputs=inputs,
+        )
+        for name, inputs in input_positions.items()
     )

@@ -1,6 +1,6 @@
-# Operator contracts for compilers
+# Operator metadata for compilers
 
-`mlops.contracts` publishes provider semantics as standalone immutable records.
+`mlops.operator_metadata` publishes provider semantics as standalone immutable records.
 It depends on PyTorch and MLOps only. Constructing these declarations does not
 initialize CUDA or import optional kernel packages. A compiler adapter converts
 these records to its own APIs; the adapter belongs to the consuming project.
@@ -11,69 +11,70 @@ regions, independent-axis selection, chunk sizes, replay, spill placement and
 memory admission. Models continue to express ordinary full tensors.
 
 ```python
-from mlops.contracts import (
-    operator_chunk_contracts,
-    sonicmoe_chunk_contracts,
-    sonicmoe_gradient_contracts,
-    fla_value_contracts,
+from mlops.operator_metadata import (
+    operator_chunking,
+    sonicmoe_chunking,
+    sonicmoe_gradient_accumulation,
+    fla_input_layouts,
     operator_preparations,
 )
 
 # Describe providers already used by the model; these do not select dispatch.
-chunks = (*operator_chunk_contracts(batch_size=2), *sonicmoe_chunk_contracts())
-gradients = sonicmoe_gradient_contracts()
-values = fla_value_contracts()
+chunks = (*operator_chunking(batch_size=2), *sonicmoe_chunking())
+gradients = sonicmoe_gradient_accumulation()
+layouts = fla_input_layouts()
 preparations = operator_preparations()
 # Pass these records to the consuming compiler's adapter.
 ```
 
 ## Independent axes and reductions
 
-Each `ChunkContract` contains a dispatcher target, semantic version, one entry
+Each `OperatorChunking` contains a dispatcher target, semantic version, one entry
 per output and additive-reduction positions. Changing the version must invalidate
-compiled artifacts that rely on that contract. The records describe semantics,
+compiled artifacts that rely on those output descriptions. The records describe semantics,
 not measured workspace or permission to replay effects.
 
 | Output entry | Meaning |
 | --- | --- |
-| `AxisFrom(input_index, trailing_dims=0)` | Inherit the logical input axis, removing trailing feature dimensions before reshaping the output. |
-| `ChunkAxis(dim, before=1, after=1)` | The physical dimension is ordered as `before * logical_extent * after`. |
-| `ChunkLocal(dim=None)` | Coordinates belong to one invocation. If set, `dim` scales with that invocation's logical extent. These values cannot escape as an ordinary full-axis tensor. |
+| `AxisFromInput(input_index, trailing_dims=0)` | Inherit the logical input axis, removing trailing feature dimensions before reshaping the output. |
+| `FactoredAxis(dim, before=1, after=1)` | The physical dimension is ordered as `before * logical_extent * after`. |
+| `ChunkLocalOutput(dim=None)` | Coordinates belong to one invocation. If set, `dim` scales with that invocation's logical extent. These values cannot escape as an ordinary full-axis tensor. |
 | `None` | Shared output; when its index is in `reductions`, sum the per-invocation contributions. |
 
-`operator_chunk_contracts(batch_size=1)` covers normalization, SwiGLU, rotary,
+`operator_chunking(batch_size=1)` covers normalization, SwiGLU, rotary,
 gated normalization, basic mHC and builtin LoRA routing/dispatch/grouped-linear
 operators. The batch factor describes flattened layouts, not a choice of axis.
 A compiler must validate the declarations against its actual graph geometry.
 
-`sonicmoe_chunk_contracts(compute_precision="bf16")` supplies seven contracts,
+`sonicmoe_chunking(compute_precision="bf16")` supplies seven operator descriptions,
 including accumulating backward overloads. Sorted expert rows and routing maps
 stay local. Expert counts and parameter gradients are additive. Saving local
 values across a boundary would require per-invocation buffers and metadata;
 these declarations do not provide that representation. A compiler must reject
 such an escape or choose a different cut or retention policy.
 
-`compute_precision="fp8_block"` supplies five contracts for frozen block-FP8
+`compute_precision="fp8_block"` supplies five operator descriptions for frozen block-FP8
 bases with BF16 activations/factors. Feature-wise activation quantization stays
 within each row. FP8 components remain shared. Trainable FP8 weights,
 `fp8_current`, destination fusion and expert-parallel collectives are excluded;
 ordinary gradient addition remains available.
 
-`mhc_chunk_contracts(batch_size=1)` covers fused DeepGEMM preprocessing and
+`mhc_chunking(batch_size=1)` covers fused DeepGEMM preprocessing and
 TileKernels postprocessing. Preprocessing requires four BF16 streams, with
 32-token and 128-hidden alignment on every invocation, including tails. Shared
 projection/bias/scale gradients sum. Stream/feature splitting is not certified.
 
 ## Gradient destinations
 
-`sonicmoe_gradient_contracts()` describes fresh-backward targets, accumulating
+`sonicmoe_gradient_accumulation()` describes fresh-backward targets, accumulating
 replacements, eligible output positions, a version and an FX resolver. The
-resolver takes any object satisfying `GradientContext`; it inspects tensor
+resolver takes any object satisfying `GradientAccumulationContext`; it inspects tensor
 metadata in `node.meta["val"]` and never edits the graph. `operations` runs from
 the final gradient toward its producer, excluding tuple extraction.
 
-The resolver returns `GradientMapping(output_indices, keywords)` or `None`.
-The caller invokes the replacement once with the original arguments plus
+The resolver returns `GradientAccumulationSelection(output_indices, keywords)` or `None`.
+`contract_version` is the accumulating overload's version argument; it is not a
+separate policy object. The caller invokes the replacement once with the original arguments plus
 `destinations`, `output_indices`, `contract_version` and those keywords. The
 schema declares destination mutation. Selected outputs refer to their supplied
 destinations in the caller's graph; unselected live outputs retain their values.
@@ -97,7 +98,7 @@ policy precedence and storage placement. The annotation changes no arithmetic.
 
 ## Read-only values and layouts
 
-`fla_value_contracts()` returns nine `ValueContract` records. Each target is
+`fla_input_layouts()` returns nine `OperatorInputLayouts` records. Each target is
 read-only; only its listed input positions are independent of the physical
 input layout. The declarations cover explicit convolution, L2/gated
 normalization and Gated DeltaNet. L2 backward certifies only its incoming
@@ -127,7 +128,7 @@ and prepared manifests; it must not need to rerun graph-construction callbacks.
 ## Validation
 
 Standalone tests cover the records, unsupported fusion paths, fake/runtime
-schemas, destination products, layout contracts, source/target checks and owned
+schemas, destination products, input-layout support, source/target checks and owned
 module lifetimes. Compiler transformations and full training acceptance belong
 in the consuming project's integration tests. GPU tests run only on hardware
-supported by the provider; CPU contract checks remain useful on every host.
+supported by the provider; CPU metadata checks remain useful on every host.

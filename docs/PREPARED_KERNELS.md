@@ -2,7 +2,7 @@
 
 These components support the explicit `mlops.preparation.sonic:factory` adapter
 for a caller-owned build/export and load/bind lifecycle. Importing MLOps does
-not activate them. See the [declaration API](COMPILER_CONTRACTS.md#prepared-implementations).
+not activate them. See the [declaration API](COMPILER_METADATA.md#prepared-implementations).
 They freeze the implementation already selected by dispatch and autotuning;
 they do not add a search candidate or change checkpoint retention/chunk sizes.
 
@@ -120,7 +120,7 @@ changed. Leaving the scope restores ordinary selection. This provider control
 covers Quack GEMMs; the caller must also pin Triton autotuners when comparing
 complete SonicMoE computations. Production dispatch remains unchanged.
 
-`mlops.contracts.operator_preparations(dtype=...)` constructs
+`mlops.operator_metadata.operator_preparations(dtype=...)` constructs
 CPU-only descriptions for ordinary MLOps workloads. The provider's
 `preparation.available` factory checks supported BF16 Sonic availability and
 device capability when build opens it. On other devices it records an empty
