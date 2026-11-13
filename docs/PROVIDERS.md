@@ -1,9 +1,12 @@
-# Adding an operation implementation
+# Provider implementation requirements
 
 Directories under `src/mlops/providers/` adapt one package or source into the operation library's
 exact implementation registry. A provider may implement one operation, several
 operations, or several variants of one operation. Models never import provider
 modules directly.
+
+For a step-by-step implementation walkthrough, start with [EXTENDING.md](EXTENDING.md).
+This reference defines registration, effects, layout and ownership requirements.
 
 ## Contents
 
@@ -76,11 +79,11 @@ must accept the keyword. An implementation that is ordered already records
 demand records what its default does and honours the request; one that cannot
 honour it raises rather than returning an unordered result. See
 [`flash_attention`](OPS.md#flash_attention) for the worked case and
-[`deterministic_kernels`](API_REFERENCE.md#dispatch-and-development-apis) for
+[`deterministic_kernels`](DISPATCH.md#selection-and-precision) for
 the ambient form.
 
 An implementation whose backward returns a weight's gradient reads
-[`weight_gradient_dtype()`](API_REFERENCE.md#dispatch-and-development-apis) in
+[`weight_gradient_dtype()`](DISPATCH.md#selection-and-precision) in
 `apply`, passes it to its forward and backward operators -- so a captured
 forward records the dtype its backward uses, and fake implementations report
 it -- and returns the gradient at it, unrounded where its kernel sums at a
@@ -459,25 +462,8 @@ SM100 eligibility follows upstream support, without local hardware validation.
 See [the operation contracts](OPS.md#hyper-connections) for exact provider IDs
 and precision options. Unsupported cases select builtin/native implementations.
 
-### DeepGEMM mHC preprocessing setup
-
-The complete setup builds pinned DeepGEMM revision
-`5081f8513af57e61696de4f4f04b0e707ffb503e` with its submodules against the
-selected PyTorch/CUDA environment. `--no-deepgemm` skips this source build.
-For an existing environment, run:
-
-```bash
-./scripts/setup_deepgemm.sh --python "$CONDA_PREFIX/bin/python"
-```
-
-The helper is idempotent; `--force` rebuilds. It requires CUDA >=12.9 and a
-C++20 host compiler supporting `<format>` (for example GCC 13+). Set `CXX`
-when the default compiler is older. DeepJIT also needs elfutils/libelf headers:
-system development packages or `MLOPS_ELFUTILS_ROOT` are accepted. If neither is
-available, the helper creates an isolated Conda build-dependency prefix.
-`MLOPS_BUILD_DIR` controls source/build placement. TileKernels and TileLang are
-installed by the ordinary `providers` extra, at their pinned/minimum versions.
-DeepGEMM is built separately to avoid replacing the selected PyTorch dependency.
+Install [DeepGEMM and its build dependencies](INSTALLATION.md#deepgemm-mhc-preprocessing-setup)
+for this optional implementation.
 
 `deepgemm.mhc_pre` uses the same semantic interface and first-order custom
 op VJP, fake outputs and FLOP formulas. It is gated to SM90/SM100 and compatible
@@ -515,3 +501,54 @@ input-gradient tile with channel offsets and writes contiguous Q/K/V gradients.
 
 The layout kernels are in `src/mlops/kernels/hybrid_layout.py`. GPU correctness
 and matched-stage measurements are required for changes to these kernels.
+
+## Private dispatcher boundary
+
+Opaque implementations register stable functional custom-op targets in the
+`mlops` namespace. These targets are private to the
+implementation adapter: model and block code calls the semantic façade, while
+manual runtimes call the explicit façade.
+
+Each owning provider module keeps its forward custom op, fake implementation,
+`register_autograd` setup, and optional backward custom op together. Residual
+outputs are visible to FakeTensor and AOTAutograd but hidden from model code.
+Their exact schema is implementation-specific and is therefore documented in
+the provider source rather than frozen as another public ABI.
+
+Every forward and backward schema is functional (`mutates_args=()`), and the
+contract suite runs `torch.library.opcheck` over every registered opaque
+forward. The mutable schemas are auxiliary: the optimizer update targets in
+[OPTIMIZERS.md](OPTIMIZERS.md), and
+`moe_builtin_grouped_gemm_finish_bwd_donate_h13`, a deployment-only VJP that
+writes `grad_h13` into an `h13` a compiler has proven dead and that no mlops
+call path reaches. Target names include operation, provider, and variant—for
+example `l2_norm_fla_fwd` and `moe_builtin_grouped_gemm_fwd`—so captured graphs
+retain exact implementation identity.
+
+## Operation-package example
+
+The following shows the intended dependency direction:
+
+```python
+import torch
+import torch.nn as nn
+
+from mlops import rms_norm, swiglu
+
+
+class FeedForward(nn.Module):
+    def __init__(self, width: int, hidden_width: int):
+        super().__init__()
+        self.norm_weight = nn.Parameter(torch.ones(width))
+        self.gate = nn.Linear(width, hidden_width, bias=False)
+        self.up = nn.Linear(width, hidden_width, bias=False)
+        self.down = nn.Linear(hidden_width, width, bias=False)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        normalized = rms_norm(hidden, self.norm_weight)
+        return hidden + self.down(swiglu(self.gate(normalized), self.up(normalized)))
+```
+
+The module owns parameters and composition. The operation package owns tensor
+semantics, implementation selection, registered dispatcher boundaries, and
+VJPs.

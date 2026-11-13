@@ -1,69 +1,7 @@
-# Operations package architecture
+# Package architecture
 
-`mlops` is a standalone operations and optimizer package. It has no dependency
-on model classes, architecture blocks, training loops, planners, or execution
-engines.
-
-## Contents
-
-- [Public surfaces](#public-surfaces)
-- [Optimizer surface](#optimizer-surface)
-- [Execution architecture](#execution-architecture)
-- [Directory ownership](#directory-ownership)
-- [Implementation selection](#implementation-selection)
-- [PyTorch custom operations and autograd](#pytorch-custom-operations-and-autograd)
-- [Tensor ownership and workspace](#tensor-ownership-and-workspace)
-- [Cost hints](#cost-hints)
-- [Gradcheck](#gradcheck)
-- [Extending the package](#extending-the-package)
-- [Expert-parallel modules](#expert-parallel-modules)
-- [Reusable attention and routing](#reusable-attention-and-routing)
-
-## Public surfaces
-
-The package has two operation surfaces.
-
-1. Semantic functions such as `rms_norm(x, weight)` are used by normal
-   forward-only PyTorch modules. They participate in ordinary autograd.
-2. `explicit.<operation>.forward(...)` and
-   `explicit.<operation>.backward(...)` are stateless, autograd-independent
-   entrypoints for callers that already manage residual tensors.
-
-Model and block packages consume public semantic functions from `mlops` or
-documented optional layer packages such as `mlops.expert_parallel`. They do
-not import dispatch, provider, or kernel internals.
-
-## Optimizer surface
-
-`mlops.optim.AdamW` follows the standard `torch.optim.Optimizer` protocol.
-It owns ordinary parameter groups and checkpointable state, while delegating
-each update to the same stateless tensor entrypoints available independently:
-
-```text
-AdamW.step()
-    -> adamw_
-    -> registered mutation boundary
-    -> allocation-free Triton kernel
-
-compiler/reference caller
-    -> functional_adamw(...)  # new state version
-    -> adamw(..., out=...)    # distinct destinations
-    -> adamw_(...)            # proven-legal mutation
-```
-
-The optimizer advertises a stable scalar `implementation_id`. A compiler may
-use that identity to link an equivalent destination-writing entrypoint, but
-the optimizer never imports or knows about a compiler or execution engine.
-There is deliberately no `in_place` constructor flag: PyTorch optimizers are
-logically mutating. Functional and distinct-destination behavior belongs to
-the lower tensor API, where ownership is explicit.
-
-Optimizer updates use ordinary local tensors. Gradient communication, state
-sharding, and master-weight ownership belong to the caller or training engine.
-The optimizer advertises `supports_flat_parameter_shards=True` because AdamW updates
-are coordinate-wise; an engine can pass owned slices through the same local
-update operation. MLOps creates no process groups, communication buffers, or
-optimizer-specific streams.
+MLOps owns operations and local optimizer updates. Models, training loops,
+global state sharding and execution schedules belong to callers.
 
 ## Execution architecture
 
@@ -109,196 +47,22 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 exact implementation ID such as `builtin.rms_norm.triton`; there is no
 provider-wide switch.
 
-## Implementation selection
+## Tensor and kernel ownership
 
-The contributor-facing control API is exported by `mlops.dispatch`:
+Inputs and reusable metadata belong to callers. Outputs belong to the caller
+after return; autograd retains only the residuals needed by its matching VJP.
+Workspace exists only within an invocation. Registries and dispatch traces
+must not retain tensors. See the [provider ownership rules](PROVIDERS.md#tensor-ownership).
 
-```python
-implementation_registry()
-resolve_implementation(operation, *args, surface="semantic", **kwargs)
-explain_implementation(operation, *args, surface="semantic", **kwargs)
-use_implementation(operation, implementation_id)
-use_implementations({operation: implementation_id})
-capture_dispatch()
-implementation_pairs(operations)
-```
+Opaque differentiable calls declare a custom-op schema, matching fake result
+and autograd/VJP. A composition can expose several opaque regions so a compiler
+can regenerate only the necessary prefix. Explicit calls use the same raw math
+under `torch.no_grad()` and never write `.grad`.
 
-Default resolution filters each record's `supports` result, selects the
-highest priority, and uses exact implementation ID as a deterministic
-tie-breaker. An exact override either runs or fails with its rejection reason;
-raw implementations never choose another implementation silently.
-
-Compiler capture resolves implementations itself: support checks read tensor
-metadata only, and the captured graph contains the selected implementation. To
-fix identities explicitly, run one ordinary warmup under `capture_dispatch()`,
-convert the trace to an exact manifest with `dispatch_manifest`, then export
-under `use_implementations(manifest)`; those choices are checked for support
-during capture too.
-
-## PyTorch custom operations and autograd
-
-`Implementation.apply` may be a visible native-Torch graph, one opaque
-registered `torch.library.custom_op`, or a graph-visible composition of opaque
-registered regions. The last form preserves one public semantic operation
-while exposing natural residual-lifetime boundaries to AOT. Every opaque
-differentiable forward region has:
-
-- a truthful functional schema (`mutates_args=()` in this package);
-- a fake implementation with matching count, shape, dtype, device, and layout;
-- a `register_autograd` adapter;
-- `setup_context` saves containing only tensors needed by its VJP; and
-- a separately registered backward custom-op target when the VJP is opaque.
-
-Fake/meta layout is tested with model-authentic views, not only convenient
-contiguous tensors. For example, a router weight may arrive as a view of its
-parameter. Its raw GEMM VJP is contiguous, but the provider materializes that
-result in the input view's stride before returning it. The
-fake VJP advertises the same layout so AOT's inverse view restores the ordinary
-contiguous parameter-gradient ABI.
-
-Normal `ctx.save_for_backward` use is expected. It retains references for one
-autograd graph and does not put tensors in the implementation registry. The
-registry stores only callables and immutable scalar metadata.
-
-`setup_context` declares which inputs/outputs a region's VJP consumes; it does
-not define a partial recipe for rematerializing a dropped output. A large
-multi-kernel implementation should therefore remain graph-visible across a
-boundary where backward may need only a prefix. The composed builtin MoE, for
-example, separates routing/dispatch/`w13` from SwiGLU/`w2`/combine so AOT can
-regenerate `h13` without replaying the down projection. Truly monolithic
-providers may remain one region and optionally supply a provider-specific
-recompute/VJP preparation variant.
-
-The explicit surface calls the same raw provider functions under
-`torch.no_grad()`. It never invokes `.backward()`, writes `.grad`, or duplicates
-the implementation's mathematics.
-
-## Tensor ownership and workspace
-
-The ownership categories are deliberately distinct:
-
-| Category | Owner/lifetime | Example |
-|---|---|---|
-| operation input | caller/module, visible in the graph | parameters, sequence metadata, RoPE cosine/sine tables |
-| autograd residual | reference retained for one forward/backward graph | input `x`, `rstd`, routing metadata |
-| public output | caller after the invocation | normalized output, loss |
-| workspace | implementation scratch that exists only during one forward or backward call | the builtin RMSNorm's backward dweight partials |
-
-Workspace never includes caller-owned inputs, outputs, persistent/prepared
-buffers, autograd residuals that survive the call, allocator cache, or global
-runtime leeway. In particular, RoPE tables are non-persistent module buffers
-passed as explicit tensor inputs; they are reusable state, not workspace.
-
-No registry, resolver, override, trace, or implementation adapter may retain a
-tensor beyond the normal returned-output/autograd-context ownership above.
-
-Provider-prepared metadata needed by backward is an ordinary residual, not
-hidden registry state. For example, semantic variable-length attention returns
-its log-sum-exp from the opaque forward as a second, non-differentiable output
-of the private registered boundary so `setup_context` can save it. The public
-semantic result remains only the attention output; explicit callers receive
-the log-sum-exp from `forward` and pass it to `backward`.
-
-## Cost hints
-
-`estimate_implementation(...)` returns a `CostHints` record: the operation's
-canonical logical estimate merged with the exact implementation's optional
-physical one. Every field is `int | None`: `None` means unknown and `0` means
-known-zero. Hints are advisory; measured runtime and allocator profiling remain
-authoritative.
-
-Canonical estimates are grouped under `src/mlops/dispatch/`:
-`logical_costs.py` holds common formulas and `attention_costs.py` holds KDA,
-tied-latent attention and pooled-indexing formulas. There is one estimator per operation, taking the
-operation's forward arguments plus `entrypoint` and reporting logical FLOPs and
-minimum tensor traffic for the forward and the backward. Logical means the
-mathematical work -- two per multiply-add of a matrix product, a small constant
-per element of an elementwise or normalizing pass, zero for a gather -- and
-work whose extent a shape cannot show is bounded from the shapes: packed
-attention charges every token at `max_seqlen`, a mixture of experts charges
-every assignment as one row of dense expert work. Exact implementations overlay
-physical FLOPs, physical bytes, and invocation-local workspace through their
-own `estimate`.
-
-The same arithmetic reaches PyTorch's flop counter. Every custom operator in
-the `mlops` namespace, forward and backward, carries a flop formula, registered
-with `flop_formula(...)` beside the operator and delegating to the operation's
-canonical estimator, so `torch.utils.flop_counter.FlopCounterMode` counts an
-mlops operator as it counts `aten.mm`, on fake tensors as readily as real ones.
-A consumer that prices a graph by arithmetic intensity -- a partitioner
-deciding what is cheap enough to recompute -- therefore sees each operator as
-it is rather than as unknown. `has_flop_formula(operator)` reports the
-registration, and the test suite requires one of every operator in the `mlops`
-namespace.
-
-## Gradcheck
-
-Use the registry-aware development helper rather than allowing fallback:
-
-```python
-from mlops.dispatch import (
-    GradcheckCase,
-    gradcheck_implementations,
-)
-
-results = gradcheck_implementations([
-    GradcheckCase(
-        operation="rms_norm",
-        inputs=(x_double, weight_double),
-    )
-])
-```
-
-The helper calls `torch.autograd.gradcheck` for each exact implementation.
-Float64-capable implementations must pass; low-precision-only implementations
-are reported as `skipped` with their concrete support reason instead of falling
-back to native Torch. Low-precision custom kernels still require direct VJP,
-repeatability, immutability, and family-parity tests.
-
-## Extending the package
-
-Use [EXTENDING.md](EXTENDING.md) for step-by-step workflows covering a new
-implementation/provider, a new semantic operation, implementation variants,
-explicit entrypoints, cost estimators, optional dependencies, and raw kernels.
-The lower-level adapter invariants and acceptance checklist are in
-[PROVIDERS.md](PROVIDERS.md).
-
-## Expert-parallel modules
-
-`mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
-TEMoELoRA modules with caller-owned groups and communication buffers.
-The `quack/` and `transformer_engine/` directories each contain the layer,
-operators, execution code and LoRA extension. Shared representations and
-reductions live alongside them; `_compat/` contains isolated upstream patches.
-`quack/pipeline/` owns chunk scheduling and transport. The public namespace loads
-GPU implementations lazily, so normal MLOps usage needs no EP dependencies.
-
-CPU contracts and reference math are tested in `tests/expert_parallel/`. The
-opt-in `expert_parallel` pytest gate launches bounded, isolated GPU workers from
-its `gpu/` directory and preserves per-case logs/results. The default suite skips
-these checks. See [configuration, installation and validation](EXPERT_PARALLEL.md).
-
-## Reusable attention and routing
-
-KDA, sparse latent attention and pooled indexing follow the same semantic →
-registration → kernel structure as other operations. Their implementation IDs are
-`cula.kimi_delta_attention.sm90.recompute`, `cula.kimi_delta_attention.sm90`,
-`fla.kimi_delta_attention.chunk` and `fla.kimi_delta_attention.chunk.ieee`;
-`builtin.sparse_latent_attention.hopper`, `builtin.sparse_latent_attention.tilelang`
-and their positional `builtin.sparse_latent_attention.rope.*` counterparts; and
-`cudnn.pooled_topk.sm90` and `builtin.pooled_topk.triton`. Normal bootstrap
-registers their custom operations without importing FLA, cuLA, TileLang,
-FlashMLA or cuDNN Frontend. The accelerator libraries load at execution.
-
-KDA stays distinct from Gated DeltaNet because it has per-channel decay and a
-different residual/gradient contract. Tied-latent attention stays distinct from
-DSA's separate K/V inputs because its backward combines both contributions into
-one shared-bank gradient. Existing APIs absorb smaller variations:
-`swiglu`/`packed_swiglu` accept optional clipping, and `gated_rms_norm`
-accepts SiLU or sigmoid gating. Dense projections, LoRA factors, model composition,
-and checkpoint naming remain caller-owned.
-
-See [ATTENTION.md](ATTENTION.md) for contracts and kernel attribution.
+Optimizer updates use local tensors; the caller owns communication and shard
+placement. Functional, destination-writing and in-place forms share the
+[optimizer implementation](OPTIMIZERS.md). Destination-writing operations
+declare all mutation and require the caller to establish legal ownership.
 
 ## Compiler integration boundary
 
@@ -313,3 +77,11 @@ are opaque to callers. These compiled resources are distinct from invocation
 tensors: preparation does not retain model activations, choose checkpoint cuts
 or implement execution-region chunking. Destination-writing backward overloads
 explicitly declare mutation and are used only when the caller proves it legal.
+
+## Further reading
+
+- [Dispatch](DISPATCH.md): exact selection, precision, cost hints and diagnostics.
+- [Provider requirements](PROVIDERS.md): schemas, fake layouts, residuals and async behavior.
+- [Extension guide](EXTENDING.md): implementation and operation walkthroughs.
+- [Expert parallelism](EXPERT_PARALLEL.md): optional groups, communication and GPU validation.
+- [Attention](ATTENTION.md): geometry, precision and kernel attribution.

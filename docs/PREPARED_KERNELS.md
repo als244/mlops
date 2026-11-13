@@ -6,6 +6,14 @@ not activate them. See the [declaration API](COMPILER_METADATA.md#prepared-imple
 They freeze the implementation already selected by dispatch and autotuning;
 they do not add a search candidate or change checkpoint retention/chunk sizes.
 
+## Contents
+
+- [Triton](#triton)
+- [Quack](#quack)
+- [Caller ownership](#caller-ownership)
+- [Selection ownership and compatibility](#selection-ownership-and-compatibility)
+- [Caller lifecycle](#caller-lifecycle)
+
 ## Triton
 
 `triton_runtime._scope.TritonCalls` registers explicit, plain JITFunctions.
@@ -45,7 +53,7 @@ its backing file have **process lifetime**: Python native extensions are not
 unloaded per task. It owns no device allocations. The CUDA modules it launches
 are separately owned by the pool above.
 
-The initial CUDA contract uses Triton 3.7.1 and pinned loader/cache source.
+The supported loader uses Triton 3.7.1 and pinned loader/cache source.
 Compiler/IR overrides, instrumentation, custom linked libraries, tensor
 descriptors and arbitrary object/JIT-function constexprs are not admitted.
 `_sonic.sonic_triton_calls()` explicitly covers the BF16 Sonic provider's
@@ -78,7 +86,7 @@ hooks still run. The winner's final invocation is captured once; there is no
 additional replay of a mutating task. Entering a benchmark during prepared
 replay refuses.
 
-## Engine ownership
+## Caller ownership
 
 The Sonic factory composes the Quack, Triton, native-launcher and occupancy
 owners into one builder or loader. It validates all components before binding
@@ -91,7 +99,7 @@ The engine binds these assets to each unique executable,
 including full/tail and accumulating forms, stores manifests/blobs, incorporates
 their identity into profiling compatibility, shares loaded objects, and performs
 cold admission before execution. The caller installs its allocator before
-loading the modules; loading precedes Plan layout admission and the final
+loading the modules; loading precedes allocation-layout admission and the final
 physical-budget seal. The measured external footprint includes device-library
 memory outside PyTorch's allocator. This adapter prepares its selected external
 kernels. Prebuilt PyTorch/cuBLAS libraries can still initialize lazily on their

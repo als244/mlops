@@ -28,26 +28,8 @@ The generic pool grows from 48 to 57 rather than adopting the 192-candidate
 exploration pool. Quack's normal shape, layout, dtype, and epilogue pruning
 still applies, so a particular GEMM sees fewer candidates.
 
-## Selection evidence
-
-A Della H100 sweep used GLM-5.3-Flash expert shapes: 288 experts, top-8
-routing, width 4096, hidden width 2048, LoRA rank/alpha 32, BF16 router,
-2K/4K/8K/16K/32K/64K tokens per rank, BF16/FP8 and full/LoRA training.
-Its 24 SonicMoE cases produced 162 distinct GEMM timing audits, all matched
-against persistent tuning-cache entries. Small adapter projections benefited
-from N=32 and single-CTA clusters; larger projections/backward GEMMs benefited
-from the cooperative M=64/128 tiles.
-
-Starting from the 48-candidate defaults, a greedy selection of nine additions
-puts the best recorded retained candidate within 4.54% of the expanded-pool
-best on every audited GEMM, with a 0.48% geometric-mean slowdown. This is an
-in-sample replay of per-candidate timings, not an independent end-to-end
-performance guarantee. It avoids adding all 34 new exact winners.
-
-Raw audits and the reproducible selection script are stored under the Della
-reservation root `h100-reservation-16011874-20261022/00_moe_layers/`, in
-`autotune_investigation/results/shortlist-190140/`. The replay reads a saved
-copy of the 48-candidate defaults rather than importing the installed policy.
+The shortlist comes from a Hopper GEMM sweep over full and LoRA expert shapes.
+It limits tuning cost; it does not guarantee the same winner on every workload.
 
 ## Timing and caching
 
@@ -86,3 +68,10 @@ not just the visible slice. The normal warm launch cache and selected kernels
 are retained. Each call owns its scratch, and caller-provided buffers keep their
 existing behavior. This patch is source-checked and included in provider cache
 identity; rebuild saved provider artifacts after changing the runtime version.
+
+Default winner results live under `~/.quack/cache`; compiled kernels use
+`/tmp/<user>/quack_cache`. `QUACK_CACHE_DIR` changes both. Use
+`QUACK_FORCE_CACHE_UPDATE=1` to remeasure winners while retaining compiled code.
+Cooperative searches require every rank to enter identical tuner searches with
+identical inputs and ordering. Ordinary independent workers must leave
+`MLOPS_QUACK_TUNE_DISTRIBUTED` disabled.

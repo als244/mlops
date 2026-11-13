@@ -2,28 +2,21 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import re
+import textwrap
 from pathlib import Path
 
 import mlops
-from mlops import dispatch, explicit, optim
+from mlops import dispatch, explicit, operator_metadata, optim
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = PROJECT_ROOT / "docs"
 DOCS = (
     PROJECT_ROOT / "README.md",
-    DOCS_ROOT / "API_REFERENCE.md",
-    DOCS_ROOT / "ARCHITECTURE.md",
-    DOCS_ROOT / "EXPLICIT_OPS.md",
-    DOCS_ROOT / "EXPERT_PARALLEL.md",
-    DOCS_ROOT / "ATTENTION.md",
-    DOCS_ROOT / "EXTENDING.md",
-    DOCS_ROOT / "KERNELS.md",
-    DOCS_ROOT / "OPTIMIZERS.md",
-    DOCS_ROOT / "OPS.md",
-    DOCS_ROOT / "PROVIDERS.md",
-    PROJECT_ROOT / "tests/expert_parallel/README.md",
+    *sorted(DOCS_ROOT.rglob("*.md")),
+    *sorted((PROJECT_ROOT / "tests").rglob("*.md")),
 )
 
 
@@ -85,6 +78,36 @@ def test_local_markdown_anchors_resolve():
             )
 
 
+def test_public_manuals_are_reachable_from_the_documentation_index():
+    manuals = {path.resolve() for path in DOCS_ROOT.rglob("*.md")}
+    pending = [DOCS_ROOT / "README.md"]
+    reached = set()
+    links = re.compile(r"\]\(([^)#]+\.md)(?:#[^)]+)?\)")
+    while pending:
+        page = pending.pop()
+        if page in reached:
+            continue
+        reached.add(page)
+        for raw in links.findall(page.read_text()):
+            target = (page.parent / raw).resolve()
+            if target in manuals and target not in reached:
+                pending.append(target)
+    assert not manuals - reached, sorted(
+        str(path.relative_to(PROJECT_ROOT)) for path in manuals - reached
+    )
+
+
+def test_python_examples_compile():
+    """Shape signatures use text fences; Python examples must have valid syntax."""
+    blocks = re.compile(
+        r"^(?P<indent> *)```python\n(?P<body>.*?)\n(?P=indent)```",
+        re.MULTILINE | re.DOTALL,
+    )
+    for page in DOCS:
+        for index, block in enumerate(blocks.finditer(page.read_text())):
+            ast.parse(textwrap.dedent(block["body"]), filename=f"{page}:{index}")
+
+
 def test_semantic_api_signatures_are_documented():
     reference = (DOCS_ROOT / "OPS.md").read_text()
     for name in mlops.__all__:
@@ -94,11 +117,11 @@ def test_semantic_api_signatures_are_documented():
 
 
 def test_explicit_api_signatures_are_documented():
-    reference = (DOCS_ROOT / "OPS.md").read_text()
+    reference = (DOCS_ROOT / "EXPLICIT_OPS.md").read_text()
     for name in explicit.__all__:
         match = re.search(
-            rf"^#### `explicit\.{re.escape(name)}`\s*$\n(.*?)"
-            rf"(?=^#{{2,4}} |\Z)",
+            rf"^### `explicit\.{re.escape(name)}`\s*$\n(.*?)"
+            rf"(?=^#{{2,3}} |\Z)",
             reference,
             flags=re.MULTILINE | re.DOTALL,
         )
@@ -123,10 +146,16 @@ def test_optimizer_api_signatures_are_documented():
             assert parameter in match.group(1), f"{name}: {parameter}"
 
 
-def test_dispatch_exports_appear_in_api_index():
-    reference = (DOCS_ROOT / "API_REFERENCE.md").read_text()
+def test_dispatch_exports_appear_in_dispatch_reference():
+    reference = (DOCS_ROOT / "DISPATCH.md").read_text()
     for name in dispatch.__all__:
         assert name in reference, f"undocumented dispatch export: {name}"
+
+
+def test_compiler_metadata_exports_are_documented():
+    reference = (DOCS_ROOT / "COMPILER_METADATA.md").read_text()
+    for name in operator_metadata.__all__:
+        assert name in reference, f"undocumented operator metadata: {name}"
 
 
 def test_extension_guide_covers_supported_workflows():

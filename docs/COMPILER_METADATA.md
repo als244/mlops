@@ -66,8 +66,18 @@ projection/bias/scale gradients sum. Stream/feature splitting is not certified.
 
 ## Gradient destinations
 
-`sonicmoe_gradient_accumulation()` describes fresh-backward targets, accumulating
-replacements, eligible output positions, a version and an FX resolver. The
+`sonicmoe_gradient_accumulation()` returns `GradientAccumulation` records with
+fresh-backward targets, accumulating replacements, eligible output positions,
+a version and an FX resolver.
+
+| Record or protocol | Fields supplied to the compiler or resolver |
+| --- | --- |
+| `GradientAccumulation` | `target`, `replacement`, `output_indices`, `version`, `resolve` |
+| `GradientAccumulationContext` | `producer`, `destinations`, `fuse_narrow_gradient_accumulation` |
+| `GradientDestination` | `output_index`, destination FX `Node`, and `operations` between producer and final gradient |
+| `GradientAccumulationSelection` | Selected `output_indices` and literal replacement `keywords` |
+
+The
 resolver takes any object satisfying `GradientAccumulationContext`; it inspects tensor
 metadata in `node.meta["val"]` and never edits the graph. `operations` runs from
 the final gradient toward its producer, excluding tuple extraction.

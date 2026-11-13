@@ -21,7 +21,7 @@ updates are deliberately non-differentiable.
 
 **Status:** Public
 
-```python
+```text
 AdamW(
     params,
     lr: float | Tensor = 1e-3,
@@ -210,7 +210,7 @@ what stochastic rounding keeps.
 
 ## `functional_adamw`
 
-```python
+```text
 functional_adamw(
     parameter,
     gradient,
@@ -244,7 +244,7 @@ own.
 
 ## `adamw`
 
-```python
+```text
 adamw(
     parameter,
     gradient,
@@ -271,7 +271,7 @@ dtype, and device. The function returns the same `out` tuple.
 
 ## `adamw_`
 
-```python
+```text
 adamw_(
     parameter,
     gradient,
@@ -296,7 +296,7 @@ tensors. A manual caller must prove that overwriting the old state is legal.
 
 ## `functional_master_adamw`
 
-```python
+```text
 functional_master_adamw(
     parameter,
     master_parameter,
@@ -322,7 +322,7 @@ and step tensors. Inputs are immutable.
 
 ## `master_adamw`
 
-```python
+```text
 master_adamw(
     parameter,
     master_parameter,
@@ -355,7 +355,7 @@ returns the same `out` tuple.
 
 ## `master_adamw_`
 
-```python
+```text
 master_adamw_(
     parameter,
     master_parameter,

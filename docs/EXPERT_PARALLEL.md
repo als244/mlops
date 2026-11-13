@@ -170,6 +170,10 @@ require fixed GEMM policies (`gemm_tuned=False`); the factory rejects tuned
 configurations. CPU/meta geometry, stable naming and optional imports are
 tested; no GPU check exercises this path.
 
+`buffer_context(config, tokens, ep_group=None)` wraps `create_buffer` and destroys
+the buffer on context exit. Close all borrowing layers and finish their work
+before leaving that context.
+
 `create_buffer` is a convenience function. An already-created compatible MoonEP
 buffer can be passed directly. The supplied buffer fixes the local token
 capacity; input shape must match that capacity. Quack supports `num_chunks` and

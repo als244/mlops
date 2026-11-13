@@ -259,7 +259,8 @@ make only this implementation unavailable.
 
 ### 9. Document and test it
 
-Update the exact implementation table in [OPS.md](OPS.md) and document any
+Update the [implementation registry reference](DISPATCH.md#exact-implementation-registry)
+and the operation's entry in [OPS.md](OPS.md). Document any
 constraints or numerical semantics. Add tests for:
 
 - support and forced-rejection explanations;
@@ -347,7 +348,7 @@ owns reusable logits-to-loss math, while `head_loss` is a larger
 bounded-logits projection/loss operation. A QuACK cross-entropy kernel cannot
 substitute for `head_loss` because it does not own projection or chunking.
 
-As with SonicMoE, the initial QuACK adapters must support **only SM90 and
+As with SonicMoE, these example QuACK adapters support **only SM90 and
 SM100**, represented by `(9, 0)` and `(10, 0)`. Upstream may expose other
 architectures; mlops intentionally rejects them until they are independently
 validated for each registered operation.
@@ -417,7 +418,7 @@ The integration would proceed as follows.
 6. **Preserve the canonical cross-entropy contract.** Match the existing
    semantic contract:
 
-   ```python
+   ```text
    cross_entropy(
        logits,                 # [R, V], floating point
        targets,                # [R], integer class IDs

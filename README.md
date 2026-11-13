@@ -1,191 +1,54 @@
 # mlops
 
-`mlops` is a standalone operation and optimizer library for forward-only
-PyTorch models and ordinary training callers. It provides three tensor-operation
-layers over one set of implementation adapters:
-
-- semantic functions such as `mlops.rms_norm(...)`, with normal autograd;
-- stateless explicit `forward(...)`/`backward(...)` entry points under
-  `mlops.explicit`;
-- exact, per-operation implementation selection under `mlops.dispatch`.
-
-It also provides a standard `torch.optim.Optimizer` implementation under
-`mlops.optim`: allocation-free mixed-precision AdamW. Optimizers
-update local tensors; the caller or training engine owns gradient communication
-and parameter/state sharding.
+Tensor operations, LoRA modules and AdamW for PyTorch. Use ordinary autograd,
+or call stateless forward/VJP functions when managing saved tensors yourself.
+Implementations include native PyTorch and optional accelerated providers.
 
 ```python
-optimizer = mlops.optim.AdamW(
-    model.parameters(),
-    lr=3e-4,
-    betas=(0.9, 0.95),
-    weight_decay=0.1,
-)
+import torch
+import mlops
+
+# Model code uses tensor operations; dispatch selects a supported implementation.
+x = torch.randn(4, 128, device="cuda", requires_grad=True)
+weight = torch.ones(128, device="cuda", requires_grad=True)
+y = mlops.rms_norm(x, weight, eps=1e-5)
+y.square().mean().backward()
 ```
 
-These settings are held in host scalars, so a schedule writes into them rather
-than rebuilding the optimizer -- see
-[Settings a step can change](docs/OPTIMIZERS.md#settings-a-step-can-change).
+The library owns operation math, dispatch and local optimizer updates. Model
+architectures, training loops, distributed state ownership and execution
+schedules belong to the caller.
 
-The constructor follows the normal `torch.optim.AdamW` option and
-parameter-group surface; [the optimizer reference](docs/OPTIMIZERS.md) lists
-the admitted precision policy and unsupported semantic modes.
-
-The package owns accelerated and native-PyTorch implementations, registered
-custom-op/fake/autograd adapters, raw Triton kernels, cost hints, and gradcheck
-helpers. It has no model, training-loop, planner, or execution-engine
-dependency.
-
-## Installation
+## Install
 
 ```bash
 ./scripts/setup.sh
+# Or install into an existing environment:
+./scripts/setup.sh --python /path/to/python
 ```
 
-The script creates `.venv`, installs the supported PyTorch, installs mlops
-editable with cuDNN Frontend, FlashAttention-3, flash-linear-attention,
-Quack, SonicMoE, TileLang, TileKernels and development tools, then verifies the installation.
-It also builds pinned DeepGEMM for fused mHC preprocessing; `--no-deepgemm`
-skips it. This build needs a C++20 compiler with `<format>` and elfutils headers;
-see [provider setup](docs/PROVIDERS.md#deepgemm-mhc-preprocessing-setup).
-It also builds FlashMLA's Hopper sparse-attention forward at a pinned commit for
-the Hopper sparse latent attention provider; `--no-flashmla` skips it, and that
-provider then keeps its TileLang forward.
-On Hopper it also builds cuLA's pinned native KDA forward and fused WY backward
-provider; `--no-cula` skips that build. Set `MLOPS_BUILD_DIR` to place source
-builds outside a quota-limited home directory. See [the attention guide](docs/ATTENTION.md)
-for provider geometry, precision and fallback behavior. FlashAttention-3 is
-installed whatever the local GPU and activated automatically on Hopper GPUs.
-To use an existing virtual or Conda environment:
+See [installation](docs/INSTALLATION.md) for dependencies, optional providers
+and expert-parallel setup. Importing mlops does not initialize the GPU.
 
-```bash
-./scripts/setup.sh --python "$CONDA_PREFIX/bin/python"
-```
+## Use and extend
 
-A minimal install without providers remains:
+| Task | Guide |
+| --- | --- |
+| Find a tensor operation or its shape/dtype rules | [Operations](docs/OPS.md) |
+| Select or diagnose an implementation | [Dispatch](docs/DISPATCH.md) |
+| Add LoRA or configure AdamW | [LoRA](docs/LORA.md), [optimizers](docs/OPTIMIZERS.md) |
+| Manage forward/backward state directly | [Explicit VJPs](docs/EXPLICIT_OPS.md) |
+| Add an implementation or operation | [Extension guide](docs/EXTENDING.md) |
+| Integrate a compiler | [Operator metadata](docs/COMPILER_METADATA.md) |
 
-```bash
-python -m pip install --no-deps -e .
-```
+[All documentation](docs/README.md) · [API index](docs/API_REFERENCE.md) ·
+[Package architecture](docs/ARCHITECTURE.md)
 
-Optional implementation packages are detected lazily. Missing packages make
-only their implementations unavailable.
-
-## Documentation
-
-- [API reference index](docs/API_REFERENCE.md)
-- [Operation API reference](docs/OPS.md)
-- [Package architecture and dispatch](docs/ARCHITECTURE.md)
-- [Extending the package](docs/EXTENDING.md)
-- [Provider implementation contract](docs/PROVIDERS.md)
-- [Explicit entry points](docs/EXPLICIT_OPS.md)
-- [Raw kernel boundary](docs/KERNELS.md)
-- [Optimizer API reference](docs/OPTIMIZERS.md)
-- [Expert-parallel layers and GPU validation](docs/EXPERT_PARALLEL.md)
-- [LoRA modules](docs/LORA.md)
-- [Sequential experts and compressed checkpoint storage](docs/SEQUENTIAL_MOE.md)
-- [Attention, routing and residual mixing](docs/ATTENTION.md)
-- [Operator metadata for compilers](docs/COMPILER_METADATA.md)
-- [Prepared external kernel ownership and compatibility](docs/PREPARED_KERNELS.md)
-
-## Repository layout
-
-```text
-mlops/
-├── pyproject.toml
-├── README.md
-├── src/mlops/              importable package
-│   ├── dispatch/           registry, resolution, overrides, cost/gradcheck APIs
-│   ├── <operation>.py      general tensor functions, including KDA and MLA/DSA
-│   ├── operator_metadata/  output axes, gradient writes, layouts, kernel preparation
-│   ├── preparation/        sequence metadata and external-kernel lifecycle factories
-│   ├── explicit/           public stateless forward/VJP entrypoints
-│   ├── expert_parallel/    optional Quack/TE MoE and LoRA layers
-│   ├── sequential_moe/     bounded sequential experts and LoRA
-│   ├── lora/               dense/expert LoRA configuration and modules
-│   ├── kernels/            private raw Torch/Triton/TileLang mechanics
-│   ├── optim/              PyTorch optimizers and functional/out=/in-place updates
-│   ├── providers/          exact implementation adapters
-│   ├── quack_runtime/      Quack setup, tuning choices and prepared object ownership
-│   └── triton_runtime/     prepared external Triton calls and owned CUDA modules
-├── scripts/                setup and pinned provider builds
-├── tests/                  standalone contract and numerical tests
-└── docs/                   API and contributor documentation
-```
-
-## Validation
+## Validate
 
 ```bash
 python -m pytest -q tests
 ruff check src/mlops tests
 ```
 
-## Expert-parallel modules
-
-`mlops.expert_parallel` contains optional QuackMoE, QuackMoELoRA, TEMoE and
-TEMoELoRA modules with caller-owned groups and communication buffers.
-Their backends are opt-in: setup installs them after everything else, which
-keeps the cuBLAS that Transformer Engine needs. Running setup without the
-flag restores the cuBLAS that torch pins, so pass it every time for an
-environment that uses TE:
-
-```bash
-./scripts/setup.sh --python /path/to/python --expert-parallel both
-```
-
-The optional installer it runs selects/downloads the matching CUDA build tools
-and sets up runtime libraries in the selected environment. It also adds the
-backends to an environment that is already set up:
-
-```bash
-./scripts/setup_expert_parallel.sh --python /path/to/python --backend both
-```
-
-See [expert-parallel configuration, installation and examples](docs/EXPERT_PARALLEL.md).
-
-## Quack autotuning
-
-The SM90 default pool adds four N=96 tiles and nine measured configurations
-to Quack's stock candidates, for 57 generic candidates before shape/epilogue
-pruning. They apply to ordinary MLOps calls, including independent profiling
-workers; distributed tuning is not required. See
-[the selected configurations and evidence](docs/sonicmoe-autotuning.md).
-
-Candidate timing defaults to 50 ms of warmup and 180 ms of measurement across
-three timing windows, using CUDA-event budgets and bounded graph replays.
-Override with `MLOPS_QUACK_TUNE_WARMUP_MS`, `MLOPS_QUACK_TUNE_TIME_MS`, and
-`MLOPS_QUACK_TUNE_SAMPLES`. Existing valid tuning results are reused.
-Under a device allocator that replaces PyTorch's own (only PyTorch's serves
-allocations made during a CUDA graph capture), candidates run eagerly on the
-call's own tensors rather than in a graph over rotated copies; the winner stays
-in the process, and the disk cache keeps only graph-timed sweeps.
-
-`MLOPS_QUACK_TUNE_DISTRIBUTED=1` enables cooperative searches on an initialized
-PyTorch distributed group. The caller must provide identical tuning activations
-and enter identical tuner searches in identical order on every rank. Candidates
-are divided across ranks; local winners are collected, the global winner is
-broadcast, and under PyTorch's own allocator the full score table is cached.
-Independent GPU workers must leave this off.
-
-Quack's tuning results persist under `~/.quack/cache` (`QUACK_CACHE_DIR` overrides
-this path). Quack also applies `QUACK_CACHE_DIR` to its compiled-kernel cache,
-whose default is node-local `/tmp/<user>/quack_cache`. Pointing this override
-at an empty directory starts both caches cold. `QUACK_FORCE_CACHE_UPDATE=1`
-instead forces fresh candidate measurements while retaining compiled kernels. The cache key includes tensor metadata
-and the pruned candidate list. Tuning on a single operand set backs up only
-read/write operands and output/input aliases for supported GEMMs; read-only
-weights and overwritten outputs need no host copies. Unknown kernels retain
-conservative preservation.
-
-
-## Hyper-connections
-
-`mlops.mhc_pre` includes normalization, coefficient projection, gates, Sinkhorn
-and branch-input collapse. `mlops.mhc_combine` includes residual mixing,
-branch expansion and addition. Parameters remain caller-owned tensors.
-Both use the standard semantic/autograd and provider-dispatch interfaces.
-FP32 coefficients are the default; `coefficient_precision="activation"` opts
-into reduced coefficient rounding. DeepGEMM and TileKernels providers are
-eligible on SM90/SM100, with builtin/native fallbacks. See the
-[API contract](docs/OPS.md#hyper-connections) and
-[provider contract](docs/PROVIDERS.md#hyper-connection-implementations).
+Optional multi-GPU tests have a separate [expert-parallel gate](docs/EXPERT_PARALLEL.md).

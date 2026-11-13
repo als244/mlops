@@ -1,9 +1,8 @@
 # Operations API
 
-This is the complete operation reference for the standalone `mlops` package.
-Public semantic calls are documented separately from implementation control,
-contributor helpers, explicit forward/VJP entrypoints, and private dispatcher
-boundaries.
+Semantic tensor calls with ordinary PyTorch autograd. Each entry specifies
+shapes, dtypes, effects, implementations and examples. Separate references cover
+[explicit forward/VJP calls](EXPLICIT_OPS.md) and [implementation selection](DISPATCH.md).
 
 ## Contents
 
@@ -20,10 +19,10 @@ boundaries.
 - [Mixture of experts](#mixture-of-experts)
 - [Hyper-connections](#hyper-connections)
 - [Language-model epilogues](#language-model-epilogues)
-- [Implementation-control API](#implementation-control-api)
-- [Private dispatcher boundary](#private-dispatcher-boundary)
-- [Operation-package example](#operation-package-example)
-- [Explicit operations](#explicit-operations)
+- [Implementation-control API](DISPATCH.md#implementation-control-api)
+- [Private dispatcher boundary](PROVIDERS.md#private-dispatcher-boundary)
+- [Operation-package example](PROVIDERS.md#operation-package-example)
+- [Explicit operations](EXPLICIT_OPS.md#explicit-operation-reference)
 
 ## API scope
 
@@ -205,7 +204,7 @@ replay is correct.
 
 **Signature**
 
-```python
+```text
 embedding(tokens: Tensor, weight: Tensor) -> Tensor
 ```
 
@@ -229,7 +228,7 @@ deterministic sorted accumulation of repeated token IDs.
 
 Only `weight` is differentiable. Backward returns
 `grad_weight[V,D]`, at the builtin implementation's
-[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+[`weight_gradient_dtype`](DISPATCH.md#selection-and-precision) when
 one is set; `tokens` is saved as non-differentiable metadata. No input is
 mutated or aliased.
 
@@ -256,7 +255,7 @@ hidden = embedding(token_ids, model.embed.weight)  # [B,S,D]
 
 **Signature**
 
-```python
+```text
 rms_norm(
     x: Tensor,
     weight: Tensor,
@@ -293,7 +292,7 @@ keeps full precision. The gradients follow the same arithmetic.
 The optimized forward additionally exposes a private FP32 `rstd[R]` residual
 and saves `x`, `weight`, and `rstd`. Backward returns gradients for
 `x` and `weight`, the builtin implementation's `weight` gradient at
-[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+[`weight_gradient_dtype`](DISPATCH.md#selection-and-precision) when
 one is set. No input is mutated.
 
 **Constraints and exceptions**
@@ -317,7 +316,7 @@ normalized = rms_norm(hidden, norm.weight, eps=1e-5)
 
 **Signature**
 
-```python
+```text
 layer_norm(
     x: Tensor,
     weight: Tensor,
@@ -348,7 +347,7 @@ Applies final-dimension LayerNorm with optional affine bias.
 The registered forward privately returns FP32 `mean[R]` and `rstd[R]`.
 Backward returns `grad_x`, `grad_weight`, and `grad_bias` when bias is
 present, the builtin implementation's `grad_weight` and `grad_bias` at
-[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+[`weight_gradient_dtype`](DISPATCH.md#selection-and-precision) when
 one is set. No input is mutated.
 
 **Constraints and exceptions**
@@ -371,7 +370,7 @@ normalized = layer_norm(hidden, weight, bias, eps=1e-5)
 
 **Signature**
 
-```python
+```text
 l2_norm(x: Tensor, eps: float = 1e-6) -> Tensor
 ```
 
@@ -420,7 +419,7 @@ conversion with normalization for Q/K views of packed QKV tensors.
 
 **Signature**
 
-```python
+```text
 gated_rms_norm(
     x: Tensor,
     gate: Tensor,
@@ -475,7 +474,7 @@ output = gated_rms_norm(values, output_gate, norm.weight)
 
 **Signature**
 
-```python
+```text
 swiglu(gate: Tensor, up: Tensor, *, limit: float | None = None) -> Tensor
 ```
 
@@ -528,7 +527,7 @@ activated = swiglu(gate_projection, up_projection)
 
 **Signature**
 
-```python
+```text
 packed_swiglu(packed: Tensor, *, limit: float | None = None) -> Tensor
 ```
 
@@ -575,7 +574,7 @@ activated = packed_swiglu(project(hidden))  # project width is 2F
 
 **Signature**
 
-```python
+```text
 gelu(x: Tensor) -> Tensor
 ```
 
@@ -616,7 +615,7 @@ hidden = gelu(input_projection)
 
 ### `build_rope_tables`
 
-```python
+```text
 build_rope_tables(
     rows: int,
     rotary_dim: int,
@@ -635,7 +634,7 @@ workspace. A module may store them as non-persistent buffers.
 
 **Signature**
 
-```python
+```text
 rope(
     x: Tensor,
     positions: Tensor,
@@ -691,7 +690,7 @@ query = rope(query, positions, 500_000.0, cosine, sine)
 
 **Signature**
 
-```python
+```text
 partial_rope(
     x: Tensor,
     positions: Tensor,
@@ -753,7 +752,7 @@ query = partial_rope(
 
 **Signature**
 
-```python
+```text
 flash_attention(
     q: Tensor,
     k: Tensor,
@@ -872,7 +871,7 @@ absorption can change BF16 intermediate rounding relative to expanded K/V.
 
 **Signature**
 
-```python
+```text
 dsa_indexer_key_norm(
     x: Tensor,
     weight: Tensor,
@@ -924,7 +923,7 @@ key = dsa_indexer_key_norm(key_projection, gain, bias)
 
 **Signature**
 
-```python
+```text
 index_scores(
     q: Tensor,
     k: Tensor,
@@ -976,7 +975,7 @@ scores = index_scores(index_q, index_k, head_weights, lengths)
 
 **Signature**
 
-```python
+```text
 topk_indices(
     scores: Tensor,
     lengths: Sequence[int],
@@ -1029,7 +1028,7 @@ indices = topk_indices(scores, lengths, top_k=2048)
 
 **Signature**
 
-```python
+```text
 selection_mask(
     indices: Tensor,
     lo: int,
@@ -1082,7 +1081,7 @@ mask = selection_mask(indices, seq_start, seq_stop, seq_start, seq_stop)
 
 **Signature**
 
-```python
+```text
 dsa_selection_override(
     decisions: Iterable[Tensor],
 ) -> ContextManager[None]
@@ -1131,7 +1130,7 @@ with dsa_selection_override(reference_indices):
 
 **Signature**
 
-```python
+```text
 dsa_attention(
     q: Tensor,
     k: Tensor,
@@ -1241,7 +1240,7 @@ select either.
 
 **Signature**
 
-```python
+```text
 causal_conv_silu(
     x: Tensor,
     weight: Tensor,
@@ -1302,7 +1301,7 @@ returns both input and weight gradients.
 
 **Signature**
 
-```python
+```text
 causal_conv_silu_qkv(q, k, v, weight, cumulative, chunk_indices=None)
     -> tuple[Tensor, Tensor, Tensor]
 ```
@@ -1373,7 +1372,7 @@ q, k = l2_norm(q.reshape(T, H, D)), l2_norm(k.reshape(T, H, D))
 
 **Signature**
 
-```python
+```text
 prepare_packed_sequence_metadata(
     lengths: Sequence[int] | Tensor,
     like: Tensor,
@@ -1425,7 +1424,7 @@ cumulative, chunks = prepare_packed_sequence_metadata(lengths, hidden)
 
 **Signature**
 
-```python
+```text
 linear_attention(
     q: Tensor,
     k: Tensor,
@@ -1506,7 +1505,7 @@ values = linear_attention(
 
 **Signature**
 
-```python
+```text
 linear_mixer(
     forward_segment: Callable[[Tensor, tuple[int, ...]], Tensor],
     hidden: Tensor,
@@ -1590,7 +1589,7 @@ The ordinary PyTorch expression differentiates all inputs.
 
 **Signature**
 
-```python
+```text
 moe(
     h2: Tensor,
     residual: Tensor,
@@ -1659,7 +1658,7 @@ assignment order, expert offsets, inverse slots, and packed pre-activation
 expert projections. Backward returns gradients for `h2`, `residual`,
 `router_weight`, `w13_experts`, and `w2_experts`; the builtin and SonicMoE
 implementations return the weights' at
-[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+[`weight_gradient_dtype`](DISPATCH.md#selection-and-precision) when
 one is set. A router or expert weight that does not require a gradient
 receives none, and its weight-gradient GEMM is skipped. Router bias, counts,
 probability diagnostics, and discrete route metadata do not receive gradients.
@@ -1818,7 +1817,7 @@ details, not required model graph boundaries.
 
 **Signature**
 
-```python
+```text
 cross_entropy(
     logits: Tensor,
     targets: Tensor,
@@ -1898,7 +1897,7 @@ model buffer.
 
 **Signature**
 
-```python
+```text
 default_head_chunk_size(vocab_size: int) -> int
 ```
 
@@ -1923,7 +1922,7 @@ rows = default_head_chunk_size(vocab_size)
 
 **Signature**
 
-```python
+```text
 head_loss(
     hidden: Tensor,
     head_weight: Tensor,
@@ -1964,7 +1963,7 @@ target is negative adds nothing to the sum and, under `"mean"` without
 The chunked forward never retains `[R,V]` logits. It computes and privately
 saves unit-cotangent `grad_hidden[R,D]` and `grad_head_weight[V,D]`, the
 latter summed over chunks at
-[`weight_gradient_dtype`](API_REFERENCE.md#dispatch-and-development-apis) when
+[`weight_gradient_dtype`](DISPATCH.md#selection-and-precision) when
 one is set. Registered backward scales those tensors out-of-place by the incoming loss
 cotangent and does not rerun projection or cross entropy. This supports
 repeated first-order VJPs but not higher-order differentiation.
@@ -2002,7 +2001,7 @@ to separate RMS/Layer head APIs.
 
 **Signature**
 
-```python
+```text
 lora_head_loss(
     hidden: Tensor, head_weight: Tensor, lora_a: Tensor, lora_b: Tensor,
     targets: Tensor, *, scale: float = 1.0,
@@ -2078,848 +2077,3 @@ loss = lora_head_loss(
 
 Call this operation from the head module selected for LoRA. Merely replacing
 a Linear's forward does not change callers that read its weight directly.
-
-## Implementation-control API
-
-Contributor control lives in `mlops.dispatch`. Overrides are exact,
-context-local, nestable, and frozen before compiler capture.
-
-### `Implementation`
-
-```python
-Implementation(
-    operation: str,
-    implementation_id: str,
-    provider: str,
-    priority: int,
-    deterministic: bool,
-    supports: Callable[..., SupportResult],
-    apply: Callable,
-    forward: Callable | None = None,
-    backward: Callable | None = None,
-    estimate: Callable | None = None,
-)
-```
-
-An immutable stateless record. `provider` names only the source package.
-Selection and artifact manifests always use `implementation_id`. Explicit
-forward/backward are either both present or both absent.
-
-### `SupportResult`
-
-`SupportResult.yes()` and `SupportResult.no(reason)` report support without
-executing a kernel. Forced unsupported implementations fail with this reason.
-
-### `implementation_registry`
-
-`implementation_registry() -> Mapping[str, Mapping[str, Implementation]]`
-returns a read-only snapshot. Registry records contain no tensors.
-
-### `resolve_implementation`
-
-```python
-resolve_implementation(
-    operation: str,
-    *args,
-    surface: str = "semantic",
-    **kwargs,
-) -> Implementation
-```
-
-Filters support, then selects highest priority with exact ID as a deterministic
-tie-breaker. During `torch.compile` or export capture it resolves from tensor
-metadata (device, dtype, shape, and strides) without reading tensor contents,
-and the captured graph keeps the selected implementation.
-
-### `explain_implementation`
-
-Returns the selected/forced ID and every candidate's `SupportResult` without
-running the operation.
-
-### `use_implementation`
-
-`use_implementation(operation, implementation_id)` temporarily forces one
-exact mapping and restores an outer mapping on exit.
-
-### `use_implementations`
-
-`use_implementations(mapping)` temporarily forces several exact operation
-mappings. Unknown operation/ID pairs fail before entering the context.
-
-### `set_implementations`
-
-`set_implementations(mapping)` applies the same validated mappings from that
-point on in the calling context, beside earlier selections. Importing `mlops`
-applies `MLOPS_IMPLEMENTATIONS`, comma-separated `operation=implementation_id`
-pairs, this way, so one environment variable chooses for a whole process tree.
-
-### `capture_dispatch`
-
-Captures exact implementation call counts during one isolated warmup. The
-resolver records automatically; semantic functions contain no trace calls.
-
-### `dispatch_manifest`
-
-Converts a trace into one exact operation-to-implementation mapping and rejects
-an operation that exercised multiple implementations.
-
-### `implementation_pairs`
-
-Builds exact default-versus-native-Torch mappings for verifier sweeps.
-
-### `CostHints`
-
-```python
-CostHints(
-    logical_flops: int | None = None,
-    logical_bytes_accessed: int | None = None,
-    implementation_flops: int | None = None,
-    implementation_bytes_accessed: int | None = None,
-    workspace_bytes: int | None = None,
-    notes: tuple[str, ...] = (),
-)
-```
-
-`None` means undefined; zero means known-zero. Workspace is scratch whose
-lifetime ends when this single forward/backward call returns. It excludes
-caller/module inputs, returned outputs, autograd residuals, reusable tables,
-allocator cache, and runtime leeway.
-
-### `estimate_implementation`
-
-Returns the operation's canonical logical hints merged with the exact
-implementation's optional physical/workspace hints. Every operation with an
-opaque operator has a canonical estimator under `mlops.dispatch`. Common
-formulas live in `logical_costs.py`; KDA, tied-latent attention and pooled-indexing
-formulas live in `attention_costs.py`.
-Estimation examines metadata only and retains no tensors. Profiling remains
-authoritative.
-
-### `flop_formula`
-
-```python
-flop_formula(*operators)
-```
-
-Registers the decorated function as the FLOP count of one or more registered
-custom operators -- the objects `torch.library.custom_op` returns, or their
-`torch.ops` packets -- with `torch.utils.flop_counter`. The function takes the
-operator's arguments, positionally or by name, plus `out_val`, and returns an
-`int`; it runs on fake tensors as readily as real ones and reads shapes, dtypes
-and static arguments only. Every operator in the `mlops` namespace has one,
-forward and backward, delegating to its operation's canonical estimator.
-
-### `has_flop_formula`
-
-Reports whether a registered custom operator, or its `torch.ops` packet, has a
-flop formula.
-
-### `GradcheckCase`
-
-Defines one semantic operation invocation and optional exact implementation
-IDs for batch gradcheck.
-
-### `GradcheckResult`
-
-Reports `passed`, `failed`, or `skipped` plus a reason.
-
-### `gradcheck_implementation`
-
-Calls `torch.autograd.gradcheck` for one exact implementation. Unsupported
-float64/device/layout inputs are skipped; another implementation is never used.
-
-### `gradcheck_implementations`
-
-Runs a sequence of `GradcheckCase` values in deterministic implementation-ID
-order.
-
-### Exact implementation registry
-
-| Operation | Default | Other registered implementations |
-|---|---|---|
-| `cross_entropy` | `builtin.cross_entropy.triton` | `native_torch.cross_entropy` |
-| `embedding` | `builtin.embedding.deterministic` | `native_torch.embedding` |
-| `gelu` | `builtin.gelu.aten_explicit_backward` | `native_torch.gelu` |
-| `rms_norm` | `builtin.rms_norm.triton` | `native_torch.rms_norm` |
-| `layer_norm` | `builtin.layer_norm.triton` | `native_torch.layer_norm` |
-| `swiglu` | `builtin.swiglu.triton` | `builtin.swiglu.triton_legacy`, `native_torch.swiglu` |
-| `packed_swiglu` | `builtin.packed_swiglu.triton` | `builtin.packed_swiglu.triton_legacy`, `native_torch.packed_swiglu` |
-| `rope` | `builtin.rope.triton_table` | `builtin.rope.triton_analytic`, `native_torch.rope` |
-| `partial_rope` | `builtin.partial_rope.triton` | `native_torch.partial_rope` |
-| `flash_attention` | `builtin.flash_attention.aten` | `native_torch.flash_attention` |
-| `head_loss` | `builtin.head_loss.chunked` | `native_torch.head_loss` |
-| `lora_head_loss` | `builtin.lora_head_loss.chunked` | `native_torch.lora_head_loss` |
-| `causal_conv_silu` | `fla.causal_conv_silu` | `native_torch.causal_conv_silu` |
-| `causal_conv_silu_qkv` | `fla.causal_conv_silu_qkv` for supported frozen weights | `builtin.causal_conv_silu_qkv.composed` |
-| `l2_norm` | `fla.l2_norm` | `native_torch.l2_norm` |
-| `gated_rms_norm` | `fla.gated_rms_norm` | `native_torch.gated_rms_norm` |
-| `kimi_delta_attention` | `cula.kimi_delta_attention.sm90.recompute`, `cula.kimi_delta_attention.sm90`, `fla.kimi_delta_attention.chunk` | `fla.kimi_delta_attention.chunk.ieee` (IEEE opt-in) |
-| `sparse_latent_attention` | `builtin.sparse_latent_attention.hopper` on SM90, `builtin.sparse_latent_attention.tilelang`; with positional tails, `builtin.sparse_latent_attention.rope.hopper`, `builtin.sparse_latent_attention.rope.tilelang` | none |
-| `pooled_topk` | `cudnn.pooled_topk.sm90`, `builtin.pooled_topk.triton` | none |
-| `mhc_pre` | `deepgemm.mhc_pre`, `tilekernels.mhc_pre.sinkhorn` on SM90/SM100 | `native_torch.mhc_pre` |
-| `mhc_combine` | `tilekernels.mhc_combine` on SM90/SM100, `builtin.mhc_combine.four_stream` | `native_torch.mhc_combine` |
-| `linear_attention` | `fla.linear_attention.gated_delta_rule` | `native_torch.linear_attention` |
-| `linear_mixer` | `builtin.linear_mixer.packed` | `native_torch.linear_mixer.per_sequence` |
-| `dsa_attention` | `builtin.dsa_attention.sparse` | `native_torch.dsa_attention` |
-| `dsa_indexer_key_norm` | `builtin.dsa_indexer_key_norm.layer_norm` | `native_torch.dsa_indexer_key_norm` |
-| `index_scores` | `builtin.index_scores.einsum` | `native_torch.index_scores` |
-| `moe` | `sonicmoe.moe.composed` on compute capability 9.x/10.x, else `builtin.moe.grouped_gemm_composed` | `sonicmoe.moe`, `builtin.moe.grouped_gemm`, `native_torch.moe` |
-| `adamw` | `builtin.adamw.triton` ([OPTIMIZERS.md](OPTIMIZERS.md)) | none |
-
-## Private dispatcher boundary
-
-Opaque implementations register stable functional custom-op targets in the
-`mlops` namespace. These targets are private to the
-implementation adapter: model and block code calls the semantic façade, while
-manual runtimes call the explicit façade.
-
-Each owning provider module keeps its forward custom op, fake implementation,
-`register_autograd` setup, and optional backward custom op together. Residual
-outputs are visible to FakeTensor and AOTAutograd but hidden from model code.
-Their exact schema is implementation-specific and is therefore documented in
-the provider source rather than frozen as another public ABI.
-
-Every forward and backward schema is functional (`mutates_args=()`), and the
-contract suite runs `torch.library.opcheck` over every registered opaque
-forward. The mutable schemas are auxiliary: the optimizer update targets in
-[OPTIMIZERS.md](OPTIMIZERS.md), and
-`moe_builtin_grouped_gemm_finish_bwd_donate_h13`, a deployment-only VJP that
-writes `grad_h13` into an `h13` a compiler has proven dead and that no mlops
-call path reaches. Target names include operation, provider, and variant—for
-example `l2_norm_fla_fwd` and `moe_builtin_grouped_gemm_fwd`—so captured graphs
-retain exact implementation identity.
-
-## Operation-package example
-
-The following shows the intended dependency direction:
-
-```python
-import torch
-import torch.nn as nn
-
-from mlops import rms_norm, swiglu
-
-
-class FeedForward(nn.Module):
-    def __init__(self, width: int, hidden_width: int):
-        super().__init__()
-        self.norm_weight = nn.Parameter(torch.ones(width))
-        self.gate = nn.Linear(width, hidden_width, bias=False)
-        self.up = nn.Linear(width, hidden_width, bias=False)
-        self.down = nn.Linear(hidden_width, width, bias=False)
-
-    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        normalized = rms_norm(hidden, self.norm_weight)
-        return hidden + self.down(swiglu(self.gate(normalized), self.up(normalized)))
-```
-
-The module owns parameters and composition. The operation package owns tensor
-semantics, implementation selection, registered dispatcher boundaries, and
-VJPs.
-
-## Explicit operations
-
-This section specifies the public, autograd-independent operation surface in
-`mlops.explicit`. It complements the
-model-facing API above: both surfaces use the same implementations, but this
-one exposes forward residuals and VJP arguments directly for callers that
-manage execution and tensor lifetimes.
-
-### Contract
-
-Every module exports exactly two functions:
-
-```python
-forward(*primal_arguments) -> output_and_explicit_residuals
-backward(output_cotangent, *primal_or_residual_arguments) -> input_vjps
-```
-
-The contract is deliberately flat:
-
-- no opaque context or `saved` object is created;
-- every backward dependency is a named argument;
-- forward returns every operation-produced tensor needed by backward;
-- the caller owns residual storage, sizing, lifetime, and transfer;
-- backward returns gradient values and never accumulates into `.grad`;
-- both calls run with autograd recording disabled, even when arguments have
-  `requires_grad=True`;
-- calls are functional: they do not mutate or alias caller arguments; and
-- explicit backward is first-order only.
-
-The surface allocates and returns fresh output tensors.
-
-These entry points use the same implementation resolver and raw implementation math
-as the semantic surface; they are not a second copy of dispatch. Select an
-exact implementation with `use_implementation` or a frozen manifest around
-both calls. Apply-only native-Torch graphs are rejected by the explicit
-surface because they rely on ordinary autograd rather than a raw VJP.
-
-### Import and calling convention
-
-Import the operation module, not its functions individually:
-
-```python
-from mlops.explicit import rms_norm
-
-output, rstd = rms_norm.forward(x, weight, eps=1e-5)
-grad_x, grad_weight = rms_norm.backward(
-    grad_output,
-    x,
-    weight,
-    rstd,
-)
-```
-
-The semantic API keeps the residuals inside registered autograd:
-
-```python
-from mlops import rms_norm
-
-output = rms_norm(x, weight)  # ordinary registered autograd
-```
-
-Models and blocks use the semantic API. Manual runtimes, isolated kernel
-tests, and profilers may use the explicit API. Blocks and models remain
-forward-only and intentionally expose no hand-authored backward methods.
-
-### Tensor conventions
-
-| Symbol | Meaning |
-|---|---|
-| `*` | arbitrary leading dimensions |
-| `T` | flattened token count |
-| `R` | flattened row count |
-| `D` | model or feature width |
-| `V` | vocabulary/embedding rows |
-| `Hq`, `Hkv` | query and key/value heads |
-| `Dh`, `Dv` | query/key and value head widths |
-| `E`, `K`, `F` | experts, selected experts, expert hidden width |
-
-Unless stated otherwise, floating-point primal inputs share a device and
-storage dtype. Statistics such as `rstd`, `mean`, and attention LSE use FP32.
-`lengths` is host metadata with positive entries summing to `T`. Integer IDs,
-positions, routing indices, and sequence metadata are non-differentiable.
-
-### Quick index
-
-| Module | Forward public result | Forward residuals for backward | Backward result |
-|---|---|---|---|
-| `cross_entropy` | per-row FP32 losses | FP32 log-sum-exp | logits |
-| `embedding` | embedding rows | none produced; retain token IDs | table gradient |
-| `rms_norm` | normalized output | `rstd` | input, weight |
-| `layer_norm` | normalized output | `mean`, `rstd` | input, weight, bias |
-| `l2_norm` | normalized output | `rstd`; retain output | input |
-| `gated_rms_norm` | gated output | `rstd` | input, gate, weight |
-| `gelu` | activation | none produced; retain input | input |
-| `swiglu` | activation | none produced; retain gate/up | gate, up |
-| `packed_swiglu` | activation | none produced; retain packed input | packed input |
-| `rope` | rotated tensor | none produced; retain positions | input |
-| `partial_rope` | rotated tensor | none produced; retain positions | input |
-| `flash_attention` | attention output | LSE and sequence metadata | Q, K, V |
-| `dsa_attention` | selected-attention output | LSE; retain selected indices | Q, K, V |
-| `sparse_latent_attention` | shared-latent attention output | output and LSE; retain selected indices | Q, combined KV |
-| `kimi_delta_attention` | recurrent output | cumulative gates, Aqk, Akk and sequence metadata | Q, K, V, log decay, beta |
-| `causal_conv_silu` | convolution output | caller retains cumulative sequence lengths | input, weight |
-| `linear_attention` | recurrent output | FLA gate/matrix and sequence metadata | seven continuous inputs |
-| `moe` | routed output and diagnostics | complete route/dispatch state | hidden, residual, router, expert weights |
-| `head_loss` | scalar loss | seed-one hidden/head VJPs | scaled hidden/head VJPs |
-| `lora_head_loss` | scalar loss | requested hidden/base/A/B seeds | scaled requested VJPs |
-
-### Embedding
-
-#### `explicit.embedding`
-
-**Signatures**
-
-```python
-forward(tokens: Tensor[*], weight: Tensor[V,D]) -> Tensor[* ,D]
-
-backward(
-    tokens: Tensor[*],
-    grad_output: Tensor[* ,D],
-    num_embeddings: int,
-) -> Tensor[V,D]
-```
-
-`forward` performs table lookup. `backward` returns the deterministic dense
-table gradient, including accumulation for repeated IDs. There is no gradient
-for integer `tokens`; the caller supplies `weight.shape[0]` as
-`num_embeddings`. Unlike the other modules' backward, this one takes `tokens`
-before the cotangent.
-
-### Normalization
-
-#### `explicit.rms_norm`
-
-**Signatures**
-
-```python
-forward(
-    x: Tensor[...,D],
-    weight: Tensor[D],
-    eps: float = 1e-5,
-    *,
-    zero_centered: bool = False,
-) -> tuple[Tensor[...,D], Tensor[R]]
-
-backward(
-    grad_output: Tensor[...,D],
-    x: Tensor[...,D],
-    weight: Tensor[D],
-    rstd: Tensor[R],
-    *,
-    zero_centered: bool = False,
-) -> tuple[Tensor[...,D], Tensor[D]]
-```
-
-Forward returns `(output, rstd)`. `rstd` is FP32 and is the only
-operation-produced residual. Backward returns `(grad_x, grad_weight)`, and
-takes the `zero_centered` its forward was given.
-
-#### `explicit.layer_norm`
-
-**Signatures**
-
-```python
-forward(
-    x: Tensor[...,D],
-    weight: Tensor[D],
-    bias: Tensor[D] | None = None,
-    eps: float = 1e-5,
-) -> tuple[Tensor[...,D], Tensor[R], Tensor[R]]
-
-backward(
-    grad_output: Tensor[...,D],
-    x: Tensor[...,D],
-    weight: Tensor[D],
-    mean: Tensor[R],
-    rstd: Tensor[R],
-) -> tuple[Tensor[...,D], Tensor[D], Tensor[D]]
-```
-
-Forward returns `(output, mean, rstd)` with FP32 statistics. Backward returns
-`(grad_x, grad_weight, grad_bias)`. The affine-bias gradient is always
-computed; discard it when forward used `bias=None`.
-
-#### `explicit.l2_norm`
-
-**Signatures**
-
-```python
-forward(x: Tensor[...,D], eps: float = 1e-6)
-    -> tuple[Tensor[...,D], Tensor[*]]
-
-backward(
-    grad_output: Tensor[...,D],
-    output: Tensor[...,D],
-    rstd: Tensor[*],
-    eps: float = 1e-6,
-) -> Tensor[...,D]
-```
-
-Forward returns the FLA normalized output and FP32 reciprocal norm. Backward
-uses the saved normalized `output`, not the original input. This preserves the
-documented FLA BF16 backward precision semantics.
-
-#### `explicit.gated_rms_norm`
-
-**Signatures**
-
-```python
-forward(
-    x: Tensor[...,D],
-    gate: Tensor[...,D],
-    weight: Tensor[D],
-    eps: float = 1e-5,
-    *, activation: str = "silu",
-) -> tuple[Tensor[...,D], Tensor[R]]
-
-backward(
-    grad_output: Tensor[...,D],
-    x: Tensor[...,D],
-    gate: Tensor[...,D],
-    weight: Tensor[D],
-    rstd: Tensor[R],
-    eps: float = 1e-5,
-    *, activation: str = "silu",
-) -> tuple[Tensor[...,D], Tensor[...,D], Tensor[D]]
-```
-
-The operation computes `silu(gate) * RMSNorm(x) * weight`, with
-`sigmoid(gate)` under `activation="sigmoid"`. Backward returns
-`(grad_x, grad_gate, grad_weight)`.
-
-
-`activation` accepts `"silu"` or `"sigmoid"`; other values raise `ValueError`. Use the same choice in explicit forward and backward.
-
-### Activations and rotary position
-
-#### `explicit.gelu`
-
-```python
-forward(x: Tensor[*]) -> Tensor[*]
-backward(grad_output: Tensor[*], x: Tensor[*]) -> Tensor[*]
-```
-
-Applies tanh-approximate GELU and its explicit ATen VJP. Retain `x` for
-backward.
-
-#### `explicit.swiglu`
-
-```python
-forward(
-    gate: Tensor[...,F],
-    up: Tensor[...,F],
-    *, limit: float | None = None,
-) -> Tensor[...,F]
-
-backward(
-    grad_output: Tensor[...,F],
-    gate: Tensor[...,F],
-    up: Tensor[...,F],
-    *, limit: float | None = None,
-) -> tuple[Tensor[...,F], Tensor[...,F]]
-```
-
-Returns `silu(gate) * up`; backward returns `(grad_gate, grad_up)`. Force
-`builtin.swiglu.triton` or the ablation variant
-`builtin.swiglu.triton_legacy` around both calls when selecting a variant.
-
-
-`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into its forward/backward kernels. Use the same limit in both explicit calls.
-
-#### `explicit.packed_swiglu`
-
-```python
-forward(packed: Tensor[...,2F], *, limit: float | None = None) -> Tensor[...,F]
-backward(
-    grad_output: Tensor[...,F],
-    packed: Tensor[...,2F],
-    *, limit: float | None = None,
-) -> Tensor[...,2F]
-```
-
-The first half of `packed` is the gate and the second is the up projection.
-
-
-`limit=None` preserves unclipped behavior. A finite positive `limit` clips gate values above the limit and up values to `[-limit, limit]`; derivatives include the clamp masks. The Triton path fuses this into its forward/backward kernels. Use the same limit in both explicit calls.
-
-#### `explicit.rope`
-
-```python
-forward(
-    x: Tensor[T,H,Dh],
-    positions: integer Tensor[T],
-    base: float,
-    cosine: Tensor[P,Dh],
-    sine: Tensor[P,Dh],
-) -> Tensor[T,H,Dh]
-
-backward(
-    grad_output: Tensor[T,H,Dh],
-    positions: integer Tensor[T],
-    base: float,
-    cosine: Tensor[P,Dh],
-    sine: Tensor[P,Dh],
-) -> Tensor[T,H,Dh]
-```
-
-RoPE produces no saved activation. Backward applies the inverse rotation using
-the same caller-owned `positions`, `base`, `cosine`, and `sine` values. Force
-`builtin.rope.triton_table` or `builtin.rope.triton_analytic` around both calls
-when selecting a variant.
-
-#### `explicit.partial_rope`
-
-```python
-forward(x, positions, base, rotary_dim, cosine, sine) -> Tensor[T,H,Dh]
-backward(grad_output, positions, base, rotary_dim, cosine, sine) -> Tensor[T,H,Dh]
-```
-
-Only the leading `rotary_dim` channels are rotated. Remaining channels are
-copied in forward and backward.
-
-### Attention and sequence operations
-
-#### `explicit.flash_attention`
-
-```python
-forward(
-    q: Tensor[T,Hq,Dh],
-    k: Tensor[T,Hkv,Dh],
-    v: Tensor[T,Hkv,Dh],
-    cu_seqlens: int32 Tensor[L+1],
-    max_seqlen: int,
-    lengths: Sequence[int],
-    *,
-    causal: bool = True,
-    softmax_scale: float | None = None,
-) -> tuple[output, lse]
-
-backward(
-    grad_output, q, k, v, output, lse,
-    cu_seqlens, max_seqlen, lengths,
-    *,
-    causal: bool = True,
-    softmax_scale: float | None = None,
-) -> tuple[grad_q, grad_k, grad_v]
-```
-
-`output` has shape `[T,Hq,Dh]`; `lse` is FP32 `[Hq,T]`.
-`cu_seqlens` contains caller-constructed packed boundaries and `lengths` the
-same boundaries as host integers. Both calls raise `ValueError` unless the
-lengths are positive and cover `T`, `cu_seqlens` is one-dimensional INT32 with
-one more entry, `max_seqlen` is the longest length, and the inputs are
-contiguous; unlike the semantic surface, no sequence may be empty. The explicit
-surface accepts `builtin.flash_attention.aten`; apply-only
-`native_torch.flash_attention` is rejected rather than replaying autograd. The
-explicit backward does not read `deterministic_kernels`.
-
-#### `explicit.dsa_attention`
-
-```python
-forward(q, k, v, indices, lengths) -> tuple[output, lse]
-backward(grad_output, q, k, v, indices, lse, lengths)
-    -> tuple[grad_q, grad_k, grad_v]
-```
-
-`q` and `k` have shape `[T,Hq,Dqk]`, `v` has `[T,Hq,Dv]`, and `indices` has
-`[T,K]`. Selected indices are discrete fixed inputs and receive no gradient.
-
-#### `explicit.kimi_delta_attention`
-
-`forward(q, k, v, g, beta, cumulative, chunks)` returns
-`(output, gates, aqk, akk)`. Retain the original inputs and all three
-residuals for
-`backward(dy, q, k, v, g, beta, gates, aqk, akk, cumulative, chunks)`,
-which returns dQ, dK, dV, dG and dBeta. `gates` is the FP32 cumulative
-decay; `aqk` and `akk` are provider-owned intra-chunk residuals. The native
-cuLA recompute provider returns empty placeholders and rebuilds these matrices
-in backward. Keep the same implementation override for both calls and do not
-mix residuals from different providers. The semantic KDA constraints
-also apply here. Calls do not build an autograd graph.
-
-#### `explicit.sparse_latent_attention`
-
-`forward(q, kv, indices, *, scale)` returns `(output, lse)`.
-`backward(dy, q, kv, indices, output, lse, *, scale)` returns dQ and dKV.
-Retain inputs, output and FP32 softmax `lse`; pass the same `scale`
-to both calls. The semantic tied-latent constraints also apply here.
-
-With `q_rope` and `k_rope` supplied to both functions, `backward` returns
-`(dq, dkv, dq_rope, dk_rope)`. Retain the same already-rotated positional inputs
-from forward. Omitting both preserves the two-gradient return value.
-
-#### `explicit.causal_conv_silu`
-
-```python
-forward(
-    x: Tensor[T,C],
-    weight: Tensor[C,1,Wc],
-    cumulative_lengths: Tensor[*],
-    chunk_indices: Tensor[*] | None = None,
-) -> Tensor[T,C]
-
-backward(
-    grad_output: Tensor[T,C],
-    x: Tensor[T,C],
-    weight: Tensor[C,1,Wc],
-    cumulative_lengths: Tensor[*],
-    chunk_indices: Tensor[*] | None = None,
-) -> tuple[Tensor[T,C], Tensor[C,1,Wc]]
-```
-
-Convolution state resets at every packed boundary. Caller-owned cumulative
-metadata may be an empty tensor for a single sequence and must be passed to
-forward and backward unchanged. Optional caller-owned `chunk_indices` follows
-the same contract and avoids reconstructing the chunk map inside provider
-kernels.
-
-#### `explicit.linear_attention`
-
-```python
-forward(
-    q, k, v, beta, a, a_log, dt_bias,
-    cumulative, chunk_indices, *, scale=None,
-) -> tuple[output, gate, matrix]
-
-backward(
-    grad_output, q, k, v, beta, a, a_log, dt_bias,
-    gate, matrix, cumulative, chunk_indices, *, scale=None,
-) -> tuple[grad_q, grad_k, grad_v, grad_beta, grad_a, grad_a_log, grad_dt_bias]
-```
-
-Q/K use `[T,Hk,Dk]`, V uses `[T,Hv,Dv]`, and `beta`/`a` use `[T,Hv]`.
-`a_log` and `dt_bias` use `[Hv]`. `cumulative` and `chunk_indices` are
-caller-owned round inputs and must be passed unchanged to backward. Forward's
-FLA `gate` and `matrix` are explicit residuals and must remain immutable.
-Omitting `scale` resolves it independently in both calls as `Dk**-0.5`.
-
-### Mixture of experts
-
-#### `explicit.moe`
-
-**Forward signature**
-
-```python
-forward(
-    h2, residual, router_weight, w13_experts, w2_experts,
-    *, top_k: int, routing_mode: str,
-    router_bias=None, n_group: int = 1, topk_group: int = 1,
-    routed_scaling: float = 1.0, lengths=None,
-    weight_precision: str = "float32",
-    swiglu_implementation: str = "builtin.packed_swiglu.triton",
-) -> tuple[
-    output, aux, counts, probability_sum, logits, route_weights,
-    route_ids, order, offsets, slots, h13,
-]
-```
-
-**Backward signature**
-
-```python
-backward(
-    grad_output, grad_aux, grad_probability_sum,
-    h2, router_weight, w13_experts, w2_experts,
-    logits, route_weights, route_ids, order, offsets, slots, h13,
-    *, top_k: int, routing_mode: str, lengths: Sequence[int],
-    swiglu_implementation: str = "builtin.packed_swiglu.triton",
-) -> tuple[grad_h2, grad_residual, grad_router, grad_w13, grad_w2]
-```
-
-`h2` and `residual` have `[...,D]`; `router_weight` is `[E,D]`;
-`w13_experts` is `[E,2F,D]` (gate rows, then up rows); and `w2_experts` is
-`[E,D,F]` -- every weight in `nn.Linear`'s `[out, in]` orientation.
-Backward requires cotangents for the differentiable public `output`, `aux`, and
-`probability_sum` roots. `counts` and discrete routing/dispatch metadata have
-no VJP. Forward and backward must use the same `top_k`, `routing_mode`, packed
-lengths, and builtin routed-SwiGLU implementation. The explicit entry points
-take no `swiglu_limit`: their routed SwiGLU is unclamped.
-
-This atomic operation covers the routed expert path only. Shared-expert
-composition remains ordinary block/model computation and is not reproduced in
-this explicit entry point.
-
-### Losses
-
-#### `explicit.cross_entropy`
-
-**Signatures**
-
-```python
-forward(
-    logits: Tensor[R,V],
-    targets: integer Tensor[R],
-    weight: Tensor[V] | None = None,
-    ignore_index: int = -100,
-) -> tuple[Tensor[R], Tensor[R]]
-
-backward(
-    grad_losses: Tensor[R],
-    logits: Tensor[R,V],
-    targets: integer Tensor[R],
-    logsumexp: Tensor[R],
-    weight: Tensor[V] | None = None,
-    ignore_index: int = -100,
-) -> Tensor[R,V]
-```
-
-Forward returns `(losses, logsumexp)` before reduction. For production dtypes,
-both are FP32. The caller retains `logits`, `targets`, optional class `weight`,
-and `logsumexp`. Backward accepts an arbitrary per-row `grad_losses` and returns
-only `grad_logits`; integer targets and class weights are non-differentiable.
-Neither call records autograd or writes `.grad`.
-
-The builtin Triton explicit path is unweighted. Passing `weight` selects the
-native-Torch implementation unless an exact unsupported override was forced.
-
-### Chunked language-model losses
-
-The head operation uses a memory-bounded one-pass contract: forward creates
-each chunk-local logits tensor once, immediately forms its cross-entropy
-gradient, and returns seed-one parameter/input VJPs. Its backward entry point
-only scales those immutable seeds by the caller-supplied scalar loss
-cotangent.
-
-#### `explicit.head_loss`
-
-```python
-forward(
-    hidden: Tensor[...,D], head_weight: Tensor[V,D],
-    targets: integer Tensor[*],
-    *, chunk_size: int | None = None,
-    valid_rows: int | None = None,
-) -> tuple[loss, grad_hidden_seed, grad_head_seed]
-
-backward(
-    grad_loss, grad_hidden_seed, grad_head_weight_seed,
-) -> tuple[grad_hidden, grad_head_weight]
-```
-
-`loss` is an FP32 scalar. `grad_hidden_seed` has the original hidden shape;
-the head seed matches its parameter. Seeds must remain immutable so the
-same forward result can support repeated VJPs.
-
-
-#### `explicit.lora_head_loss`
-
-```python
-forward(
-    hidden, head_weight, lora_a, lora_b, targets,
-    *, scale=1.0, chunk_size=None, valid_rows=None, reduction="mean",
-    weight_grad_dtype=None, need_hidden_grad=True, need_head_grad=False,
-    need_lora_a_grad=True, need_lora_b_grad=True,
-) -> tuple[loss, grad_hidden_seed, grad_head_seed, grad_lora_a_seed, grad_lora_b_seed]
-
-backward(
-    grad_loss, grad_hidden_seed, grad_head_seed, grad_lora_a_seed, grad_lora_b_seed,
-) -> tuple[grad_hidden, grad_head, grad_lora_a, grad_lora_b]
-```
-
-Gradient requests are explicit and independent of input `requires_grad`.
-An omitted seed and its backward result are `None`. The default requests
-hidden/A/B gradients and omits the frozen base gradient. Hidden gradients have
-the hidden dtype; parameter seeds use `weight_grad_dtype` or compute dtype.
-Seeds are immutable, and calls neither build an autograd graph nor write
-input `.grad`. Factor storage dtype can differ from the compute/seed dtype;
-the explicit caller handles any final cast or accumulation.
-
-### Operations without explicit VJPs
-
-Not every model-facing helper is an atomic differentiable operation:
-
-| Semantic helper | Reason there is no explicit module |
-|---|---|
-| `linear_mixer` | graph-layout/control-flow selection around a caller function |
-| `dsa_indexer_key_norm`, `index_scores`, `sparse_mla`, `sigmoid_topk`, `kda_decay`, `mhc_normalize_streams`, `mhc_coefficients` | ordinary differentiable PyTorch compositions |
-| `causal_conv_silu_qkv`, `mhc_pre`, `mhc_combine` | semantic-only: no implementation registers explicit forward/backward, and ordinary autograd differentiates them |
-| `topk_indices`, `selection_mask`, `pooled_topk` | discrete selection with no mathematical VJP |
-| `build_rope_tables`, `prepare_packed_sequence_metadata` | construction helpers with no differentiable outputs |
-| implementation/diagnostic context managers | execution policy rather than tensor operations |
-
-The package does not hand-author composite block or model backward functions.
-Those remain forward-only PyTorch compositions; an external AOT lowering layer
-may generate stage graph pairs when needed.
-
-### Adding an explicit operation
-
-When an operation gains its first implementation with explicit `forward` and
-`backward`:
-
-1. Add `mlops/explicit/<operation>.py` in the same change.
-2. Export exactly `forward` and `backward` from that module.
-3. Give both functions complete typed signatures and docstrings.
-4. Wrap the actual call in `torch.no_grad()`; do not invoke
-   `torch.autograd.grad`, `Tensor.backward`, or mutate `.grad`.
-5. Return operation-produced residuals directly from forward and name every
-   backward dependency explicitly.
-6. Return gradient values without accumulation or dtype-policy side effects.
-7. Document shapes, dtypes, non-differentiable inputs, residual immutability,
-    implementation constraints, and ordered returns here.
-8. Add explicit-forward and arbitrary-cotangent VJP parity against the
-   registered semantic operation.
-9. Test that outputs have no `grad_fn`, no input `.grad` is populated, and a
-   repeated backward leaves every supplied argument unchanged.
-
-The coverage test fails unless the explicit modules are exactly the
-operations with such an implementation.
