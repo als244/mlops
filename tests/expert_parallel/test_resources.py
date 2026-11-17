@@ -61,7 +61,7 @@ def test_stable_resource_binding_rejects_duplicate_open():
         _RUNTIMES.pop(handle)
 
 
-@pytest.mark.parametrize("precision", ["bf16", "fp8_current"])
+@pytest.mark.parametrize("precision", ["bf16", "fp8_current", "fp8_block"])
 @pytest.mark.parametrize("gradient", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("device", ["cpu", "meta"])
 def test_portable_lora_owns_factors_and_preserves_its_runtime_contract(
@@ -97,6 +97,12 @@ def test_portable_lora_owns_factors_and_preserves_its_runtime_contract(
     assert a._handle != b._handle
     assert _settings(a.resource_spec) == (config, lora)
     assert _settings(config_signature(config)) == (config, None)
+    if precision == "fp8_block":
+        for parameter in a.expert_parameters():
+            assert len(parameter.components()) == 2
+            assert not hasattr(parameter, "_transposed")
+        with pytest.raises(ValueError, match="requires QuackMoELoRA"):
+            QuackMoE.from_resource(config, "test.unsupported.full", device=device)
     assert [tuple(p.shape) for p in a.lora_parameters()] == [
         (4, 16, 256),
         (4, 256, 16),

@@ -3,6 +3,7 @@
 import torch
 from torch import nn
 
+from ....block_fp8 import BlockFP8Weight
 from ...parameters import BF16ComputeWeight
 from .fp8 import QuackFP8Weight
 from .initialization import compute_parameter
@@ -43,9 +44,13 @@ def independent_experts(layer, config, device):
         value = torch.empty(shape, device=device, dtype=torch.bfloat16).normal_(
             0, c.init_std
         )
-        parameter = (
-            nn.Parameter(QuackFP8Weight.quantize(value, dtype=c.weight_grad_dtype))
-            if c.compute_precision == "fp8_current"
-            else compute_parameter(value, c.weight_grad_dtype)
-        )
+        if c.compute_precision == "bf16":
+            parameter = compute_parameter(value, c.weight_grad_dtype)
+        else:
+            container = (
+                BlockFP8Weight if c.compute_precision == "fp8_block" else QuackFP8Weight
+            )
+            parameter = nn.Parameter(
+                container.quantize(value, dtype=c.weight_grad_dtype)
+            )
         layer.register_parameter(name, parameter)

@@ -173,8 +173,8 @@ This interface depends on no training engine. A training engine can serialize
 the factory path, plain `options`, and logical group description, then recreate
 them around build finalization, profiling or execution. Portable runtimes
 require fixed GEMM policies (`gemm_tuned=False`); the factory rejects tuned
-configurations. CPU/meta geometry, stable naming and optional imports are
-tested; no GPU check exercises this path.
+configurations. The tests exercise CPU/meta geometry, stable naming and optional
+imports, plus eager and compiled GPU execution through the named resources.
 
 `buffer_context(config, tokens, ep_group=None)` wraps `create_buffer` and destroys
 the buffer on context exit. Close all borrowing layers and finish their work
@@ -197,7 +197,8 @@ The default single-layer path keeps parameter storage in its private bank.
 Use `TEMoEConfig` and `TEMoE` for Transformer Engine. TE uses one chunk,
 one buffer and BF16 activation transport. Quack supports BF16 or opt-in FP8
 activation transport (`activation_transport="fp8"`). Both support BF16 and
-`fp8_current` expert computation; TE additionally supports `fp8_block`.
+`fp8_current` expert computation. Both LoRA implementations also support
+`fp8_block`; TE additionally supports it for full expert training.
 MXFP8 is not exposed by these implementations.
 
 ## Configuration
@@ -304,7 +305,7 @@ optimizer implementations.
 FP8 parameters also support optimizer publication through
 `compute_weight.copy_(dense_master)`. Dense masters are owned by the caller's
 optimizer, and `dense_master.copy_(compute_weight)` initializes them from the
-compute representation. Quack publishes both independently scaled orientations
+compute representation. Quack's `fp8_current` publishes both independently scaled orientations
 with its Triton quantizers (`kernels/quack_moe/quantize_transpose.py::quantize_weights_fp8`:
 the row quantizer and a batched transposing one, at HBM bandwidth). TE weight quantizers expose a mutating custom
 operation over their payloads and scales and call TE's GPU quantization;
@@ -335,6 +336,21 @@ packed gate/up LoRA projection and a separate down projection. Rank must be a
 multiple of 16. BF16 factor computation and BF16/FP32 gradients are supported;
 base expert precision is configured independently. The default rank and alpha
 are both 32; scaling is alpha/rank.
+
+For a frozen block-scaled FP8 checkpoint on Hopper, set
+`QuackMoEConfig(compute_precision="fp8_block", ...)`. Each routed weight is a
+`BlockFP8Weight`: one E4M3 payload and FP32 scales for its 128×128 blocks. It uses
+MLOps' existing Quack SM90 block GEMMs, including tile transposition in shared
+memory for input gradients. There is no persistent second weight orientation,
+full BF16 dequantized weight, or base-weight gradient allocation. The EP runtime
+still needs its normal communication and replica banks; this option removes the
+second quantization orientation, not those EP resources.
+
+The block base's gate/up rows use checkpoint order (all gate rows, then all up
+rows). LoRA factors retain adjacent gate/up rows, as in other Quack EP modes;
+the projection kernels map between those orders. Loading a checkpoint must
+preserve both the payload and scales. Full expert training with Quack block
+storage is currently rejected. Fixed GEMM policies are required.
 
 ## Package organization
 
@@ -374,7 +390,8 @@ python -m pytest -q -s tests/expert_parallel --run-expert-parallel \
 The gate runs 28 model configurations plus public-API coexistence, MoonEP
 planning, shared expert-bank reuse, FP8 parameter publication, FP8 group
 quantizer and large-offset FP8 quantizer checks. It covers
-full training and LoRA, save/recompute, BF16 and FP8-current, TE FP8-block, and
+full training and LoRA, save/recompute, BF16 and FP8-current, TE FP8-block,
+single-copy Quack FP8-block LoRA, and
 Quack's four-chunk/two-buffer path (including FP8 dispatch). LoRA checks both
 eager and compiled execution. Full-training checks use compiled entrypoints.
 The independent PyTorch reference uses identical expert assignments and checks

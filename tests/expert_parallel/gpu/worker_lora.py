@@ -43,6 +43,15 @@ def reference(layer, x, ids, p, dy, *, internal_router=False):
         ]
     else:
         base = [plain(w) for w in base]
+    if BACKEND == "quack" and c.compute_precision == "fp8_block":
+        # Block weights retain checkpoint gate-then-up rows. The existing EP
+        # LoRA factors and reference use adjacent gate/up rows.
+        w = base[0]
+        base[0] = (
+            w.view(q, 2, c.expert_hidden_dim, c.feature_dim)
+            .transpose(1, 2)
+            .reshape(w.shape)
+        )
     base = [gather(w) for w in base]
     factors = [
         gather(plain(w)).float().requires_grad_() for w in layer.lora_parameters()
@@ -128,8 +137,6 @@ def main():
     p.add_argument("--outdir", type=Path, required=True)
     args = p.parse_args()
     BACKEND = args.backend
-    if BACKEND == "quack" and args.precision == "fp8_block":
-        p.error("Quack supports bf16 and fp8_current")
     if args.portable and BACKEND != "quack":
         p.error("portable resource construction is supported by Quack")
     initialize_group()
@@ -214,6 +221,21 @@ def main():
         )
         + "\n"
     )
+    frozen = [
+        (component, component.clone())
+        for parameter in layer.expert_parameters()
+        for component in (
+            parameter.components()
+            if hasattr(parameter, "components")
+            else (getattr(parameter, "_data", parameter),)
+        )
+    ]
+    if BACKEND == "quack" and args.precision == "fp8_block":
+        assert all(len(p.components()) == 2 for p in layer.expert_parameters())
+        assert all(
+            len(bank.weight_state.compute_weights) == 2
+            for bank in _runtime(layer._handle).banks
+        )
     records, held = [], []
     try:
         modes = (
@@ -297,7 +319,9 @@ def main():
                             for n, a, b in zip(names, gradients, expected_gradients)
                         },
                     }
-                    limit = 0.045 if args.precision == "bf16" else 0.20
+                    limit = {"bf16": 0.045, "fp8_current": 0.20, "fp8_block": 0.08}[
+                        args.precision
+                    ]
                     assert max(errors.values()) < limit, errors
                     assert all(
                         p.grad is None
@@ -444,6 +468,12 @@ def main():
                 "relative_rms": errors,
             }
         )
+        for current, saved in frozen:
+            assert torch.equal(
+                current.contiguous().view(torch.uint8),
+                saved.contiguous().view(torch.uint8),
+            )
+        records.append({"status": "PASS", "test": "frozen_base_components_unchanged"})
         (args.outdir / f"rank{rank}.json").write_text(
             json.dumps(records, indent=2) + "\n"
         )

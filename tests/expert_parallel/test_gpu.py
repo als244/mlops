@@ -72,7 +72,7 @@ def test_shared_expert_banks(ep_environment, request):
     run(command + ["--outdir", str(output)], output, timeout)
 
 
-@pytest.mark.parametrize("precision", ["bf16", "fp8_current"])
+@pytest.mark.parametrize("precision", ["bf16", "fp8_current", "fp8_block"])
 @pytest.mark.parametrize("gradient", ["bf16", "fp32"])
 def test_portable_lora_resources(ep_environment, request, precision, gradient):
     if request.config.getoption("--ep-backend") == "te":
@@ -80,6 +80,8 @@ def test_portable_lora_resources(ep_environment, request, precision, gradient):
     root, world_size, timeout = ep_environment
     output = root / f"portable-lora-{precision}-{gradient}"
     command = worker_command("lora", world_size, output)
+    if precision == "fp8_block":
+        command += ["--dim", "256", "--hidden", "384"]
     run(
         command
         + [
@@ -90,6 +92,45 @@ def test_portable_lora_resources(ep_environment, request, precision, gradient):
             precision,
             "--gradient-dtype",
             gradient,
+            "--execution",
+            "both",
+            "--outdir",
+            str(output),
+        ],
+        output,
+        timeout,
+    )
+
+
+@pytest.mark.parametrize("gradient", ["bf16", "fp32"])
+@pytest.mark.parametrize("chunks,recompute", [(1, False), (4, True)])
+def test_live_block_lora_resources(
+    ep_environment, request, gradient, chunks, recompute
+):
+    if request.config.getoption("--ep-backend") == "te":
+        pytest.skip("Quack single-copy block LoRA")
+    root, world_size, timeout = ep_environment
+    output = root / f"live-block-lora-{gradient}-chunks{chunks}"
+    command = worker_command("lora", world_size, output)
+    if recompute:
+        command += ["--recompute"]
+    run(
+        command
+        + [
+            "--backend",
+            "quack",
+            "--precision",
+            "fp8_block",
+            "--gradient-dtype",
+            gradient,
+            "--dim",
+            "256",
+            "--hidden",
+            "384",
+            "--num-chunks",
+            str(chunks),
+            "--num-buffers",
+            str(min(chunks, 2)),
             "--execution",
             "both",
             "--outdir",

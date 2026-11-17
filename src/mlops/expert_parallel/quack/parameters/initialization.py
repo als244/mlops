@@ -35,6 +35,24 @@ def initialize_expert_parameter(config, bank):
             data.copy_(initial)
         return compute_parameter(data, config.weight_grad_dtype)
 
+    if config.compute_precision == "fp8_block":
+        from ....block_fp8 import BlockFP8Weight
+
+        converted = BlockFP8Weight.quantize(initial, dtype=config.weight_grad_dtype)
+        components = bank.weight_state.parameter_components
+        if config.share_expert_banks:
+            components = tuple(
+                value.to(destination.device)
+                for destination, value in zip(components, converted.components())
+            )
+        else:
+            for destination, value in zip(components, converted.components()):
+                destination.copy_(value)
+        return nn.Parameter(
+            BlockFP8Weight(*components, dtype=config.weight_grad_dtype),
+            requires_grad=False,
+        )
+
     from quack.gemm_w4 import quantize_act_per_token_fp8
 
     rows, row_scales = quantize_act_per_token_fp8(initial.flatten(0, 1))

@@ -70,7 +70,13 @@ class LoRARuntime(_Runtime):
         if len(set(specs)) != 1:
             raise ValueError("Every EP rank must use the same LoRA configuration")
         super().__init__(config, group, device, buffer)
-        self.math = LoRAExperts(self.chunk_cfg, lora, self.banks)
+
+    def _make_math(self):
+        if self.cfg.compute_precision == "fp8_block":
+            from .block_math import BlockLoRAExperts
+
+            return BlockLoRAExperts(self.chunk_cfg, self.lora, self.banks)
+        return LoRAExperts(self.chunk_cfg, self.lora, self.banks)
 
     def _make_bank(self, out_features, in_features):
         return ProjectionBank(
@@ -97,7 +103,11 @@ class LoRARuntime(_Runtime):
         return frozen_shared_math()
 
     def _parameters(self, base, factors):
-        weights = base if self.cfg.compute_precision == "bf16" else (base[:4], base[4:])
+        if self.cfg.compute_precision == "bf16":
+            weights = base
+        else:
+            count = 2 if self.cfg.compute_precision == "fp8_block" else 4
+            weights = (base[:count], base[count:])
         return [(w, *factors[2 * i : 2 * i + 2]) for i, w in enumerate(weights)]
 
     def lora_forward(self, x, p, ids, base, factors, hist, shared):

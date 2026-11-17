@@ -80,7 +80,11 @@ class _WeightState:
 
 
 class _FP8WeightState:
-    """Four physical components with contiguous [home, replica] expert slots."""
+    """FP8 components with contiguous [home, replica] expert slots.
+
+    Current scaling holds two payload orientations and two row-scale vectors;
+    block scaling holds one payload and its 128×128 scales.
+    """
 
     def __init__(self, c, rank, group, out_features, in_features, device):
         from moonep.buffer import create_nvl_dist_tensor, get_vmm_granularity
@@ -101,6 +105,12 @@ class _FP8WeightState:
             torch.float32,
             torch.float32,
         )
+        if c.compute_precision == "fp8_block":
+            shapes = (
+                (out_features, in_features),
+                (math.ceil(out_features / 128), math.ceil(in_features / 128)),
+            )
+            dtypes = (torch.float8_e4m3fn, torch.float32)
         for shape, dtype in zip(shapes, dtypes):
             nbytes = math.prod(shape) * dtype.itemsize
             alignment = math.lcm(int(get_vmm_granularity()), 128 * 128)
@@ -119,10 +129,8 @@ class _FP8WeightState:
         self.parameter_components = tuple(v[:q] for v in self.compute_weights)
 
     def validate_components(self, weights):
-        if len(weights) != 4:
-            raise ValueError(
-                "FP8 requires both payload orientations and both descale vectors"
-            )
+        if len(weights) != len(self.parameter_components):
+            raise ValueError("FP8 component count differs from the declared storage")
         for source, destination in zip(weights, self.parameter_components):
             if (
                 source.shape != destination.shape

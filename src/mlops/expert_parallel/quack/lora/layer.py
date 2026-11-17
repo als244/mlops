@@ -85,6 +85,9 @@ class QuackMoELoRA(QuackMoE):
             "backend": "quack",
             "training": "lora",
             "precision": self.config.compute_precision,
+            "weight_orientations": 2
+            if self.config.compute_precision == "fp8_current"
+            else 1,
             "lora_rank": self.lora_config.rank,
             "lora_scale": self.lora_config.scale,
             "lora_gradient_dtype": str(self.lora_config.gradient_dtype),

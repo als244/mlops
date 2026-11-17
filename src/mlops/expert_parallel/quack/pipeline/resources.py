@@ -49,12 +49,7 @@ class ChunkResources(RuntimeResources):
         self.chunk_cfg = replace(
             config, tokens_per_rank=config.tokens_per_rank // config.num_chunks
         )
-        from .fp8 import ChunkFP8Experts
-
-        math_type = (
-            ChunkExperts if config.compute_precision == "bf16" else ChunkFP8Experts
-        )
-        self.math = math_type(tuned=config.gemm_tuned, model_config=self.chunk_cfg)
+        self.math = self._make_math()
         self.buffers = buffer.buffers
         from .headroom import configure
 
@@ -66,6 +61,14 @@ class ChunkResources(RuntimeResources):
             )
             for b in self.buffers[1:]
         )
+
+    def _make_math(self):
+        from .fp8 import ChunkFP8Experts
+
+        math_type = (
+            ChunkExperts if self.cfg.compute_precision == "bf16" else ChunkFP8Experts
+        )
+        return math_type(tuned=self.cfg.gemm_tuned, model_config=self.chunk_cfg)
 
     @contextmanager
     def execution(self):

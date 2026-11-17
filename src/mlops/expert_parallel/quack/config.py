@@ -37,7 +37,7 @@ class MoEConfig:
     weight_transport: str | None = (
         None  # Derived from compute_precision; legacy explicit values are checked.
     )
-    compute_precision: str = "bf16"  # bf16 | fp8_current
+    compute_precision: str = "bf16"  # bf16 | fp8_current | fp8_block (LoRA)
     activation_transport: str = "bf16"  # FP8 transport is an explicit opt-in.
     reuse_communication_buffers: bool = True
     # Layers using the same caller-owned token buffer can also reuse expert
@@ -147,9 +147,13 @@ class MoEConfig:
             )
         if self.weight_transport not in ("bf16", "fp8"):
             raise ValueError("weight_transport must be bf16 or fp8")
-        if self.compute_precision not in ("bf16", "fp8_current"):
+        if self.compute_precision not in ("bf16", "fp8_current", "fp8_block"):
+            raise ValueError("QuACK SM90 supports bf16, fp8_current or fp8_block")
+        if self.compute_precision == "fp8_block" and (
+            self.gemm_tuned or self.experimental_gemm_sms is not None
+        ):
             raise ValueError(
-                "QuACK SM90 supports bf16 or fp8_current here; block scaling is not implemented"
+                "Block FP8 uses fixed GEMMs without experimental SM budgets"
             )
         if self.activation_transport not in ("bf16", "fp8"):
             raise ValueError("activation_transport must be bf16 or fp8")

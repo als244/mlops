@@ -58,6 +58,8 @@ def initialize(*, name, device, groups, options):
         raise ValueError("runtime resource names must be unique")
     settings = [_settings(item["config"]) for item in descriptions]
     configs = [config for config, _ in settings]
+    if any(c.compute_precision == "fp8_block" and lora is None for c, lora in settings):
+        raise ValueError("Block FP8 named resources require a LoRA configuration")
     if any(c.gemm_tuned for c in configs):
         raise ValueError("portable runtimes require fixed GEMM policies")
     if any(c.tokens_per_rank is None for c in configs):

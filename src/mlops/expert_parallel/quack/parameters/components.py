@@ -2,14 +2,17 @@
 
 import torch
 
+from ....block_fp8 import BlockFP8Weight
 from ...parameters import BF16ComputeWeight
 from .fp8 import COMPONENTS, QuackFP8Weight
 
-FP8_TYPES = (QuackFP8Weight,)
-COMPUTE_WEIGHT_TYPES = (QuackFP8Weight, BF16ComputeWeight)
+FP8_TYPES = (QuackFP8Weight, BlockFP8Weight)
+COMPUTE_WEIGHT_TYPES = (*FP8_TYPES, BF16ComputeWeight)
 
 
 def component_names(precision):
+    if precision == "fp8_block":
+        return ("_data", "_scale")
     if precision != "fp8_current":
         raise ValueError(f"Unsupported QuACK FP8 precision: {precision}")
     return COMPONENTS

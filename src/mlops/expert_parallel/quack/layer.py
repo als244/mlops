@@ -27,6 +27,10 @@ from .shared_operators import _forward as _shared_forward
 
 class QuackMoE(nn.Module):
     def __init__(self, config, ep_group=None, *, buffer, device=None):
+        if type(self) is QuackMoE and config.compute_precision == "fp8_block":
+            raise ValueError(
+                "Block FP8 expert parallelism currently requires QuackMoELoRA"
+            )
         from . import _initialize
 
         _initialize()
@@ -62,6 +66,10 @@ class QuackMoE(nn.Module):
         """
         if cls is not QuackMoE:
             raise NotImplementedError("portable construction supports QuackMoE only")
+        if config.compute_precision == "fp8_block":
+            raise ValueError(
+                "Block FP8 expert parallelism currently requires QuackMoELoRA"
+            )
         return cls._from_resource(config, name, device=device)
 
     @classmethod
