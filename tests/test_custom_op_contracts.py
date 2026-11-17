@@ -33,6 +33,7 @@ embedding = importlib.import_module("mlops.providers.builtin.embedding")
 flash_attention = importlib.import_module("mlops.providers.builtin.flash_attention")
 gelu = importlib.import_module("mlops.providers.builtin.gelu")
 head = importlib.import_module("mlops.providers.builtin.head")
+head_objective = importlib.import_module("mlops.providers.builtin.head_objective")
 lora_head = importlib.import_module("mlops.providers.builtin.lora_head")
 layer_norm = importlib.import_module("mlops.providers.builtin.layer_norm")
 moe = importlib.import_module("mlops.providers.builtin.moe")
@@ -104,6 +105,7 @@ FORWARD_OPERATORS = {
     "gated_rms_norm_fla_fwd": fla_hybrid._gated_forward_op,
     "gelu_builtin_aten_explicit_backward_fwd": gelu._forward_op,
     "head_loss_builtin_chunked_fwd": head._forward_op,
+    "head_objective_builtin_chunked_fwd": head_objective._forward_op,
     "lora_head_loss_builtin_chunked_fwd": lora_head._forward_op,
     "l2_norm_fla_fwd": fla_hybrid._l2_forward_op,
     "layer_norm_builtin_triton_fwd": layer_norm._forward_op,
@@ -307,6 +309,23 @@ def _head_args(weight_grad_dtype=None):
         4,
         7,
         weight_grad_dtype,
+    )
+
+
+def _head_objective_args(weight_grad_dtype=None):
+    return (
+        _parameter(7, 16),
+        _parameter(31, 16),
+        torch.randint(0, 31, (7,), device="cuda"),
+        None,
+        None,
+        1.0,
+        "cross_entropy",
+        [torch.ones(7, device="cuda", dtype=torch.bool), torch.ones(7, device="cuda")],
+        [],
+        4,
+        weight_grad_dtype,
+        [True, True, False, False],
     )
 
 
@@ -639,6 +658,7 @@ OPCHECK_CASES = (
     ),
     ("gelu", gelu._forward_op, _gelu_args),
     ("head", head._forward_op, _head_args),
+    ("head_objective", head_objective._forward_op, _head_objective_args),
     ("lora_head", lora_head._forward_op, _lora_head_args),
     ("flash_attention", flash_attention._forward_op, _flash_attention_args),
     ("dsa_attention", dsa._attention_forward_op, _dsa_args),
@@ -736,6 +756,7 @@ OPCHECK_CASES = (
             ("rms_norm_builtin", rms_norm_builtin._forward_op, _builtin_rms_norm_args),
             ("layer_norm", layer_norm._forward_op, _layer_norm_args),
             ("head", head._forward_op, _head_args),
+            ("head_objective", head_objective._forward_op, _head_objective_args),
             ("lora_head", lora_head._forward_op, _lora_head_args),
             ("moe", moe._forward_op, _moe_args),
             ("moe_prepare", moe_composed._prepare_op, _moe_prepare_args),

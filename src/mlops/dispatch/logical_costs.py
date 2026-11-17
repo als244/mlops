@@ -642,6 +642,52 @@ def lora_head_loss(
     )
 
 
+def head_objective(
+    hidden,
+    head_weight,
+    targets,
+    *,
+    lora_a=None,
+    lora_b=None,
+    need_hidden_grad=True,
+    need_head_grad=True,
+    need_lora_a_grad=True,
+    need_lora_b_grad=True,
+    weight_grad_dtype=None,
+    entrypoint="forward",
+    **_kwargs,
+) -> CostHints:
+    """Projection, normalization and saved VJPs; row callback arithmetic is extra."""
+    if lora_a is None:
+        base = head_loss(
+            hidden,
+            head_weight,
+            targets,
+            need_hidden_grad=need_hidden_grad,
+            need_head_grad=need_head_grad,
+            entrypoint=entrypoint,
+        )
+    else:
+        base = lora_head_loss(
+            hidden,
+            head_weight,
+            lora_a,
+            lora_b,
+            targets,
+            need_hidden_grad=need_hidden_grad,
+            need_head_grad=need_head_grad,
+            need_lora_a_grad=need_lora_a_grad,
+            need_lora_b_grad=need_lora_b_grad,
+            weight_grad_dtype=weight_grad_dtype,
+            entrypoint=entrypoint,
+        )
+    return CostHints(
+        logical_flops=base.logical_flops,
+        logical_bytes_accessed=base.logical_bytes_accessed,
+        notes=(*base.notes, "excludes the installed row objective's scalar arithmetic"),
+    )
+
+
 def embedding(tokens, weight, *, entrypoint="forward", **_kwargs) -> CostHints:
     """A gather of ``weight`` rows; the backward scatters the rows' gradients."""
     rows = tokens.numel()
@@ -757,6 +803,7 @@ for _name, _estimator in (
     ("moe", moe),
     ("cross_entropy", cross_entropy),
     ("head_loss", head_loss),
+    ("head_objective", head_objective),
     ("lora_head_loss", lora_head_loss),
     ("embedding", embedding),
     ("adamw", adamw),
@@ -776,6 +823,7 @@ __all__ = [
     "gated_rms_norm",
     "gelu",
     "head_loss",
+    "head_objective",
     "l2_norm",
     "layer_norm",
     "linear_attention",

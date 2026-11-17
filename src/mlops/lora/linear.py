@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ..head_objective import head_objective
 from ..lora_head import lora_head_loss
 
 
@@ -69,4 +70,21 @@ class LoRAHead(LoRALinear):
             chunk_size=chunk_size,
             valid_rows=valid_rows,
             reduction=reduction,
+        )
+
+    def objective(
+        self, hidden, targets, *, objective, inputs=(), controls=(), chunk_size=None
+    ):
+        """The same chunked objective, including trainable low-rank factors."""
+        return head_objective(
+            hidden,
+            self.weight,
+            targets,
+            objective=objective,
+            inputs=inputs,
+            controls=controls,
+            lora_a=self.lora_a,
+            lora_b=self.lora_b,
+            scale=self.lora_config.scale,
+            chunk_size=chunk_size,
         )

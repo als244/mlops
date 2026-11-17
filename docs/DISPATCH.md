@@ -234,6 +234,7 @@ order.
 | `partial_rope` | `builtin.partial_rope.triton` | `native_torch.partial_rope` |
 | `flash_attention` | `builtin.flash_attention.aten` | `native_torch.flash_attention` |
 | `head_loss` | `builtin.head_loss.chunked` | `native_torch.head_loss` |
+| `head_objective` | `builtin.head_objective.chunked` | `native_torch.head_objective` |
 | `lora_head_loss` | `builtin.lora_head_loss.chunked` | `native_torch.lora_head_loss` |
 | `causal_conv_silu` | `fla.causal_conv_silu` | `native_torch.causal_conv_silu` |
 | `causal_conv_silu_qkv` | `fla.causal_conv_silu_qkv` for supported frozen weights | `builtin.causal_conv_silu_qkv.composed` |

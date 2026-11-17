@@ -11,6 +11,7 @@ Use the guides for a task and the references for exact signatures and constraint
 | Choose a provider, precision or determinism setting | [Dispatch](DISPATCH.md) |
 | Call a VJP and manage saved state | [Explicit operations](EXPLICIT_OPS.md) |
 | Configure low-rank adapters | [LoRA](LORA.md) |
+| Use fused CE, SFT, policy or sampled-distillation losses | [Objectives](OBJECTIVES.md) |
 | Configure AdamW, masters or gradient precision | [Optimizers](OPTIMIZERS.md) |
 | Use attention, routing or residual mixing | [Attention guide](ATTENTION.md) |
 | Distribute experts or bound expert workspace | [Expert parallelism](EXPERT_PARALLEL.md), [sequential experts](SEQUENTIAL_MOE.md) |

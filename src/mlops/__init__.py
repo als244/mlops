@@ -21,6 +21,7 @@ from .flash_attention import flash_attention
 from .gated_rms_norm import gated_rms_norm
 from .gelu import gelu
 from .head import head_loss
+from .head_objective import head_objective
 from .hyper_connection import (
     mhc_coefficients,
     mhc_combine,
@@ -59,6 +60,7 @@ __all__ = [
     "gated_rms_norm",
     "gelu",
     "head_loss",
+    "head_objective",
     "index_scores",
     "kda_decay",
     "kimi_delta_attention",

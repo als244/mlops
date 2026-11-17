@@ -32,6 +32,7 @@ dispatcher, custom-op schemas, fake implementations, or autograd system.
 | `src/mlops/dispatch/` | scalar metadata, exact selection, overrides, tracing, logical costs and flop formulas, gradcheck |
 | `src/mlops/providers/<source>/` | exact implementation adapters; opaque custom-op/fake/autograd registration |
 | `src/mlops/kernels/` | raw Torch/Triton/TileLang mechanics; no selection or fallback |
+| `src/mlops/objectives/` | model-independent summed token formulas and row derivatives; fused head kernels live in `kernels/objectives/` |
 | `src/mlops/optim/` | standard optimizers plus functional, `out=`, and in-place update entrypoints |
 | `src/mlops/preparation/` | graph-visible sequence metadata plus explicit external-kernel build/load factories |
 | `src/mlops/operator_metadata/` | standalone axis, reduction, gradient, layout and preparation declarations; consuming compilers own their adapters |

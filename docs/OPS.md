@@ -41,6 +41,7 @@ from mlops import (
     gated_rms_norm,
     gelu,
     head_loss,
+    head_objective,
     index_scores,
     kda_decay,
     kimi_delta_attention,
@@ -193,6 +194,7 @@ replay is correct.
 | `moe` | routed experts | output + diagnostics | `sonicmoe.moe.composed` on 9.x/10.x / `builtin.moe.grouped_gemm_composed` |
 | `cross_entropy` | training loss | FP32 `[R]` or scalar | `builtin.cross_entropy.triton` |
 | `head_loss` | bounded-logits training epilogue | FP32 scalar | `builtin.head_loss.chunked` |
+| `head_objective` | bounded masked/weighted CE or clipped policy, optional LoRA | FP32 scalar and detached target logprobs | `builtin.head_objective.chunked` |
 | `lora_head_loss` | bounded-logits low-rank head | FP32 scalar | `builtin.lora_head_loss.chunked` |
 
 ## Embedding
@@ -2022,6 +2024,70 @@ Ordinary autograd retains the norm input/statistics and executes its VJP
 separately. Save-versus-recompute policy belongs to graph lowering rather than
 to separate RMS/Layer head APIs.
 
+
+### `head_objective`
+
+**Status:** Public
+
+```text
+head_objective(
+    hidden, head_weight, targets, *, objective,
+    inputs=(), controls=(), lora_a=None, lora_b=None,
+    scale=1.0, chunk_size=None,
+) -> tuple[Tensor, Tensor]
+```
+
+Computes a summed token objective with one vocabulary projection per chunk.
+`hidden[..., D]`, `head_weight[V, D]` and integer `targets[hidden.shape[:-1]]`
+share a device; hidden and weight share a floating dtype. `targets` contains
+vocabulary IDs or the ignored label `-100`. The two results are an FP32 scalar
+loss and detached FP32 target logprobs with the target shape.
+
+| `objective` | Per-token `inputs`, in order | Scalar-tensor `controls`, in order |
+| --- | --- | --- |
+| `"cross_entropy"` | boolean mask, weights | none |
+| `"clipped_policy"` | boolean mask, weights, old logprobs, advantages | clip ratio |
+| `"clipped_policy"` with sampled k3 penalty | same four inputs, reference logprobs | clip ratio, reference beta |
+
+Each row input has the target shape; controls are zero-dimensional device tensors.
+Neither inputs nor controls may require gradients. Masks exclude unsupervised and
+padding rows. Weights may be signed; no token, sequence or microbatch averaging
+is implicit. `clip_ratio` must lie in `[0, 1)` and `reference_beta` must be finite
+and nonnegative. The caller validates these runtime values without making them
+compile-time constants. Masked auxiliary NaNs are neutralized before arithmetic;
+nonfinite participating losses remain visible.
+
+Optional `lora_a[rank, D]` and `lora_b[V, rank]` add
+`scale * (hidden @ lora_a.T) @ lora_b.T`; both factors must be supplied together.
+They compute at hidden dtype with autograd through any casts. `scale` is finite.
+`chunk_size` is a positive maximum number of token rows per projection, with
+the same default as `head_loss`.
+
+On CUDA, the built-in formulas fuse logprob calculation, masking, weighting,
+clipping/reference math and logits gradients in one kernel per chunk. There is
+no Python objective call per chunk and no complete `[tokens, vocabulary]`
+logits allocation. The operation saves only requested hidden/weight/factor
+gradients; frozen weights have neither a gradient buffer nor a gradient matrix
+product. Parameter seeds follow `weight_gradient_dtype`. Backward scales those
+immutable seeds by the upstream scalar without projecting logits again. This
+multiply stays visible to compilation for fusion with accumulation. Repeated
+first-order VJPs are supported; higher-order differentiation is not.
+
+`builtin.head_objective.chunked` is the default. `native_torch.head_objective`
+materializes full logits and differentiates the ordinary formula independently.
+This operation currently exposes the semantic/autograd surface only.
+`LanguageModelHead.objective` and `LoRAHead.objective` bind their own parameters
+to the same operation.
+
+An advanced custom `objective` may instead be an installed module-level callable
+with signature `(logprobs, inputs, controls) -> (scalar_sum, dloss_dlogprobs)`.
+It must be pure, separable across token rows, and supply a correct first-order
+derivative of its scalar sum. The callable runs once per chunk; arbitrary Python
+tensor expressions are not automatically fused inside the opaque operation.
+Saved artifacts must pin its installed source and allocation contract. The
+native-Torch provider differentiates its scalar and ignores the supplied
+derivative, so it can check the custom VJP independently. See the
+[objective guide](OBJECTIVES.md) for examples and limitations.
 
 ### `lora_head_loss`
 

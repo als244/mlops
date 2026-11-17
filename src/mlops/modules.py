@@ -3,6 +3,7 @@
 from torch import nn
 
 from .head import head_loss
+from .head_objective import head_objective
 
 
 class LanguageModelHead(nn.Linear):
@@ -28,6 +29,20 @@ class LanguageModelHead(nn.Linear):
             chunk_size=chunk_size,
             valid_rows=valid_rows,
             reduction=reduction,
+        )
+
+    def objective(
+        self, hidden, targets, *, objective, inputs=(), controls=(), chunk_size=None
+    ):
+        """A summed token objective with one projection and saved VJPs per chunk."""
+        return head_objective(
+            hidden,
+            self.weight,
+            targets,
+            objective=objective,
+            inputs=inputs,
+            controls=controls,
+            chunk_size=chunk_size,
         )
 
 

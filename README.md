@@ -37,6 +37,7 @@ and expert-parallel setup. Importing mlops does not initialize the GPU.
 | Find a tensor operation or its shape/dtype rules | [Operations](docs/OPS.md) |
 | Select or diagnose an implementation | [Dispatch](docs/DISPATCH.md) |
 | Add LoRA or configure AdamW | [LoRA](docs/LORA.md), [optimizers](docs/OPTIMIZERS.md) |
+| Train with bounded CE or policy-loss heads | [Objectives](docs/OBJECTIVES.md) |
 | Manage forward/backward state directly | [Explicit VJPs](docs/EXPLICIT_OPS.md) |
 | Add an implementation or operation | [Extension guide](docs/EXTENDING.md) |
 | Integrate a compiler | [Operator metadata](docs/COMPILER_METADATA.md) |

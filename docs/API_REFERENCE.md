@@ -9,6 +9,7 @@ walkthrough, or use this table to find signatures, shapes and supported options.
 | `mlops.explicit` | Stateless forward/VJP calls and saved arguments | [Explicit operations](EXPLICIT_OPS.md) |
 | `mlops.dispatch` | Selection, precision, support diagnostics, costs and gradcheck | [Dispatch](DISPATCH.md) |
 | `mlops.optim` | `AdamW`, functional, destination-writing and in-place updates | [Optimizers](OPTIMIZERS.md) |
+| `mlops.objectives` | Summed masked/weighted CE and clipped-policy formulas on target logprobs | [Objectives](OBJECTIVES.md) |
 | `mlops.lora` | `LoRAConfig`, `LoRALinear`, `LoRAHead`, `apply_lora`, `parameter_report` | [LoRA](LORA.md) |
 | `mlops.expert_parallel` | Quack/Transformer Engine MoE and LoRA layers | [Expert parallelism](EXPERT_PARALLEL.md) |
 | `mlops.sequential_moe` | Bounded per-expert execution and LoRA | [Sequential experts](SEQUENTIAL_MOE.md) |

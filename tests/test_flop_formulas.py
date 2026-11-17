@@ -42,6 +42,7 @@ OPAQUE_OPERATIONS = frozenset(
         "gated_rms_norm",
         "gelu",
         "head_loss",
+        "head_objective",
         "lora_head_loss",
         "l2_norm",
         "layer_norm",
