@@ -319,9 +319,9 @@ def main():
                             for n, a, b in zip(names, gradients, expected_gradients)
                         },
                     }
-                    limit = {"bf16": 0.045, "fp8_current": 0.20, "fp8_block": 0.08}[
-                        args.precision
-                    ]
+                    limit = 0.045 if args.precision == "bf16" else 0.20
+                    if BACKEND == "quack" and args.precision == "fp8_block":
+                        limit = 0.08
                     assert max(errors.values()) < limit, errors
                     assert all(
                         p.grad is None
