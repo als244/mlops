@@ -146,6 +146,31 @@ def test_the_row_kernels_clamp_as_the_builtin_does():
 
 
 @hopper
+@pytest.mark.parametrize("scale", [0.5, 1.0, 2.0])
+def test_scaled_lora_epilogue_preserves_preactivation_and_clamp(scale):
+    from mlops.kernels.quack_moe.swiglu_limit import swiglu_limit_scaled_add
+    from mlops.kernels.quack_moe.swiglu_rows import swiglu_rows
+
+    torch.manual_seed(15)
+    x = torch.randn(128, 32, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(256, 32, device="cuda", dtype=torch.bfloat16)
+    base = torch.randn(128, 256, device="cuda", dtype=torch.bfloat16)
+    result = swiglu_limit_scaled_add(
+        x,
+        b.T,
+        C=base,
+        limit=LIMIT,
+        alpha=scale,
+        tuned=False,
+    )
+    expected = (scale * (x.float() @ b.float().T) + base.float()).bfloat16()
+    torch.testing.assert_close(result["D"], expected)
+    torch.testing.assert_close(
+        result["postact"], swiglu_rows(result["D"], limit=LIMIT), rtol=1e-2, atol=1e-2
+    )
+
+
+@hopper
 def test_the_gated_epilogues_clamp_as_the_row_kernels_do():
     from quack.gemm_interface import gemm
 

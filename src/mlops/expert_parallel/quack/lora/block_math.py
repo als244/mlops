@@ -33,7 +33,9 @@ class BlockLoRAExperts(LoRAExperts):
         a, b = self.banks[0].factors.compute_weights
         z = self._low(x, a, cu)
         contribution = self._low(z, b, cu, scale=self.lora.scale)
-        preact, activation = lora_up_projection(x, _weight(weight), contribution, cu)
+        preact, activation = lora_up_projection(
+            x, _weight(weight), contribution, cu, limit=self.cfg.swiglu_limit
+        )
         self.pw.mask_tail(preact, cu[-1:])
         self.pw.mask_tail(activation, cu[-1:])
         return preact, activation
@@ -51,7 +53,9 @@ class BlockLoRAExperts(LoRAExperts):
         a, b = self.banks[1].factors.compute_weights
         dz = self._low(dy, b, cu, transpose=False, scale=self.lora.scale)
         r = self._low(dz, a, cu, transpose=False, add=r)
-        return compiled(_down_derivative)(preact, r, probabilities)
+        return compiled(_down_derivative)(
+            preact, r, probabilities, self.cfg.swiglu_limit
+        )
 
     def input_gradient(self, dpreact, weight, cu, out):
         base = input_gradient_rows(

@@ -1,6 +1,6 @@
 """LoRA specialization of the existing chunk/stream scheduler."""
 
-from functools import lru_cache
+from functools import lru_cache, partial
 
 import torch
 import torch.distributed as dist
@@ -8,7 +8,7 @@ import torch.distributed as dist
 from ...lora import signature
 from ..config import config_signature
 from ..runtime import _Runtime
-from ..shared_expert import shared_forward
+from ..shared_expert import frozen_shared_backward, shared_forward
 from ..weights import _Bank
 from .math import LoRAExperts
 from .storage import FactorBank
@@ -40,23 +40,20 @@ class ProjectionBank(_Bank):
         return [*super().external_tensors(), *self.factors.external_tensors()]
 
 
-def frozen_shared_backward(
-    dy, x, gate, up, hidden, gate_weight, up_weight, down_weight
-):
-    dh = (dy @ down_weight).float()
-    g, u = gate.float(), up.float()
-    sigmoid = g.sigmoid()
-    dg = (dh * u * sigmoid * (1 + g * (1 - sigmoid))).to(x.dtype)
-    du = (dh * g * sigmoid).to(x.dtype)
-    return (dg @ gate_weight + du @ up_weight,)
-
-
 @lru_cache(None)
-def frozen_shared_math():
+def frozen_shared_math(swiglu_limit=None):
     options = {"triton.cudagraphs": False, "emulate_precision_casts": True}
     return (
-        torch.compile(shared_forward, fullgraph=True, options=options),
-        torch.compile(frozen_shared_backward, fullgraph=True, options=options),
+        torch.compile(
+            partial(shared_forward, swiglu_limit=swiglu_limit),
+            fullgraph=True,
+            options=options,
+        ),
+        torch.compile(
+            partial(frozen_shared_backward, swiglu_limit=swiglu_limit),
+            fullgraph=True,
+            options=options,
+        ),
     )
 
 
@@ -100,7 +97,7 @@ class LoRARuntime(_Runtime):
             chunk.ready = streams.comm.record_event()
 
     def _shared_math(self):
-        return frozen_shared_math()
+        return frozen_shared_math(self.cfg.swiglu_limit)
 
     def _parameters(self, base, factors):
         if self.cfg.compute_precision == "bf16":

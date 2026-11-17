@@ -133,6 +133,16 @@ def swiglu_limit_add(acc, c, limit):
 
 
 @gemm_epilogue(
+    outputs=("postact",), mode="acc_pair", ops={**_LIMIT, "alpha": Scalar("alpha")}
+)
+def swiglu_limit_scaled_add(acc, c, limit, alpha):
+    """Scale a low-rank contribution before adding the frozen projection."""
+    value = alpha * acc + c
+    gate, up = unpack(value)
+    return {"D": value, "postact": swiglu_clamped(gate, up, limit)}
+
+
+@gemm_epilogue(
     outputs=("postact",),
     mode="packed_cd_b16x2",
     ops={"score": ColVecLoad("score"), **_LIMIT},
@@ -187,4 +197,5 @@ __all__ = [
     "swiglu_clamped",
     "swiglu_limit",
     "swiglu_limit_add",
+    "swiglu_limit_scaled_add",
 ]

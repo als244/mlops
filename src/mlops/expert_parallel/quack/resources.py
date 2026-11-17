@@ -58,6 +58,8 @@ def initialize(*, name, device, groups, options):
         raise ValueError("runtime resource names must be unique")
     settings = [_settings(item["config"]) for item in descriptions]
     configs = [config for config, _ in settings]
+    if any(c.swiglu_limit is not None and lora is None for c, lora in settings):
+        raise ValueError("Clamped SwiGLU resources require a LoRA configuration")
     if any(c.compute_precision == "fp8_block" and lora is None for c, lora in settings):
         raise ValueError("Block FP8 named resources require a LoRA configuration")
     if any(c.gemm_tuned for c in configs):

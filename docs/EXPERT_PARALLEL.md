@@ -337,6 +337,15 @@ multiple of 16. BF16 factor computation and BF16/FP32 gradients are supported;
 base expert precision is configured independently. The default rank and alpha
 are both 32; scaling is alpha/rank.
 
+Quack LoRA accepts `QuackMoEConfig(swiglu_limit=10.0, ...)` for models with
+clamped SwiGLU. The default `None` leaves it unclamped. A positive finite limit
+caps the gate from above and clips the up projection to `[-limit, limit]`,
+after adding the LoRA contribution and before activation. Clipped values have
+zero derivative; values exactly at the boundary pass their gradients. The same
+limit applies to routed and shared experts in BF16, `fp8_current` and `fp8_block`.
+It is included in named-resource signatures. Full-training Quack layers and TE
+do not currently accept this option.
+
 For a frozen block-scaled FP8 checkpoint on Hopper, set
 `QuackMoEConfig(compute_precision="fp8_block", ...)`. Each routed weight is a
 `BlockFP8Weight`: one E4M3 payload and FP32 scales for its 128×128 blocks. It uses

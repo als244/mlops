@@ -23,6 +23,7 @@ def expert_computation_lora(
     interleaved=False,
     shared_weights=(),
     compute_dtype=torch.bfloat16,
+    swiglu_limit=None,
 ):
     accumulation_dtype = (
         torch.float32
@@ -42,6 +43,9 @@ def expert_computation_lora(
             * F.linear(z, gate_up_b[expert].to(compute_dtype)).to(accumulation_dtype)
         ).to(compute_dtype)
         gate, up = (pre[:, 0::2], pre[:, 1::2]) if interleaved else pre.chunk(2, -1)
+        if swiglu_limit is not None:
+            gate = gate.clamp(max=swiglu_limit)
+            up = up.clamp(-swiglu_limit, swiglu_limit)
         h = (F.silu(gate.to(accumulation_dtype)) * up.to(accumulation_dtype)).to(
             compute_dtype
         )
@@ -59,6 +63,9 @@ def expert_computation_lora(
     if shared_weights:
         gate = F.linear(x.to(compute_dtype), shared_weights[0].to(compute_dtype))
         up = F.linear(x.to(compute_dtype), shared_weights[1].to(compute_dtype))
+        if swiglu_limit is not None:
+            gate = gate.clamp(max=swiglu_limit)
+            up = up.clamp(-swiglu_limit, swiglu_limit)
         h = (F.silu(gate.to(accumulation_dtype)) * up.to(accumulation_dtype)).to(
             compute_dtype
         )

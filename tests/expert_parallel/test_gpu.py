@@ -139,3 +139,38 @@ def test_live_block_lora_resources(
         output,
         timeout,
     )
+
+
+@pytest.mark.parametrize("precision", ["bf16", "fp8_current", "fp8_block"])
+@pytest.mark.parametrize("portable", [False, True])
+def test_clamped_lora(ep_environment, request, precision, portable):
+    if request.config.getoption("--ep-backend") == "te":
+        pytest.skip("Quack clamped SwiGLU")
+    root, world_size, timeout = ep_environment
+    output = root / f"clamped-lora-{precision}-portable{portable}"
+    command = worker_command("lora", world_size, output)
+    if portable:
+        command += ["--portable", "--gradient-dtype", "bf16", "--recompute"]
+    run(
+        command
+        + [
+            "--backend",
+            "quack",
+            "--precision",
+            precision,
+            "--swiglu-limit",
+            "0.25",
+            "--alpha",
+            "16",
+            "--dim",
+            "256",
+            "--hidden",
+            "384",
+            "--execution",
+            "both",
+            "--outdir",
+            str(output),
+        ],
+        output,
+        timeout,
+    )

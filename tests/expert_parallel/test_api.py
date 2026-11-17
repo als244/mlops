@@ -39,6 +39,30 @@ def test_lora_defaults_and_invalid_rank():
         LoRAConfig(rank=0)
 
 
+def test_quack_clamp_configuration_and_full_training_rejection():
+    from mlops.expert_parallel import QuackMoE, QuackMoELoRA
+    from mlops.expert_parallel.quack.config import _configuration, config_signature
+    from mlops.expert_parallel.quack.resources import _settings
+
+    options = {
+        "ep_size": 2,
+        "num_experts": 8,
+        "top_k": 2,
+        "model_dim": 256,
+        "expert_hidden_dim": 128,
+        "tokens_per_rank": 32,
+    }
+    for value in (0, -1, float("inf"), float("nan"), True):
+        with pytest.raises(ValueError, match="swiglu_limit"):
+            QuackMoEConfig(**options, swiglu_limit=value)
+    config = QuackMoEConfig(**options, swiglu_limit=10)
+    assert _configuration(config_signature(config)) == config
+    layer = QuackMoELoRA.from_resource(config, "clamped", device="meta")
+    assert _settings(layer.resource_spec) == (config, layer.lora_config)
+    with pytest.raises(ValueError, match="Clamped SwiGLU"):
+        QuackMoE.from_resource(config, "full", device="meta")
+
+
 def test_cpu_import_does_not_load_optional_accelerator_packages():
     code = """
 import importlib.abc

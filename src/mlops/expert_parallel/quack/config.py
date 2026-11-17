@@ -38,6 +38,7 @@ class MoEConfig:
         None  # Derived from compute_precision; legacy explicit values are checked.
     )
     compute_precision: str = "bf16"  # bf16 | fp8_current | fp8_block (LoRA)
+    swiglu_limit: float | None = None  # Routed and shared activation clamp (LoRA).
     activation_transport: str = "bf16"  # FP8 transport is an explicit opt-in.
     reuse_communication_buffers: bool = True
     # Layers using the same caller-owned token buffer can also reuse expert
@@ -63,6 +64,12 @@ class MoEConfig:
     gemm_tuned: bool = False
 
     def __post_init__(self):
+        if self.swiglu_limit is not None and (
+            isinstance(self.swiglu_limit, bool)
+            or not math.isfinite(self.swiglu_limit)
+            or self.swiglu_limit <= 0
+        ):
+            raise ValueError("swiglu_limit must be finite and positive or None")
         for value in (self.experimental_gemm_sms, self.experimental_local_comm_sms):
             if value is not None and (type(value) is not int or value < 1):
                 raise ValueError(

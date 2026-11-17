@@ -87,6 +87,7 @@ def reference(layer, x, ids, p, dy, *, internal_router=False):
         scale=layer.lora_config.scale,
         interleaved=BACKEND == "quack",
         shared_weights=shared,
+        swiglu_limit=getattr(c, "swiglu_limit", None),
     )
     inputs = (value, *factors) if internal_router else (value, probabilities, *factors)
     gradients = list(torch.autograd.grad(out, inputs, dy))
@@ -123,6 +124,7 @@ def main():
     p.add_argument("--top-k", type=int, default=2)
     p.add_argument("--rank", type=int, default=32)
     p.add_argument("--alpha", type=float, default=32)
+    p.add_argument("--swiglu-limit", type=float)
     p.add_argument("--gradient-dtype", choices=["fp32", "bf16"], default="fp32")
     p.add_argument("--num-chunks", type=int, default=1)
     p.add_argument("--num-buffers", type=int, default=1)
@@ -139,6 +141,8 @@ def main():
     BACKEND = args.backend
     if args.portable and BACKEND != "quack":
         p.error("portable resource construction is supported by Quack")
+    if args.swiglu_limit is not None and BACKEND != "quack":
+        p.error("swiglu_limit is supported by Quack LoRA")
     initialize_group()
     if BACKEND == "quack":
         from mlops.expert_parallel import QuackMoEConfig as MoEConfig
@@ -155,6 +159,7 @@ def main():
             "num_chunks": args.num_chunks,
             "num_buffers": args.num_buffers,
             "activation_transport": args.activation_transport,
+            "swiglu_limit": args.swiglu_limit,
         }
         if BACKEND == "quack"
         else {}

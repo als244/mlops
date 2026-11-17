@@ -10,9 +10,8 @@ from quack.gemm_interface import gemm_act, gemm_tuned
 from mlops.kernels.quack_moe.bf16 import _gemm
 from mlops.kernels.quack_moe.pointwise import _Pointwise
 from mlops.kernels.quack_moe.policy import select_policy
+from mlops.kernels.quack_moe.rows import FP8Rows, quantized_rows
 from mlops.kernels.quack_moe.wgrad import scaled_fp8
-
-from ..activation_transport import FP8Rows, quantized_rows
 
 LORA_GEMM = GemmConfig(
     tile_m=128,
@@ -28,13 +27,20 @@ def _dequantize(data, scales):
     return (data.float() * scales[:, None]).to(torch.bfloat16)
 
 
-def _down_derivative(preact, r, probabilities):
+def _down_derivative(preact, r, probabilities, swiglu_limit=None):
     gate, up = preact[:, 0::2].float(), preact[:, 1::2].float()
+    raw_gate, raw_up = gate, up
+    if swiglu_limit is not None:
+        gate = gate.clamp(max=swiglu_limit)
+        up = up.clamp(-swiglu_limit, swiglu_limit)
     s = gate.sigmoid()
     activation = F.silu(gate) * up
     dh = r.float() * probabilities[:, None]
     dgate = dh * up * s * (1 + gate * (1 - s))
     dup = dh * F.silu(gate)
+    if swiglu_limit is not None:
+        dgate = torch.where(raw_gate <= swiglu_limit, dgate, 0.0)
+        dup = torch.where(raw_up.abs() <= swiglu_limit, dup, 0.0)
     dpreact = torch.stack((dgate, dup), dim=-1).flatten(1).to(torch.bfloat16)
     return (
         dpreact,
@@ -131,16 +137,32 @@ class LoRAExperts:
         base = self._linear(x, weight, cu, config=self.policy.up)
         a, b = self.banks[0].factors.compute_weights
         z = self._low(x, a, cu)
-        preact, activation = gemm_act(
-            z,
-            b.mT,
-            C=base,
-            alpha=float(self.lora.scale),
-            activation="swiglu",
-            cu_seqlens_m=cu,
-            config=LORA_GEMM,
-            tuned=False,
-        )
+        if self.cfg.swiglu_limit is not None:
+            from mlops.kernels.quack_moe.swiglu_limit import swiglu_limit_scaled_add
+
+            result = swiglu_limit_scaled_add(
+                z,
+                b.mT,
+                C=base,
+                alpha=float(self.lora.scale),
+                limit=float(self.cfg.swiglu_limit),
+                out_dtype=base.dtype,
+                cu_seqlens_m=cu,
+                config=LORA_GEMM,
+                tuned=False,
+            )
+            preact, activation = result["D"], result["postact"]
+        else:
+            preact, activation = gemm_act(
+                z,
+                b.mT,
+                C=base,
+                alpha=float(self.lora.scale),
+                activation="swiglu",
+                cu_seqlens_m=cu,
+                config=LORA_GEMM,
+                tuned=False,
+            )
         self.pw.mask_tail(preact, cu[-1:])
         self.pw.mask_tail(activation, cu[-1:])
         return preact, activation
@@ -157,7 +179,9 @@ class LoRAExperts:
         a, b = self.banks[1].factors.compute_weights
         dz = self._low(dy, b, cu, transpose=False, scale=self.lora.scale)
         r = self._low(dz, a, cu, transpose=False, add=r)
-        return compiled(_down_derivative)(preact, r, probabilities)
+        return compiled(_down_derivative)(
+            preact, r, probabilities, self.cfg.swiglu_limit
+        )
 
     def input_gradient(self, dpreact, weight, cu, out):
         base = self._linear(
