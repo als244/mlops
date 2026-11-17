@@ -8,7 +8,7 @@ from ..layer import QuackMoE
 from ..parameters.initialization import compute_parameter
 from ..registry import _runtime
 from .operators import forward
-from .runtime import LoRARuntime
+from .parameters import independent_factors
 
 
 class QuackMoELoRA(QuackMoE):
@@ -28,7 +28,23 @@ class QuackMoELoRA(QuackMoE):
                 )
         self._spec = signature(config_signature(self.config), self.lora_config)
 
+    @classmethod
+    def from_resource(cls, config, name, *, lora=None, device="meta"):
+        """Declare frozen expert shards and trainable factors without live resources.
+
+        Bind ``resource_spec`` through the named-resource factory before execution.
+        Parameter initialization/loading and movement remain caller-owned.
+        """
+        layer = cls._from_resource(config, name, device=device)
+        layer.lora_config = lora or LoRAConfig()
+        layer.requires_grad_(False)
+        independent_factors(layer, config, layer.lora_config, device)
+        layer._spec = signature(config_signature(config), layer.lora_config)
+        return layer
+
     def _create_runtime(self, config, group, device, buffer):
+        from .runtime import LoRARuntime
+
         return LoRARuntime(config, self.lora_config, group, device, buffer)
 
     def lora_parameters(self):

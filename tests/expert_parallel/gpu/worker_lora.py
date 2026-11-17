@@ -120,11 +120,18 @@ def main():
     p.add_argument("--shared", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--execution", choices=["eager", "compile", "both"], default="both")
     p.add_argument("--recompute", action="store_true")
+    p.add_argument(
+        "--portable",
+        action="store_true",
+        help="Bind independently owned modules to named runtimes",
+    )
     p.add_argument("--outdir", type=Path, required=True)
     args = p.parse_args()
     BACKEND = args.backend
     if BACKEND == "quack" and args.precision == "fp8_block":
         p.error("Quack supports bf16 and fp8_current")
+    if args.portable and BACKEND != "quack":
+        p.error("portable resource construction is supported by Quack")
     initialize_group()
     if BACKEND == "quack":
         from mlops.expert_parallel import QuackMoEConfig as MoEConfig
@@ -160,21 +167,32 @@ def main():
         compute_precision=args.precision,
         num_shared_experts=int(args.shared),
         num_comm_sms=16,
+        tokens_per_rank=args.tokens if args.portable else None,
         **extra,
     )
-    buffer = create_buffer(config, args.tokens, dist.group.WORLD)
-    layer = Layer(
-        config,
-        buffer=buffer,
-        device=torch.device("cuda", 0),
-        lora=LoRAConfig(
-            rank=args.rank,
-            alpha=args.alpha,
-            gradient_dtype=torch.float32
-            if args.gradient_dtype == "fp32"
-            else torch.bfloat16,
-        ),
+    lora = LoRAConfig(
+        rank=args.rank,
+        alpha=args.alpha,
+        gradient_dtype=torch.float32
+        if args.gradient_dtype == "fp32"
+        else torch.bfloat16,
     )
+    resources = buffer = None
+    if args.portable:
+        from mlops.expert_parallel.quack.resources import initialize
+
+        layer = Layer.from_resource(config, "test.lora", lora=lora, device="cpu").cuda()
+        for parameter in layer.replicated_parameters():
+            dist.broadcast(getattr(parameter, "_data", parameter), src=0)
+        resources = initialize(
+            name="test",
+            device=torch.device("cuda", 0),
+            groups={"exchange": dist.group.WORLD},
+            options={"layers": [{"name": "test.lora", "config": layer.resource_spec}]},
+        )
+    else:
+        buffer = create_buffer(config, args.tokens, dist.group.WORLD)
+        layer = Layer(config, buffer=buffer, device=torch.device("cuda", 0), lora=lora)
     assert all(
         not hasattr(bank, "_replica_grad_owner")
         for bank in _runtime(layer._handle).banks
@@ -435,7 +453,10 @@ def main():
         )
     finally:
         layer.close()
-        buffer.destroy()
+        if resources is not None:
+            resources.close()
+        if buffer is not None:
+            buffer.destroy()
         dist.destroy_process_group()
 
 

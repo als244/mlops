@@ -33,7 +33,6 @@ def __getattr__(name):
     if name in ("MoELayer", "QuackMoE"):
         return import_module(f"{__name__}.layer").QuackMoE
     if name == "QuackMoELoRA":
-        _initialize()
         return import_module(f"{__name__}.lora").QuackMoELoRA
     if name == "ChunkBufferPool":
         return import_module(f"{__name__}.pipeline.buffers").ChunkBufferPool

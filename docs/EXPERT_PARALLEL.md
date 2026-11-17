@@ -132,13 +132,14 @@ buffer.destroy()
 geometry without a process group, MoonEP buffer, or initialized CUDA context.
 Its operators retain a stable name-derived identifier. A later process can bind
 that identifier to a new runtime; module parameters remain independently owned
-by the caller. This path supports Quack full training, not the LoRA or
-Transformer Engine layers, and requires `tokens_per_rank`, since no buffer fixes
-the token capacity.
+by the caller. `QuackMoELoRA.from_resource(config, name, lora=LoRAConfig(...))`
+adds independently owned factors and freezes the base. Both support BF16 and
+FP8-current base storage, with BF16 factor computation and BF16/FP32 factor
+gradients. Portable construction requires `tokens_per_rank`, since no buffer
+fixes the token capacity. Transformer Engine uses live construction.
 
 ```python
 from mlops.expert_parallel import QuackMoE, QuackMoEConfig
-from mlops.expert_parallel.quack.config import config_signature
 
 config = QuackMoEConfig(
     ep_size=2, num_experts=8, top_k=2, model_dim=256,
@@ -146,9 +147,14 @@ config = QuackMoEConfig(
 )
 layer = QuackMoE.from_resource(config, "layers.0.experts")
 options = {"layers": [
-    {"name": "layers.0.experts", "config": config_signature(config)},
+    {"name": "layers.0.experts", "config": layer.resource_spec},
 ]}
 ```
+
+For LoRA, use `QuackMoELoRA.from_resource` to create the layer and the same
+`layer.resource_spec` when declaring its resource. This records the factor rank,
+scaling and precision along with the base settings; the factory instantiates the
+matching LoRA runtime. The operator checks that signature before execution.
 
 The importable factory `mlops.expert_parallel.quack.resources:initialize` takes
 keyword arguments `name`, `device`, `groups`, and `options`. `groups["exchange"]`

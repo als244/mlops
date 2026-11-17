@@ -70,3 +70,31 @@ def test_shared_expert_banks(ep_environment, request):
     output = root / "shared-expert-banks"
     command = worker_command("shared_banks", world_size, output)
     run(command + ["--outdir", str(output)], output, timeout)
+
+
+@pytest.mark.parametrize("precision", ["bf16", "fp8_current"])
+@pytest.mark.parametrize("gradient", ["bf16", "fp32"])
+def test_portable_lora_resources(ep_environment, request, precision, gradient):
+    if request.config.getoption("--ep-backend") == "te":
+        pytest.skip("Quack portable LoRA")
+    root, world_size, timeout = ep_environment
+    output = root / f"portable-lora-{precision}-{gradient}"
+    command = worker_command("lora", world_size, output)
+    run(
+        command
+        + [
+            "--backend",
+            "quack",
+            "--portable",
+            "--precision",
+            precision,
+            "--gradient-dtype",
+            gradient,
+            "--execution",
+            "both",
+            "--outdir",
+            str(output),
+        ],
+        output,
+        timeout,
+    )

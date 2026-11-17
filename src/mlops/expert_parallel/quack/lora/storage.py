@@ -8,6 +8,7 @@ import torch
 
 from ...kernels.grad_reduce import launch_grad_reduce
 from ...lora import packed_pitch
+from .parameters import initialize
 
 
 class FactorBank:
@@ -72,13 +73,7 @@ class FactorBank:
     @torch.no_grad()
     def initialize(self):
         a, b = self.parameter_data
-        initial = torch.empty(
-            a.shape, dtype=self.lora.initialization_dtype, device="cpu"
-        )
-        for expert in initial:
-            torch.nn.init.xavier_uniform_(expert)
-        a.copy_(initial)
-        b.zero_()
+        initialize(a, b, self.lora)
 
     def publish(self, factors):
         if len(factors) != 2:

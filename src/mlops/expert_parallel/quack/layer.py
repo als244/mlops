@@ -62,6 +62,11 @@ class QuackMoE(nn.Module):
         """
         if cls is not QuackMoE:
             raise NotImplementedError("portable construction supports QuackMoE only")
+        return cls._from_resource(config, name, device=device)
+
+    @classmethod
+    def _from_resource(cls, config, name, *, device):
+        """Shared ordinary-state declaration for full and LoRA modules."""
         if config.tokens_per_rank is None:
             raise ValueError("portable construction requires tokens_per_rank")
         layer = cls.__new__(cls)
@@ -76,6 +81,11 @@ class QuackMoE(nn.Module):
         local_parameters(layer, config, device)
         independent_experts(layer, config, device)
         return layer
+
+    @property
+    def resource_spec(self):
+        """Serializable configuration for a separately initialized named runtime."""
+        return self._spec
 
     def _create_runtime(self, config, group, device, buffer):
         from .runtime import _Runtime

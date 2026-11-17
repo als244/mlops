@@ -4,6 +4,7 @@ This module has no dependency on a particular training engine. Its factory accep
 plain options and already resolved process groups; modules only save stable names.
 """
 
+import json
 from contextlib import ExitStack
 
 import torch
@@ -28,10 +29,20 @@ def _close_runtime(handle):
     runtime.close()
 
 
+def _settings(spec):
+    """Decode a full-training or LoRA module's portable operator signature."""
+    if "lora" in json.loads(spec):
+        from ..lora import parse_signature
+
+        base, lora = parse_signature(spec)
+        return _configuration(base), lora
+    return _configuration(spec), None
+
+
 def initialize(*, name, device, groups, options):
     """options['layers'] contains {name, config} records; group is 'exchange'.
 
-    `config` is config_signature(config), including fixed GEMM policies. Parameters
+    `config` is a layer's resource_spec, including fixed GEMM and LoRA settings. Parameters
     are never allocated, initialized or copied here. Shared scratch/banks belong
     to this resource, and are destroyed before the caller closes process groups.
     """
@@ -45,7 +56,8 @@ def initialize(*, name, device, groups, options):
         raise ValueError("provide at least one named layer runtime")
     if len({item["name"] for item in descriptions}) != len(descriptions):
         raise ValueError("runtime resource names must be unique")
-    configs = [_configuration(item["config"]) for item in descriptions]
+    settings = [_settings(item["config"]) for item in descriptions]
+    configs = [config for config, _ in settings]
     if any(c.gemm_tuned for c in configs):
         raise ValueError("portable runtimes require fixed GEMM policies")
     if any(c.tokens_per_rank is None for c in configs):
@@ -56,9 +68,14 @@ def initialize(*, name, device, groups, options):
         with torch.cuda.device(device), torch.device("cpu"):
             buffer = create_buffer(configs[0], configs[0].tokens_per_rank, group)
             resources._stack.callback(buffer.destroy)
-            for description, config in zip(descriptions, configs, strict=True):
+            for description, (config, lora) in zip(descriptions, settings, strict=True):
                 config, bound = bind_buffer(config, buffer, group, device)
-                runtime = _Runtime(config, bound, device, buffer)
+                if lora is None:
+                    runtime = _Runtime(config, bound, device, buffer)
+                else:
+                    from .lora.runtime import LoRARuntime
+
+                    runtime = LoRARuntime(config, lora, bound, device, buffer)
                 try:
                     handle = _register_runtime(runtime, name=description["name"])
                 except BaseException:
