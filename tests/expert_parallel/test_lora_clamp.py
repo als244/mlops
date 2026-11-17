@@ -33,7 +33,7 @@ def test_frozen_shared_expert_clamps_and_keeps_input_gradients(limit):
     torch.testing.assert_close(dx, torch.autograd.grad(expected, x, dy)[0])
 
 
-@pytest.mark.parametrize("limit", [None, 1.5, 10.0])
+@pytest.mark.parametrize("limit", [None, 0.25, 1.5, 10.0])
 def test_routed_derivatives_match_autograd_at_and_outside_boundaries(limit):
     torch.manual_seed(7)
     edge = limit or 1.5
@@ -65,25 +65,34 @@ def test_routed_derivatives_match_autograd_at_and_outside_boundaries(limit):
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_compiled_routed_derivatives_match_compiled_autograd():
+@pytest.mark.parametrize("limit", [0.25, 1.5, 10.0])
+def test_compiled_routed_derivatives_match_compiled_autograd(limit):
     from mlops.expert_parallel.quack.lora.math import compiled
 
     torch.manual_seed(9)
-    preact = (torch.randn(128, 256, device="cuda") * 3).to(torch.bfloat16).float()
+    preact = (
+        (torch.randn(128, 256, device="cuda") * 2 * limit).to(torch.bfloat16).float()
+    )
+    preact[0, :8] = torch.tensor(
+        [limit, limit, -limit, -limit, 2 * limit, 2 * limit, -2 * limit, -2 * limit],
+        device="cuda",
+    )
     preact.requires_grad_()
     probabilities = torch.rand(128, device="cuda", requires_grad=True)
     gradient = torch.randn(128, 128, device="cuda", dtype=torch.bfloat16)
 
     def reference(value, weights):
         gate, up = value[:, 0::2], value[:, 1::2]
-        activation = F.silu(gate.clamp(max=1.5)) * up.clamp(-1.5, 1.5)
+        activation = F.silu(gate.clamp(max=limit)) * up.clamp(-limit, limit)
         return activation * weights[:, None]
 
     expected = torch.autograd.grad(
-        torch.compile(reference, fullgraph=True)(preact, probabilities),
+        torch.compile(reference, fullgraph=True, dynamic=False)(preact, probabilities),
         (preact, probabilities),
         gradient.float(),
     )
-    actual, _, score = compiled(_down_derivative)(preact, gradient, probabilities, 1.5)
+    actual, _, score = compiled(_down_derivative)(
+        preact, gradient, probabilities, limit
+    )
     torch.testing.assert_close(actual, expected[0].to(torch.bfloat16))
     torch.testing.assert_close(score, expected[1], rtol=1e-5, atol=1e-5)

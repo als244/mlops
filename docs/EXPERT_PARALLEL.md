@@ -429,7 +429,11 @@ GPU architecture or the requested device count are unavailable.
 
 See the [test map and worker commands](../tests/expert_parallel/README.md) for
 individual checks. FP8 tolerances compare against BF16 reference math; a passing
-check does not imply bitwise equality. CPU isolation checks block optional
+check does not imply bitwise equality. Clamped FP8 comparisons use a limit
+away from the dense fixture's bulk: row quantization can move a preactivation
+across a clamp boundary, making its derivative jump. Boundary tests instead
+compare the same preactivation and cotangent against compiled autograd, including
+the exact limits and values on both sides. CPU isolation checks block optional
 backend and legacy standalone imports so validation cannot silently use an
 experimental checkout.
 
