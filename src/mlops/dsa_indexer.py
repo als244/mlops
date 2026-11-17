@@ -102,23 +102,39 @@ def pooled_topk(
     *,
     top_k=2048,
 ):
+    """Select causal keys from packed sequences without differentiating selection.
+
+    ``boundaries`` is an integer prefix sum starting at zero and ending at T.
+    CPU metadata is validated eagerly. CUDA metadata stays runtime data through
+    compilation and CUDA graph replay; callers must supply nondecreasing values
+    covering T. Repeated CUDA boundaries reserve empty sequence slots. Payloads
+    and CUDA boundaries must share a device. Allocation sizes depend on shapes,
+    not on the CUDA boundary values.
+    """
     if (
         q.ndim != 3
         or key.shape != (q.shape[0], q.shape[-1])
         or gates.shape != key.shape
     ):
         raise ValueError("Expected Q [T,H,D] and key/gates [T,D]")
-    if position_bias.ndim != 2 or position_bias.shape[1] != q.shape[-1]:
+    if (
+        position_bias.ndim != 2
+        or position_bias.shape[0] < 1
+        or position_bias.shape[1] != q.shape[-1]
+    ):
         raise ValueError("Expected per-pool-position bias [pool_size,D]")
     if head_weights.shape != q.shape[:2]:
         raise ValueError("Expected head weights [T,H]")
     if (
-        boundaries.device.type != "cpu"
-        or boundaries.ndim != 1
+        boundaries.ndim != 1
+        or boundaries.numel() < 2
         or boundaries.dtype not in (torch.int32, torch.int64)
+        or boundaries.device.type not in ("cpu", "cuda")
+        or (boundaries.is_cuda and boundaries.device != q.device)
     ):
         raise ValueError(
-            "Packed sequence boundaries must be explicit CPU integer metadata"
+            "Packed sequence boundaries must be a 1D integer tensor with at least "
+            "two entries, on CPU or the payload CUDA device"
         )
     if top_k < position_bias.shape[0] or top_k % position_bias.shape[0]:
         raise ValueError("top_k must be a positive multiple of pool size")

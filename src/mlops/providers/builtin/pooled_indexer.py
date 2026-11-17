@@ -50,8 +50,8 @@ def _supports(
         return SupportResult.no("pooled selection requires Triton")
     if not all(t.is_cuda for t in (q, key, gates, head_weights, position_bias)):
         return SupportResult.no("pooled selection payloads require CUDA")
-    if boundaries.device.type != "cpu":
-        return SupportResult.no("pooled selection boundaries must be CPU metadata")
+    if boundaries.device.type != "cpu" and boundaries.device != q.device:
+        return SupportResult.no("boundaries must be on CPU or the payload CUDA device")
     if q.shape[-1] > 256:
         return SupportResult.no("pooled selection scores a width of at most 256")
     return SupportResult.yes()

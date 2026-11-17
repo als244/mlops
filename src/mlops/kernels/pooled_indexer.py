@@ -1,4 +1,4 @@
-"""Pooled causal index selection; boundaries are explicit CPU data.
+"""Pooled causal index selection with bounded score workspace.
 
 ``pooled_topk`` scores one chunk of queries against every pooled key of its
 sequence in a single Triton launch, applying the scale, the ReLU and the head
@@ -45,6 +45,19 @@ _PADDING_KEY = -2147483648
 if triton is not None:
 
     @triton.jit
+    def _interval(boundaries, position, COUNT: tl.constexpr):
+        """Upper-bound search; repeated boundaries describe empty slots."""
+        low = tl.full(position.shape, 0, tl.int32)
+        high = tl.full(position.shape, COUNT, tl.int32)
+        for _ in range(COUNT.bit_length()):
+            middle = (low + high) // 2
+            value = tl.load(boundaries + middle, middle < COUNT, other=2147483647)
+            right = value <= position
+            low = tl.where(right, middle + 1, low)
+            high = tl.where(right, high, middle)
+        return low - 1
+
+    @triton.jit
     def _pooled_scores_kernel(
         q_ptr,
         pooled_ptr,
@@ -66,6 +79,10 @@ if triton is not None:
         IEEE: tl.constexpr,
         BLOCK_Q: tl.constexpr,
         BLOCK_K: tl.constexpr,
+        boundaries_ptr=None,
+        pool_offsets_ptr=None,
+        BOUNDARIES: tl.constexpr = 0,
+        TOP_K: tl.constexpr = 0,
     ):
         """Score one [BLOCK_Q, BLOCK_K] tile of queries against pooled keys.
 
@@ -83,16 +100,34 @@ if triton is not None:
         row_ok = row < rows
         pool_ok = pool < n_pools
         position = first_position + row
-        visible = (
-            (((pool + 1) * POOL - 1)[None, :] <= position[:, None])
-            & row_ok[:, None]
-            & pool_ok[None, :]
-        )
+        if BOUNDARIES:
+            sequence = _interval(boundaries_ptr, position, BOUNDARIES)
+            start = tl.load(boundaries_ptr + sequence, row_ok, other=0)
+            stop = tl.load(boundaries_ptr + sequence + 1, row_ok, other=0)
+            pool_start = tl.load(pool_offsets_ptr + sequence, row_ok, other=0)
+            pool_stop = tl.load(pool_offsets_ptr + sequence + 1, row_ok, other=0)
+            pool_end = start[:, None] + (pool[None, :] - pool_start[:, None] + 1) * POOL
+            visible = (
+                (pool[None, :] >= pool_start[:, None])
+                & (pool[None, :] < pool_stop[:, None])
+                & (pool_end <= position[:, None] + 1)
+                & ((stop - start)[:, None] > TOP_K)
+                & row_ok[:, None]
+                & pool_ok[None, :]
+            )
+            active = tl.sum(tl.sum(visible.to(tl.int32), 0), 0) > 0
+        else:
+            visible = (
+                (((pool + 1) * POOL - 1)[None, :] <= position[:, None])
+                & row_ok[:, None]
+                & pool_ok[None, :]
+            )
+            last_position = (
+                first_position + tl.minimum(query_block * BLOCK_Q + BLOCK_Q, rows) - 1
+            )
+            active = (pool_block * BLOCK_K + 1) * POOL - 1 <= last_position
         scores = tl.full((BLOCK_Q, BLOCK_K), float("-inf"), tl.float32)
-        last_position = (
-            first_position + tl.minimum(query_block * BLOCK_Q + BLOCK_Q, rows) - 1
-        )
-        if (pool_block * BLOCK_K + 1) * POOL - 1 <= last_position:
+        if active:
             lane = tl.arange(0, WIDTH_BLOCK)
             lane_ok = lane < WIDTH
             keys = tl.load(
@@ -136,7 +171,7 @@ if triton is not None:
         return tl.where(valid, bits ^ ((bits >> 31) & 0x7FFFFFFF), -2147483648)
 
     @triton.jit
-    def _select_pools_kernel(
+    def _select_row(
         scores_ptr,
         out_ptr,
         n_pools,
@@ -148,6 +183,8 @@ if triton is not None:
         POOL_BLOCK: tl.constexpr,
         ROW_BLOCK: tl.constexpr,
         EMIT_BLOCK: tl.constexpr,
+        pool_start,
+        row,
     ):
         """Write one query's selection from its row of scores.
 
@@ -159,7 +196,6 @@ if triton is not None:
         selection is then written block by block from the cached row, so the
         search's keys are the only whole-row tensor alive.
         """
-        row = tl.program_id(0)
         row_scores = scores_ptr + row.to(tl.int64) * n_pools
         col = tl.arange(0, ROW_BLOCK)
         key = _keys(row_scores, col, col < n_pools)
@@ -189,7 +225,7 @@ if triton is not None:
             )
             # A pool the query cannot see scores -inf and is selected only when
             # fewer than keep pools are visible; it comes out as -1 padding.
-            base = tl.where(key == -2139095041, -1, col * POOL + start)
+            base = tl.where(key == -2139095041, -1, (col - pool_start) * POOL + start)
             for lane in tl.static_range(POOL):
                 tl.store(
                     out_row + slot * POOL + lane,
@@ -207,6 +243,36 @@ if triton is not None:
                 tail_lane < tail_count, start + visible - tail_count + tail_lane, -1
             )
             tl.store(out_row + keep * POOL + tail_lane, tail, mask=tail_lane < POOL - 1)
+
+    @triton.jit
+    def _select_pools_kernel(
+        scores_ptr,
+        out_ptr,
+        n_pools,
+        keep,
+        first_position,
+        start,
+        out_stride,
+        POOL: tl.constexpr,
+        POOL_BLOCK: tl.constexpr,
+        ROW_BLOCK: tl.constexpr,
+        EMIT_BLOCK: tl.constexpr,
+    ):
+        _select_row(
+            scores_ptr,
+            out_ptr,
+            n_pools,
+            keep,
+            first_position,
+            start,
+            out_stride,
+            POOL,
+            POOL_BLOCK,
+            ROW_BLOCK,
+            EMIT_BLOCK,
+            0,
+            tl.program_id(0),
+        )
 
 
 def _validated_ends(boundaries, tokens):
@@ -275,6 +341,12 @@ def pooled_topk(q, key, gates, head_weights, position_bias, boundaries, top_k):
     """
     if triton is None:
         raise RuntimeError("the pooled indexer requires Triton")
+    if boundaries.is_cuda:
+        from .pooled_indexer_runtime import pooled_topk as runtime_topk
+
+        return runtime_topk(
+            q, key, gates, head_weights, position_bias, boundaries, top_k
+        )
     pool, width = position_bias.shape
     tokens, heads, _ = q.shape
     ends = _validated_ends(boundaries, tokens)

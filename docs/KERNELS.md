@@ -60,6 +60,12 @@ selection. `pooled_indexer_cudnn.py`, behind the SM90 priority provider
 (including FP32 head weights) and radix top-k, with the combined score/radix
 workspace capped at 256 MiB.
 
+`pooled_indexer_runtime.py` supplies device-boundary pooling and index emission
+around the shared Triton scorer/selector. Prefix sums and boundary searches stay
+on the GPU; workspace sizes and launch geometry depend only on tensor shapes.
+It supports reserved empty sequence slots and changing packing through compiled
+and CUDA-graph calls. The cuDNN indexer currently consumes CPU boundaries.
+
 FLA KDA uses fast dot precision by default; IEEE intra-chunk arithmetic is
 an explicit implementation override. The optional cuLA SM90 training provider
 replaces the fused WY backward stage while retaining call-local state metadata.

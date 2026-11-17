@@ -173,18 +173,27 @@ FLA.
 boundaries, *, top_k=2048)` returns fixed-size INT32 `[T,top_k+pool_size-1]`
 selected indices, padded with -1.
 
-- Payloads are CUDA tensors; `boundaries` is small, explicit CPU metadata.
-- CPU metadata is a runtime input to the custom op; changing its contents does
-  not recompile the tested graph.
+- Payloads are CUDA tensors. `boundaries` is a one-dimensional INT32/INT64
+  prefix sum, starting at zero and ending at T. It can be on CPU or the payload
+  CUDA device. CPU boundaries are checked eagerly and must be strictly increasing.
+- CUDA boundaries remain device data through compilation and CUDA graph replay.
+  Their values must be nondecreasing and cover T; repeated entries represent
+  empty sequence slots. Validate these values while preparing inputs on the host.
+  Execution does not read them back, synchronize to inspect them, or specialize
+  allocation/launch sizes on their contents. Reuse a fixed tensor shape when
+  changing the number and lengths of packed sequences.
 - On SM90, `cudnn.pooled_topk.sm90` has priority for BF16 Q/K, D=128,
-  H in {16,32,64}, and supported top-k geometry. It uses cuDNN 1.30's CuTe
+  H in {16,32,64}, CPU boundaries and supported top-k geometry. It uses cuDNN 1.30's CuTe
   scorer and radix top-k, preserving FP32 head weights through the typed
   scorer. Pooling and index expansion use Triton.
 - Scoring plus both radix work arrays are chunked within 256 MiB; the
   output index matrix is additional. No full sequence-by-sequence score
   matrix or persistent tensor cache is retained.
-- Other geometries use `builtin.pooled_topk.triton`. It can also be selected
-  explicitly through `MLOPS_IMPLEMENTATIONS`.
+- CUDA boundaries and other geometries use `builtin.pooled_topk.triton`. It can
+  also be selected explicitly through `MLOPS_IMPLEMENTATIONS`. With CUDA
+  boundaries, complete pools use a device prefix sum and scoring uses a reusable
+  workspace bounded by the token capacity. Short sequences still select every
+  causal key; longer ones use the same pooled-score and incomplete-tail rules.
 
 ## Sparse attention and MLA
 
