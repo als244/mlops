@@ -146,6 +146,16 @@ caller-owned device metadata prepared once per packed round by
 `prepare_packed_sequence_metadata`; providers never derive host counts from
 CUDA tensors or retain metadata caches.
 
+For runtime packing, pass a device length tensor to
+`prepare_packed_sequence_metadata(lengths, tokens)`. Reserve sequence slots by
+zero-padding the lengths: `[3, 2, 0, 0]` describes two sequences. The derived
+cumulative offsets are `[0, 3, 5, 5, 5]` (with one additional empty sentinel
+for unused chunk rows in the preparation helper). Cumulative offsets must be
+nondecreasing: trailing zeros after a nonzero offset are invalid. The full
+fixed-size metadata stays on the device; no runtime slicing or host readback
+is needed. Empty slots do not change outputs or gradients, but can increase
+launch work and scratch capacity, so reserve a useful upper bound.
+
 ### Mutation, aliasing, and higher-order gradients
 
 All registered model-facing differentiable operations declare

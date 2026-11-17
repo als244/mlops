@@ -83,4 +83,13 @@ def test_cuda_graph_replay_uses_changed_boundary_contents():
         _assert_same_selection(output, _oracle(*args[:5], host, 16), args[:5], ends, 2)
 
 
+def test_thousands_of_empty_sequence_slots_preserve_selection():
+    args, _ = _inputs((73, 38, 17, 128), width=48, pool=4)
+    exact = args[-1].cuda()
+    padded = torch.cat((exact, exact[-1:].expand(8192)))
+    expected = pooled_topk(*args[:5], exact, top_k=16)
+    actual = pooled_topk(*args[:5], padded, top_k=16)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 pytestmark = pytest.mark.gpu

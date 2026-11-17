@@ -31,6 +31,11 @@ def prepare_packed_sequence_metadata(
     one chunk row for each chunk ``N`` sequences of ``T`` tokens could need,
     ``ceil(T / chunk_size) + N``. Rows past the real chunks belong to one
     more, empty sequence at the end, where kernels read and write nothing.
+    Unused length entries must be zero. In the returned cumulative offsets,
+    those entries repeat the final offset; trailing zeros after a nonzero
+    offset would instead be invalid, decreasing boundaries. No device values
+    are read back to trim either tensor. Empty slots preserve the result but
+    may still add kernel scheduling and scratch-space overhead.
 
     Call this once per packed round and pass the returned tensors to every
     applicable operation. The graph-visible preparation target retains no

@@ -1,8 +1,9 @@
 """Sequence offsets are data: repeats pad them, and new values reuse one graph."""
 
-import mlops
 import pytest
 import torch
+
+import mlops
 from mlops.dispatch import use_implementations
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
@@ -34,10 +35,13 @@ def _attend(cu_seqlens: torch.Tensor, max_seqlen: int) -> tuple[torch.Tensor, ..
 
 
 @pytest.mark.parametrize("max_seqlen", [100, 128, TOKENS])
-def test_repeated_offsets_are_empty_sequences(max_seqlen: int) -> None:
-    # Two repeats of the last offset pad the tensor, as a fixed-size input is.
+@pytest.mark.parametrize("empty_slots", [2, 8192])
+def test_repeated_offsets_are_empty_sequences(
+    max_seqlen: int, empty_slots: int
+) -> None:
+    # Repeats of the last offset pad the tensor, as a fixed-size input is.
     expected = _attend(_offsets(0, 37, 137, 228), 100)
-    actual = _attend(_offsets(0, 37, 137, 228, 228, 228), max_seqlen)
+    actual = _attend(_offsets(0, 37, 137, 228, *((228,) * empty_slots)), max_seqlen)
 
     assert torch.equal(actual[0], expected[0])
     for got, want in zip(actual[1:], expected[1:], strict=True):
@@ -67,7 +71,11 @@ def test_new_offsets_reuse_one_captured_graph() -> None:
 
     attend = torch.compile(mlops.flash_attention, backend=backend, fullgraph=True)
     with use_implementations({"flash_attention": "builtin.flash_attention.aten"}):
-        for packing in ((0, 37, 137, 228, 228), (0, 228, 228, 228, 228), (0, 1, 3, 6, 228)):
+        for packing in (
+            (0, 37, 137, 228, 228),
+            (0, 228, 228, 228, 228),
+            (0, 1, 3, 6, 228),
+        ):
             cu_seqlens = _offsets(*packing)
             expected = mlops.flash_attention(q, k, v, cu_seqlens, TOKENS)
             assert torch.equal(attend(q, k, v, cu_seqlens, TOKENS), expected)
