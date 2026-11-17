@@ -150,7 +150,9 @@ def test_the_row_kernels_clamp_as_the_builtin_does():
 def test_scaled_lora_epilogue_preserves_preactivation_and_clamp(scale):
     from mlops.kernels.quack_moe.swiglu_limit import swiglu_limit_scaled_add
     from mlops.kernels.quack_moe.swiglu_rows import swiglu_rows
+    from mlops.quack_runtime import initialize
 
+    initialize()
     torch.manual_seed(15)
     x = torch.randn(128, 32, device="cuda", dtype=torch.bfloat16)
     b = torch.randn(256, 32, device="cuda", dtype=torch.bfloat16)
