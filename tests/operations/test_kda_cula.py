@@ -14,6 +14,51 @@ from .test_kda import recurrence
 pytestmark = pytest.mark.gpu
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+def test_native_cula_empty_sequence_slots_are_noops(compiled):
+    """Fixed-capacity GPU metadata can change layout without hanging the CTA."""
+    pytest.importorskip("cula")
+    if torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("SM90 provider")
+    torch.manual_seed(720)
+    shape = (192, 4, 128)
+    values = [
+        mlops.l2_norm(torch.randn(shape, device="cuda", dtype=torch.bfloat16))
+        for _ in range(2)
+    ]
+    values += [
+        torch.randn(shape, device="cuda", dtype=torch.bfloat16),
+        torch.empty(shape, device="cuda").uniform_(-5, -0.01),
+        torch.rand(shape[:2], device="cuda", dtype=torch.bfloat16),
+    ]
+
+    def packed(q, k, v, g, beta, lengths):
+        cumulative, chunks = mlops.prepare_packed_sequence_metadata(
+            lengths, q[:, 0, 0], chunk_size=64
+        )
+        return mlops.kimi_delta_attention(q, k, v, g, beta, cumulative, chunks)
+
+    fn = torch.compile(packed, fullgraph=True) if compiled else packed
+    dy = torch.randn_like(values[2])
+    for lengths in ((65, 0, 127, 0, 0, 0, 0, 0), (0, 96, 0, 96, 0, 0, 0, 0)):
+        inputs = [t.detach().clone().requires_grad_() for t in values]
+        reference = [t.detach().clone().requires_grad_() for t in values]
+        gpu_lengths = torch.tensor(lengths, device="cuda", dtype=torch.int32)
+        with use_implementation(
+            "kimi_delta_attention", "cula.kimi_delta_attention.sm90.recompute"
+        ):
+            out = fn(*inputs, gpu_lengths)
+            grads = torch.autograd.grad(out, inputs, dy)
+        target = recurrence(*reference, lengths)
+        expected_grads = torch.autograd.grad(target, reference, dy)
+        errors = []
+        for got, expected in zip((out, *grads), (target, *expected_grads)):
+            assert torch.isfinite(got).all()
+            error = (got.float() - expected.float()).norm()
+            errors.append((error / expected.float().norm().clamp_min(1e-8)).item())
+        assert max(errors) < 0.02, errors
+
+
 @pytest.mark.parametrize(
     "provider",
     ["cula.kimi_delta_attention.sm90", "cula.kimi_delta_attention.sm90.recompute"],

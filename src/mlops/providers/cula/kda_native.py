@@ -6,6 +6,8 @@ saved; all metadata and native workspace remain call-local.
 
 Backward releases private WY and intra-chunk scratch after its last consumer.
 Saved allocation profiles from the earlier lifetime schedule require rebuilding.
+The pinned native extension must include the empty-training-sequence patch from
+scripts/setup_cula_sm90.sh; zero-length metadata slots must not enter its pipeline.
 """
 
 from importlib.util import find_spec

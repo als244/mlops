@@ -45,6 +45,19 @@ if [[ "$actual" != "$revision" ]]; then
     echo "Expected cuLA $revision, found $actual" >&2
     exit 1
 fi
+# Keep fixed-capacity packed metadata on the GPU. Upstream's native forward
+# otherwise waits for a nonexistent final tile on an empty training sequence.
+empty_sequence_patch="$project_root/scripts/patches/cula-sm90-empty-training-sequences.patch"
+if git -C "$source_dir" apply --reverse --check "$empty_sequence_patch" 2>/dev/null; then
+    : # Already applied by an earlier build.
+else
+    git -C "$source_dir" apply --check "$empty_sequence_patch"
+    git -C "$source_dir" apply "$empty_sequence_patch"
+fi
+# setuptools can reuse a whole extension before Ninja checks header changes.
+# Invalidate that shortcut when reinstalling from an existing source checkout.
+touch "$source_dir/csrc/kda/sm90/kda_fwd_sm90.cu" \
+      "$source_dir/csrc/kda/sm90/kda_fwd_sm90_safe_gate.cu"
 # cuLA's setup queries nvcc even when all native extensions are disabled.
 cuda_root=$("$python_executable" - <<'PYCUDA'
 from pathlib import Path

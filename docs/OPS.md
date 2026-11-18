@@ -1574,6 +1574,9 @@ and `chunks` gives integer (sequence, chunk) pairs for 64-token chunks; both
 are nonempty even for one sequence, unlike the single-sequence sentinels of
 `prepare_packed_sequence_metadata`. `Dk` is 32, 64, 128, or 256.
 There is zero initial recurrent state and no returned final state.
+Fixed-capacity GPU metadata may include empty sequence slots (repeated cumulative
+offsets). These slots perform no token work; use the patched cuLA build installed
+by `scripts/setup_cula_sm90.sh` for the native SM90 forward.
 On SM90 with BF16 Q/K/V and D=128, dispatch prefers
 `cula.kimi_delta_attention.sm90.recompute` (native forward, recomputed
 intra-chunk matrices in backward), then `cula.kimi_delta_attention.sm90`

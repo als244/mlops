@@ -1,0 +1,19 @@
+--- a/csrc/kda/sm90/kernel/kernel_kda_fwd.hpp
++++ b/csrc/kda/sm90/kernel/kernel_kda_fwd.hpp
+@@ -253,6 +253,16 @@
+         };
+ 
+         TileScheduler scheduler{params.scheduler};
++
++        // Empty packed sequences have no output tokens. In training (no final
++        // state), skip the CTA before any producer/consumer pipeline is entered:
++        // extract_alpha_last otherwise waits on a nonexistent final tile.
++        static_assert(size(ClusterShape{}) == 1);
++        auto preview_scheduler = scheduler;
++        auto first_work = preview_scheduler.get_next_work(params.scheduler, params.problem_size);
++        if (first_work.seq_len == 0 && params.mainloop.ptr_output_state == nullptr) {
++            return;
++        }
+ 
+         // Shared memory.
+         auto& storage = *reinterpret_cast<SharedStorage*>(smem);
