@@ -1576,7 +1576,10 @@ are nonempty even for one sequence, unlike the single-sequence sentinels of
 There is zero initial recurrent state and no returned final state.
 Fixed-capacity GPU metadata may include empty sequence slots (repeated cumulative
 offsets). These slots perform no token work; use the patched cuLA build installed
-by `scripts/setup_cula_sm90.sh` for the native SM90 forward.
+by `scripts/setup_cula_sm90.sh` for SM90 forward and backward. The backward
+kernel derives the real chunk count from GPU offsets and skips the trailing
+dummy chunk rows without a device-to-host read. Real chunk rows must form the
+compact prefix produced by `prepare_packed_sequence_metadata`.
 On SM90 with BF16 Q/K/V and D=128, dispatch prefers
 `cula.kimi_delta_attention.sm90.recompute` (native forward, recomputed
 intra-chunk matrices in backward), then `cula.kimi_delta_attention.sm90`

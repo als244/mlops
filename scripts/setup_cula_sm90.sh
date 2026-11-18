@@ -55,9 +55,19 @@ else
     git -C "$source_dir" apply "$empty_sequence_patch"
 fi
 # setuptools can reuse a whole extension before Ninja checks header changes.
-# Invalidate that shortcut when reinstalling from an existing source checkout.
-touch "$source_dir/csrc/kda/sm90/kda_fwd_sm90.cu" \
-      "$source_dir/csrc/kda/sm90/kda_fwd_sm90_safe_gate.cu"
+# Also repair a previously patched checkout whose binary was never rebuilt.
+if [[ "$source_dir/csrc/kda/sm90/kernel/kernel_kda_fwd.hpp" -nt "$source_dir/csrc/kda/sm90/kda_fwd_sm90.cu" ||
+      "$source_dir/csrc/kda/sm90/kernel/kernel_kda_fwd.hpp" -nt "$source_dir/csrc/kda/sm90/kda_fwd_sm90_safe_gate.cu" ]]; then
+    touch "$source_dir/csrc/kda/sm90/kda_fwd_sm90.cu" \
+          "$source_dir/csrc/kda/sm90/kda_fwd_sm90_safe_gate.cu"
+fi
+empty_backward_patch="$project_root/scripts/patches/cula-sm90-empty-backward-chunks.patch"
+if git -C "$source_dir" apply --reverse --check "$empty_backward_patch" 2>/dev/null; then
+    : # Already applied by an earlier build.
+else
+    git -C "$source_dir" apply --check "$empty_backward_patch"
+    git -C "$source_dir" apply "$empty_backward_patch"
+fi
 # cuLA's setup queries nvcc even when all native extensions are disabled.
 cuda_root=$("$python_executable" - <<'PYCUDA'
 from pathlib import Path

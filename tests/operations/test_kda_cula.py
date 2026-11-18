@@ -7,11 +7,74 @@ import pytest
 import torch
 
 import mlops
+import mlops.explicit
 from mlops.dispatch import use_implementation
 
 from .test_kda import recurrence
 
 pytestmark = pytest.mark.gpu
+
+
+@pytest.mark.parametrize("lengths", [(32768,), (4097, 12289, 16382)])
+@pytest.mark.parametrize(
+    "provider",
+    ["cula.kimi_delta_attention.sm90", "cula.kimi_delta_attention.sm90.recompute"],
+)
+def test_cula_32k_backward_ignores_unused_chunk_capacity(lengths, provider):
+    """The real H64/D128 shape must tolerate extra empty sequence/chunk rows."""
+    pytest.importorskip("cula")
+    if torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("SM90 provider")
+    torch.manual_seed(721)
+    shape = (sum(lengths), 64, 128)
+    q, k = [
+        mlops.l2_norm(torch.randn(shape, device="cuda", dtype=torch.bfloat16))
+        for _ in range(2)
+    ]
+    v = torch.randn_like(q)
+    gates = torch.full(shape, -0.2, device="cuda", dtype=torch.float32)
+    beta = torch.full(shape[:2], 0.5, device="cuda", dtype=torch.bfloat16)
+    dy = torch.randn_like(v)
+    values = (q, k, v, gates, beta)
+    # Construct the independent exact-capacity metadata on the host. Keep both
+    # this and the padded invocation on the packed path for a single sequence.
+    ends = [0]
+    pairs = []
+    for sequence, length in enumerate(lengths):
+        ends.append(ends[-1] + length)
+        pairs.extend((sequence, chunk) for chunk in range((length + 63) // 64))
+    exact = (
+        torch.tensor(ends, device="cuda", dtype=torch.int64),
+        torch.tensor(pairs, device="cuda", dtype=torch.int64),
+    )
+
+    def run(metadata):
+        result = mlops.explicit.kimi_delta_attention.forward(*values, *metadata)
+        gradients = mlops.explicit.kimi_delta_attention.backward(
+            dy, *values, *result[1:], *metadata
+        )
+        torch.cuda.synchronize()
+        return (result[0], *gradients)
+
+    with use_implementation("kimi_delta_attention", provider):
+        expected = run(exact)
+        for capacity in (9, 17):
+            # Include internal empty slots as well as a trailing empty suffix.
+            padded_lengths = [0] * capacity
+            for index, length in enumerate(lengths):
+                padded_lengths[2 * index] = length
+            metadata = mlops.prepare_packed_sequence_metadata(
+                torch.tensor(padded_lengths, device="cuda", dtype=torch.int32),
+                q[:, 0, 0],
+            )
+            actual = run(metadata)
+            errors = []
+            for got, target in zip(actual, expected, strict=True):
+                assert torch.isfinite(got).all()
+                relative = (got.float() - target.float()).norm()
+                errors.append((relative / target.float().norm().clamp_min(1e-8)).item())
+            assert max(errors) < 0.02, errors
+            del actual
 
 
 @pytest.mark.parametrize("compiled", [False, True])

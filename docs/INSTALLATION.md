@@ -17,8 +17,9 @@ It also builds FlashMLA's Hopper sparse-attention forward at a pinned commit for
 the Hopper sparse latent attention provider; `--no-flashmla` skips it, and that
 provider then keeps its TileLang forward.
 On Hopper it also builds cuLA's pinned native KDA forward and fused WY backward
-provider, including a patch that skips empty sequences in the training forward
-kernel; `--no-cula` skips that build. Re-run `scripts/setup_cula_sm90.sh` to update
+provider, including patches that skip empty training sequences in forward and
+unused chunk rows in backward; `--no-cula` skips that build. Both keep sequence
+metadata on the GPU. Re-run `scripts/setup_cula_sm90.sh` to update
 an existing cuLA installation. Set `MLOPS_BUILD_DIR` to place source
 builds outside a quota-limited home directory. See [the attention guide](ATTENTION.md)
 for provider geometry, precision and fallback behavior. FlashAttention-3 is

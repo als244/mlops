@@ -1,0 +1,15 @@
+--- a/cula/ops/kda/sm90/bwd_wy_dqkg.py
++++ b/cula/ops/kda/sm90/bwd_wy_dqkg.py
+@@ -1340,2 +1340,11 @@
+-        total_work_units = NT * H
++        # Packed chunk indices contain all real chunks first; fixed-capacity
++        # metadata may append dummy rows for an empty sequence. Every warp role
++        # must execute the same number of real work units. Derive that bound on
++        # device rather than entering the pipelines with sub_seq_len <= 0 (whose
++        # last-row gate loads would use a negative shared-memory index).
++        active_nt = Int32(0)
++        for seq_idx in cutlass.range(B):
++            seq_tokens = cu_seqlens[(seq_idx + Int32(1),)] - cu_seqlens[(seq_idx,)]
++            active_nt += (seq_tokens + Int32(BT - 1)) // Int32(BT)
++        total_work_units = cutlass.min(NT, active_nt) * H
+         num_iters = (total_work_units - block_idx_x + grid_dim_x - 1) // grid_dim_x
