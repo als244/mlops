@@ -34,9 +34,9 @@ class Pending:
 
 class _Runtime(ChunkResources):
     def _shared_math(self):
-        from .shared_expert import compiled_shared_math
+        from .shared_expert import shared_math
 
-        return compiled_shared_math()
+        return shared_math()
 
     def __init__(self, config, group, device, buffer):
         super().__init__(config, group, device, buffer)

@@ -1,9 +1,6 @@
 """Quack GEMMs for frozen projections and BF16 per-expert low-rank branches."""
 
-from functools import lru_cache
-
 import torch
-import torch.nn.functional as F
 from quack.gemm_config import GemmConfig
 from quack.gemm_interface import gemm_act, gemm_tuned
 
@@ -11,6 +8,8 @@ from mlops.kernels.quack_moe.bf16 import _gemm
 from mlops.kernels.quack_moe.pointwise import _Pointwise
 from mlops.kernels.quack_moe.policy import select_policy
 from mlops.kernels.quack_moe.rows import FP8Rows, quantized_rows
+from mlops.kernels.quack_moe.scale_rows import scale_rows
+from mlops.kernels.quack_moe.swiglu_rows import routed_swiglu_rows_backward
 from mlops.kernels.quack_moe.wgrad import scaled_fp8
 
 LORA_GEMM = GemmConfig(
@@ -23,52 +22,32 @@ LORA_GEMM = GemmConfig(
 )
 
 
-def _dequantize(data, scales):
-    return (data.float() * scales[:, None]).to(torch.bfloat16)
-
-
-def _down_derivative(preact, r, probabilities, swiglu_limit=None):
-    gate, up = preact[:, 0::2].float(), preact[:, 1::2].float()
-    raw_gate, raw_up = gate, up
-    if swiglu_limit is not None:
-        gate = gate.clamp(max=swiglu_limit)
-        up = up.clamp(-swiglu_limit, swiglu_limit)
-    s = gate.sigmoid()
-    activation = F.silu(gate) * up
-    dh = r.float() * probabilities[:, None]
-    dgate = dh * up * s * (1 + gate * (1 - s))
-    dup = dh * F.silu(gate)
-    if swiglu_limit is not None:
-        dgate = torch.where(raw_gate <= swiglu_limit, dgate, 0.0)
-        dup = torch.where(raw_up.abs() <= swiglu_limit, dup, 0.0)
-    dpreact = torch.stack((dgate, dup), dim=-1).flatten(1).to(torch.bfloat16)
-    return (
-        dpreact,
-        (activation * probabilities[:, None]).to(torch.bfloat16),
-        (r.float() * activation).sum(-1),
-    )
-
-
-def _scale(value, probabilities, out):
-    out.copy_((value.float() * probabilities[:, None]).to(value.dtype))
-    return out
-
-
-@lru_cache(None)
-def compiled(fn):
-    return torch.compile(
-        fn,
-        fullgraph=True,
-        options={"triton.cudagraphs": False, "emulate_precision_casts": True},
-    )
-
-
 def bf16_rows(value):
     return (
-        compiled(_dequantize)(value.data, value.scales)
+        scale_rows(value.data, value.scales, dtype=torch.bfloat16)
         if isinstance(value, FP8Rows)
         else value
     )
+
+
+def scaled_rows(value, probabilities, out):
+    """Each routed row scaled by its route score in FP32 and rounded once into
+    ``out``, which keeps the rows' dtype."""
+    if out.dtype != value.dtype:
+        raise ValueError("A routed output keeps its rows' dtype")
+    return scale_rows(value, probabilities, out=out)
+
+
+def down_derivative(preact, r, probabilities, swiglu_limit=None):
+    """``(dpreact, a', dscore)`` of a routed down projection from the cotangent
+    ``r`` of each unscaled row: the interleaved pre-activation gradient, the
+    score-scaled activation, both BF16, and the score gradient in FP32."""
+    if preact.dtype != torch.bfloat16:
+        raise ValueError("Expected BF16 pre-activation rows")
+    dscore, dpreact, scaled = routed_swiglu_rows_backward(
+        r, preact, probabilities, scaled_activation=True, limit=swiglu_limit
+    )
+    return dpreact, scaled, dscore
 
 
 class LoRAExperts:
@@ -172,16 +151,14 @@ class LoRAExperts:
         a, b = self.banks[1].factors.compute_weights
         z = self._low(activation, a, cu)
         value = self._low(z, b, cu, add=base, scale=self.lora.scale)
-        return compiled(_scale)(value, probabilities, out)
+        return scaled_rows(value, probabilities, out)
 
     def down_backward(self, dy, weight, preact, probabilities, cu):
         r = self._linear(dy, weight, cu, dgrad=True, config=self.policy.down_backward)
         a, b = self.banks[1].factors.compute_weights
         dz = self._low(dy, b, cu, transpose=False, scale=self.lora.scale)
         r = self._low(dz, a, cu, transpose=False, add=r)
-        return compiled(_down_derivative)(
-            preact, r, probabilities, self.cfg.swiglu_limit
-        )
+        return down_derivative(preact, r, probabilities, self.cfg.swiglu_limit)
 
     def input_gradient(self, dpreact, weight, cu, out):
         base = self._linear(

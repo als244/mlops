@@ -14,7 +14,7 @@ from mlops.providers.sonicmoe.block_fp8 import (
     lora_up_projection,
 )
 
-from .math import LoRAExperts, _down_derivative, _scale, bf16_rows, compiled
+from .math import LoRAExperts, bf16_rows, down_derivative, scaled_rows
 
 
 def _weight(components):
@@ -46,16 +46,14 @@ class BlockLoRAExperts(LoRAExperts):
         contribution = self._low(z, b, cu, scale=self.lora.scale)
         value = lora_down_projection(activation, _weight(weight), contribution, cu)
         self.pw.mask_tail(value, cu[-1:])
-        return compiled(_scale)(value, probabilities, out)
+        return scaled_rows(value, probabilities, out)
 
     def down_backward(self, dy, weight, preact, probabilities, cu):
         r = input_gradient_rows(bf16_rows(dy), _weight(weight), cu)
         a, b = self.banks[1].factors.compute_weights
         dz = self._low(dy, b, cu, transpose=False, scale=self.lora.scale)
         r = self._low(dz, a, cu, transpose=False, add=r)
-        return compiled(_down_derivative)(
-            preact, r, probabilities, self.cfg.swiglu_limit
-        )
+        return down_derivative(preact, r, probabilities, self.cfg.swiglu_limit)
 
     def input_gradient(self, dpreact, weight, cu, out):
         base = input_gradient_rows(

@@ -1,14 +1,11 @@
 """LoRA specialization of the existing chunk/stream scheduler."""
 
-from functools import lru_cache, partial
-
-import torch
 import torch.distributed as dist
 
 from ...lora import signature
 from ..config import config_signature
 from ..runtime import _Runtime
-from ..shared_expert import frozen_shared_backward, shared_forward
+from ..shared_expert import frozen_shared_math
 from ..weights import _Bank
 from .math import LoRAExperts
 from .storage import FactorBank
@@ -38,23 +35,6 @@ class ProjectionBank(_Bank):
 
     def external_tensors(self):
         return [*super().external_tensors(), *self.factors.external_tensors()]
-
-
-@lru_cache(None)
-def frozen_shared_math(swiglu_limit=None):
-    options = {"triton.cudagraphs": False, "emulate_precision_casts": True}
-    return (
-        torch.compile(
-            partial(shared_forward, swiglu_limit=swiglu_limit),
-            fullgraph=True,
-            options=options,
-        ),
-        torch.compile(
-            partial(frozen_shared_backward, swiglu_limit=swiglu_limit),
-            fullgraph=True,
-            options=options,
-        ),
-    )
 
 
 class LoRARuntime(_Runtime):

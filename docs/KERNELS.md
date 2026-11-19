@@ -119,6 +119,14 @@ resets while avoiding activation-sized scratch and unused weight gradients.
 `src/mlops/kernels/quack_moe/` owns local BF16/FP8 grouped GEMMs, clipped-SwiGLU
 epilogues, row quantization/transpose, pointwise kernels and FP8 row payload
 helpers. SonicMoE DP and Quack EP adapters import the same implementations.
+`scale_rows.py` scales each row by its own FP32 factor and rounds once: routed
+rows by their route scores, E4M3 rows by their descales. `swiglu_rows.py` also
+holds the SwiGLU of a shared expert, whose gate and up projections are separate
+tensors, and its gradient. The EP operators launch only these kernels and
+library GEMMs and call no `torch.compile` when they run: a kernel Inductor
+compiles inside an operator is outside the graph that captured the operator,
+so a caller that freezes that graph's kernels cannot account for it, and every
+process compiles it again.
 It has no MoonEP or other communication dependency and does not select routed
 experts. Group offsets, gather indices, scales and GEMM policy are explicit
 caller inputs. The Quack runtime fingerprints this directory for its caches.

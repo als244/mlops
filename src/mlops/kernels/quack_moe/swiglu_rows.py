@@ -14,6 +14,12 @@ experts do -- the gate capped at ``limit``, the up projection clipped to
 ``[-limit, limit]``, no gradient through a clipped value -- the builtin
 ``packed_swiglu(limit=)`` semantics. Widths and the limit are runtime
 arguments; only the block size and the flags are compiled in.
+
+A shared expert's gate and up projections are separate ``[rows, I]`` tensors
+rather than one interleaved row. Its pair form computes the same activation
+from both, and its backward the two projections' gradients from the
+activation's cotangent, each in FP32 and rounded once to the projections'
+dtype.
 """
 
 import torch
@@ -139,6 +145,60 @@ def _routed_swiglu_rows_backward(
         )
 
 
+@triton.jit
+def _swiglu_pair_rows(
+    G,
+    U,
+    OUT,
+    HALF,
+    G_PITCH,
+    U_PITCH,
+    OUT_PITCH,
+    limit,
+    LIMITED: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0).to(tl.int64)
+    col = tl.arange(0, BLOCK)
+    mask = col < HALF
+    gate = tl.load(G + row * G_PITCH + col, mask, other=0).to(tl.float32)
+    up = tl.load(U + row * U_PITCH + col, mask, other=0).to(tl.float32)
+    gate, up = _clamped(gate, up, limit, LIMITED)
+    activation = gate * tl.sigmoid(gate) * up
+    tl.store(OUT + row * OUT_PITCH + col, activation.to(OUT.dtype.element_ty), mask)
+
+
+@triton.jit
+def _swiglu_pair_rows_backward(
+    D,
+    G,
+    U,
+    DG,
+    DU,
+    HALF,
+    D_PITCH,
+    G_PITCH,
+    U_PITCH,
+    limit,
+    LIMITED: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0).to(tl.int64)
+    col = tl.arange(0, BLOCK)
+    mask = col < HALF
+    raw_gate = tl.load(G + row * G_PITCH + col, mask, other=0).to(tl.float32)
+    raw_up = tl.load(U + row * U_PITCH + col, mask, other=0).to(tl.float32)
+    gate, up = _clamped(raw_gate, raw_up, limit, LIMITED)
+    grad = tl.load(D + row * D_PITCH + col, mask, other=0).to(tl.float32)
+    sig = tl.sigmoid(gate)
+    silu = gate * sig
+    dgate = grad * up * (sig + silu * (1.0 - sig))
+    dup = grad * silu
+    dgate, dup = _passed(dgate, dup, raw_gate, raw_up, limit, LIMITED)
+    tl.store(DG + row * HALF + col, dgate.to(DG.dtype.element_ty), mask)
+    tl.store(DU + row * HALF + col, dup.to(DU.dtype.element_ty), mask)
+
+
 def _check(h):
     if h.ndim != 2 or not h.is_cuda or not h.is_contiguous():
         raise ValueError("Expected a contiguous CUDA [rows, 2I] pre-activation")
@@ -254,3 +314,71 @@ def routed_swiglu_rows_backward(r, h, score, *, scaled_activation=False, limit=N
             num_warps=warps(block),
         )
     return dscore, dh, (a_prime if scaled_activation else None)
+
+
+def _pair(value, rows, half, name):
+    if value.shape != (rows, half) or not value.is_cuda:
+        raise ValueError(f"Expected {name} as CUDA [rows, I] like the gate")
+    if half > 1 and value.stride(1) != 1:
+        raise ValueError(f"Expected {name}'s rows to be contiguous")
+
+
+def swiglu_pair_rows(gate, up, *, limit=None):
+    """``silu(gate) * up`` from separate ``gate`` and ``up [rows, I]``, in FP32
+    and rounded once to their dtype, clamped at ``limit`` when given."""
+    if gate.ndim != 2:
+        raise ValueError("Expected the gate as [rows, I]")
+    rows, half = gate.shape
+    _pair(gate, rows, half, "the gate")
+    _pair(up, rows, half, "the up projection")
+    out = torch.empty(rows, half, dtype=gate.dtype, device=gate.device)
+    if rows and half:
+        value, limited = _limit(limit)
+        block = triton.next_power_of_2(half)
+        _swiglu_pair_rows[(rows,)](
+            gate,
+            up,
+            out,
+            half,
+            gate.stride(0),
+            up.stride(0),
+            out.stride(0),
+            value,
+            limited,
+            block,
+            num_warps=warps(block),
+        )
+    return out
+
+
+def swiglu_pair_rows_backward(grad, gate, up, *, limit=None):
+    """``(dgate, dup)`` at the projections' dtype from the activation's
+    cotangent ``grad [rows, I]`` and the separate ``gate`` and ``up``; no
+    gradient flows through a value the ``limit`` clipped."""
+    if gate.ndim != 2:
+        raise ValueError("Expected the gate as [rows, I]")
+    rows, half = gate.shape
+    _pair(gate, rows, half, "the gate")
+    _pair(up, rows, half, "the up projection")
+    _pair(grad, rows, half, "the cotangent")
+    dgate = torch.empty(rows, half, dtype=gate.dtype, device=gate.device)
+    dup = torch.empty_like(dgate)
+    if rows and half:
+        value, limited = _limit(limit)
+        block = triton.next_power_of_2(half)
+        _swiglu_pair_rows_backward[(rows,)](
+            grad,
+            gate,
+            up,
+            dgate,
+            dup,
+            half,
+            grad.stride(0),
+            gate.stride(0),
+            up.stride(0),
+            value,
+            limited,
+            block,
+            num_warps=warps(block),
+        )
+    return dgate, dup
