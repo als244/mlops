@@ -11,6 +11,8 @@ from mlops.sequential_moe.precision.storage import materialize, pack
 pytestmark = pytest.mark.gpu
 
 
+# Both formats pack through E4M3: FP8 data, and NVFP4's block scales.
+@pytest.mark.e4m3
 @pytest.mark.parametrize("alpha", [5, 8])
 @pytest.mark.parametrize("storage", ["fp8", "nvfp4"])
 @pytest.mark.parametrize("compiled", [False, True])

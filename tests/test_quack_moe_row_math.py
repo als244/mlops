@@ -89,6 +89,7 @@ def _reference_frozen_backward(dy, x, gate, up, hidden, gate_w, up_w, down_w, li
     return (dg.to(x.dtype) @ gate_w + du.to(x.dtype) @ up_w,)
 
 
+@pytest.mark.e4m3
 def test_routed_rows_scale_and_e4m3_rows_dequantize_exactly():
     from mlops.expert_parallel.quack.lora.math import bf16_rows, scaled_rows
     from mlops.kernels.quack_moe.rows import FP8Rows
@@ -164,6 +165,7 @@ def test_shared_expert_matches_its_eager_formulas(limit):
         torch.testing.assert_close(got.float(), want.float(), rtol=2e-2, atol=2e-2)
 
 
+@pytest.mark.e4m3
 def test_the_row_math_launches_no_inductor_kernel():
     # A kernel Inductor compiles inside the operator is invisible to the
     # build that captured the operator, and is compiled again in every worker.

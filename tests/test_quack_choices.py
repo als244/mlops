@@ -471,6 +471,7 @@ def test_unrecognized_call_wrapper_is_not_hidden_by_wrapped_metadata(monkeypatch
 
 
 @pytest.mark.gpu
+@pytest.mark.quack_gemm
 def test_actual_gemm_and_generated_epilogue_replay_without_tuning(monkeypatch):
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")

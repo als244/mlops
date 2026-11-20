@@ -475,12 +475,9 @@ def _components_per_weight(compute_precision):
 def _sonicmoe_moe_args(
     weight_grad_dtype=None, compute_precision="native", swiglu_limit=None
 ):
-    if compute_precision == "native":
-        arguments, components = _moe_args(weight_grad_dtype, swiglu_limit), []
-    elif compute_precision == "fp8_block":
-        arguments, components = _block_moe_args(weight_grad_dtype, swiglu_limit)
-    else:
-        arguments, components = _fp8_moe_args(weight_grad_dtype, swiglu_limit)
+    # The probe runs before any FP8 container is built: quantizing to E4M3
+    # needs a GPU that has it, and the probe skips one that does not.
+    arguments, components = _moe_args(weight_grad_dtype, swiglu_limit), []
     probe = list(arguments[:5])
     if compute_precision != "native":
         probe[3] = _parameter(4, 96, 32)
@@ -501,6 +498,10 @@ def _sonicmoe_moe_args(
                 else ""
             )
         )
+    if compute_precision == "fp8_block":
+        arguments, components = _block_moe_args(weight_grad_dtype, swiglu_limit)
+    elif compute_precision != "native":
+        arguments, components = _fp8_moe_args(weight_grad_dtype, swiglu_limit)
     # The builtin operator's arguments end ``weight_grad_dtype, swiglu_limit``;
     # SonicMoE's take the compute precision between them.
     return (*arguments[:14], compute_precision, arguments[14], components)
